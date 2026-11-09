@@ -5,7 +5,7 @@ use super::{ArtImage, MediaCommand, MediaSource, SourceEvent, UiSender};
 use crate::log;
 use island_core::color::dominant_color;
 use island_core::media::{MediaSnapshot, Playback};
-use island_core::smtc::{SessionSelection, Timeline, TrackTimeline};
+use island_core::smtc::{ArtRetry, SessionSelection, Timeline, TrackTimeline};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -144,11 +144,13 @@ struct SessionEvents {
     media: Option<i64>,
     playback: Option<i64>,
     timeline: Option<i64>,
+    last_playback: Playback,
 }
 
 impl SessionEvents {
     fn new(session: Session, id: u64, tx: &Sender<Wake>) -> Result<Self> {
-        let mut events = Self { session, id, media: None, playback: None, timeline: None };
+        let mut events =
+            Self { session, id, media: None, playback: None, timeline: None, last_playback: Playback::Stopped };
         let wake = tx.clone();
         events.media = Some(events.session.MediaPropertiesChanged(&TypedEventHandler::new(move |_, _| {
             let _ = wake.send(Wake::Session { id, timeline: false });
@@ -199,12 +201,15 @@ fn run_manager(ui: &UiSender, tx: &Sender<Wake>, rx: &Receiver<Wake>, next_id: &
     let mut selection = SessionSelection::default();
     let mut selected = None;
     let mut track = None;
+    let mut art_retry = ArtRetry::default();
     let mut timeline = TrackTimeline::default();
     let mut raw_timeline = None;
     let mut wake = Wake::Refresh;
     loop {
         let mut publish = false;
         let mut timeline_event = false;
+        let mut metadata_event = false;
+        let mut session_error = None;
         match wake {
             Wake::Stop => return Ok(()),
             Wake::Refresh => {
@@ -224,15 +229,22 @@ fn run_manager(ui: &UiSender, tx: &Sender<Wake>, rx: &Receiver<Wake>, next_id: &
                     Err(e) => return Err(e),
                 };
                 let current_id = sessions.iter().find(|s| Some(&s.session) == current.as_ref()).map(|s| s.id);
-                let candidates = sessions
-                    .iter()
-                    .map(|s| Ok((s.id, playback(&s.session)? == Playback::Playing)))
-                    .collect::<Result<Vec<_>>>()?;
+                let candidates: Vec<_> = sessions
+                    .iter_mut()
+                    .map(|s| {
+                        match playback(&s.session) {
+                            Ok(state) => s.last_playback = state,
+                            Err(e) => log::warning!("SMTC session {} playback unavailable: {e}", s.id),
+                        }
+                        (s.id, s.last_playback == Playback::Playing)
+                    })
+                    .collect();
                 log::debug!("SMTC sessions (id, playing): {candidates:?}, current: {current_id:?}");
                 let chosen = selection.choose(&candidates, current_id);
                 if chosen != selected {
                     selected = chosen;
                     track = None;
+                    art_retry = ArtRetry::default();
                     timeline = TrackTimeline::default();
                     raw_timeline = None;
                     ui.send(SourceEvent::Media(None));
@@ -248,61 +260,96 @@ fn run_manager(ui: &UiSender, tx: &Sender<Wake>, rx: &Receiver<Wake>, next_id: &
                 if selected == Some(id) {
                     publish = true;
                     timeline_event = is_timeline;
+                    metadata_event = !is_timeline;
                 }
             }
             Wake::Command(command) => {
                 if let Some(s) = sessions.iter().find(|s| Some(s.id) == selected) {
-                    let accepted = match command {
-                        MediaCommand::PlayPause => s.session.TryTogglePlayPauseAsync()?.join()?,
-                        MediaCommand::Next => s.session.TrySkipNextAsync()?.join()?,
-                        MediaCommand::Previous => s.session.TrySkipPreviousAsync()?.join()?,
-                        MediaCommand::Seek(seconds) => {
-                            if let Some(ticks) = raw_timeline.and_then(|t: Timeline| t.seek_ticks(seconds)) {
-                                s.session.TryChangePlaybackPositionAsync(ticks)?.join()?
-                            } else {
-                                false
+                    let result = (|| -> Result<bool> {
+                        Ok(match command {
+                            MediaCommand::PlayPause => s.session.TryTogglePlayPauseAsync()?.join()?,
+                            MediaCommand::Next => s.session.TrySkipNextAsync()?.join()?,
+                            MediaCommand::Previous => s.session.TrySkipPreviousAsync()?.join()?,
+                            MediaCommand::Seek(seconds) => {
+                                if let Some(ticks) = raw_timeline.and_then(|t: Timeline| t.seek_ticks(seconds)) {
+                                    s.session.TryChangePlaybackPositionAsync(ticks)?.join()?
+                                } else {
+                                    false
+                                }
                             }
-                        }
-                    };
-                    log::info!("SMTC command {command:?}: accepted={accepted}");
+                        })
+                    })();
+                    match result {
+                        Ok(accepted) => log::info!("SMTC command {command:?}: accepted={accepted}"),
+                        Err(e) => session_error = Some(e),
+                    }
                 }
             }
         }
         if publish {
-            let s = &sessions.iter().find(|s| Some(s.id) == selected).unwrap().session;
-            let properties = s.TryGetMediaPropertiesAsync()?.join()?;
-            let title = properties.Title()?.to_string();
-            let artist = properties.Artist()?.to_string();
-            let album = properties.AlbumTitle()?.to_string();
-            let key = format!("{:?}", (&title, &artist, &album));
-            let times = s.GetTimelineProperties()?;
-            let raw = Timeline::new(times.StartTime()?.Duration, times.EndTime()?.Duration, times.Position()?.Duration);
-            let (position_s, duration_s) = timeline.update(key.clone(), raw, timeline_event);
-            raw_timeline = (duration_s > 0.0).then_some(raw);
-            let snap = MediaSnapshot {
-                title,
-                artist,
-                album,
-                playback: playback(s)?,
-                position_s,
-                duration_s,
-                source_app: s.SourceAppUserModelId()?.to_string(),
-            };
-            log::debug!("SMTC snapshot: {snap:?}");
-            ui.send(SourceEvent::Media(Some(snap)));
-            if track.as_ref() != Some(&key) {
-                track = Some(key);
-                let art = match read_art(&properties) {
-                    Ok(art) => art,
-                    Err(e) => {
-                        log::warning!("SMTC album art unavailable: {e}");
-                        None
-                    }
+            let result = (|| -> Result<()> {
+                let s = &sessions.iter().find(|s| Some(s.id) == selected).unwrap().session;
+                let properties = s.TryGetMediaPropertiesAsync()?.join()?;
+                let title = properties.Title()?.to_string();
+                let artist = properties.Artist()?.to_string();
+                let album = properties.AlbumTitle()?.to_string();
+                let key = format!("{:?}", (&title, &artist, &album));
+                let times = s.GetTimelineProperties()?;
+                let raw =
+                    Timeline::new(times.StartTime()?.Duration, times.EndTime()?.Duration, times.Position()?.Duration);
+                let (position_s, duration_s) = timeline.update(key.clone(), raw, timeline_event);
+                raw_timeline = (duration_s > 0.0).then_some(raw);
+                let snap = MediaSnapshot {
+                    title,
+                    artist,
+                    album,
+                    playback: playback(s)?,
+                    position_s,
+                    duration_s,
+                    source_app: s.SourceAppUserModelId()?.to_string(),
                 };
-                if art.is_some() {
-                    log::info!("SMTC album art decoded: 140x140 PBGRA");
+                log::debug!("SMTC snapshot: {snap:?}");
+                ui.send(SourceEvent::Media(Some(snap)));
+                if track.as_ref() != Some(&key) {
+                    track = Some(key.clone());
+                    ui.send(SourceEvent::Art(None));
                 }
-                ui.send(SourceEvent::Art(art));
+                if art_retry.should_read(&key, metadata_event) {
+                    let art = match read_art(&properties) {
+                        Ok(art) => art,
+                        Err(e) => {
+                            log::warning!("SMTC album art unavailable: {e}");
+                            None
+                        }
+                    };
+                    if art.is_some() {
+                        log::info!("SMTC album art decoded: 140x140 PBGRA");
+                    }
+                    art_retry.obtained(art.is_some());
+                    ui.send(SourceEvent::Art(art));
+                }
+                Ok(())
+            })();
+            if let Err(e) = result {
+                session_error = Some(e);
+            }
+        }
+        if let Some(e) = session_error {
+            log::warning!("SMTC session {selected:?} operation failed: {e}");
+            // A broken player must not tear down other sessions or impose the
+            // manager's 5 s backoff. Only membership loss clears existing UI.
+            let live = manager.manager.GetSessions()?;
+            let mut present = false;
+            for i in 0..live.Size()? {
+                let candidate = live.GetAt(i)?;
+                present |= sessions.iter().any(|s| Some(s.id) == selected && s.session == candidate);
+            }
+            if selected.is_some() && !present {
+                ui.send(SourceEvent::Media(None));
+                ui.send(SourceEvent::Art(None));
+                // Reconcile registrations and the selection through the usual
+                // manager event path; do not loop on a still-present bad player.
+                let _ = tx.send(Wake::Refresh);
             }
         }
         wake = match rx.recv() {

@@ -2,6 +2,29 @@
 
 const TICKS_PER_SECOND: f64 = 10_000_000.0;
 
+/// A thumbnail can arrive after the text for a track. Retry on metadata events,
+/// but never turn timeline ticks into artwork downloads or decode successful art twice.
+#[derive(Default)]
+pub struct ArtRetry {
+    track: Option<String>,
+    ready: bool,
+}
+
+impl ArtRetry {
+    pub fn should_read(&mut self, track: &str, metadata_event: bool) -> bool {
+        let changed = self.track.as_deref() != Some(track);
+        if changed {
+            self.track = Some(track.to_owned());
+            self.ready = false;
+        }
+        !self.ready && (changed || metadata_event)
+    }
+
+    pub fn obtained(&mut self, success: bool) {
+        self.ready = success;
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Timeline {
     start: i64,
@@ -165,5 +188,22 @@ mod tests {
             );
         }
         assert!(!clock.is_present(now + Duration::from_secs(61)));
+    }
+
+    #[test]
+    fn delayed_art_retries_only_on_metadata_until_success() {
+        let mut art = ArtRetry::default();
+        assert!(art.should_read("track", false)); // first snapshot
+        art.obtained(false); // missing thumbnail or failed decode
+        assert!(!art.should_read("track", false)); // timeline/playback wake
+        assert!(art.should_read("track", true)); // delayed metadata
+        art.obtained(false);
+        assert!(art.should_read("track", true)); // still retry after error
+        art.obtained(true);
+        assert!(!art.should_read("track", true));
+        assert!(!art.should_read("track", false));
+        assert!(art.should_read("next", false));
+        art.obtained(false);
+        assert!(art.should_read("next", true));
     }
 }
