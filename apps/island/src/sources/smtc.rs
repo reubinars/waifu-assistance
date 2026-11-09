@@ -5,7 +5,7 @@ use super::{ArtImage, MediaCommand, MediaSource, SourceEvent, UiSender};
 use crate::log;
 use island_core::color::dominant_color;
 use island_core::media::{MediaSnapshot, Playback};
-use island_core::smtc::{ArtFingerprint, ArtRetry, SessionSelection, Timeline, TrackTimeline};
+use island_core::smtc::{ArtFingerprint, ArtRetry, SessionSelection, Timeline, TrackTimeline, is_null_result};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -225,7 +225,7 @@ fn run_manager(ui: &UiSender, tx: &Sender<Wake>, rx: &Receiver<Wake>, next_id: &
                 // A null current session is normal when there is no player.
                 let current = match manager.manager.GetCurrentSession() {
                     Ok(session) => Some(session),
-                    Err(e) if e.code() == windows::Win32::Foundation::E_POINTER => None,
+                    Err(e) if is_null_result(e.code().0) => None,
                     Err(e) => return Err(e),
                 };
                 let current_id = sessions.iter().find(|s| Some(&s.session) == current.as_ref()).map(|s| s.id);
@@ -374,8 +374,8 @@ fn run_manager(ui: &UiSender, tx: &Sender<Wake>, rx: &Receiver<Wake>, next_id: &
 fn read_art(properties: &Properties) -> Result<Option<ArtImage>> {
     let thumbnail = match properties.Thumbnail() {
         Ok(thumbnail) => thumbnail,
-        // WinRT projects a null thumbnail as E_POINTER (normal for live streams).
-        Err(e) if e.code() == windows::Win32::Foundation::E_POINTER => return Ok(None),
+        // a null thumbnail is normal for live streams
+        Err(e) if is_null_result(e.code().0) => return Ok(None),
         Err(e) => return Err(e),
     };
     let stream = thumbnail.OpenReadAsync()?.join()?;
