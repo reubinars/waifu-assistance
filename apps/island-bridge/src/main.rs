@@ -2,7 +2,8 @@
 //!
 //! herdr answers one request per connection, and a subscribed connection only streams
 //! events. So each request line gets its own short connection, and `events.subscribe`
-//! lines get one long-lived connection that each new subscribe replaces.
+//! lines get one long-lived connection that each new subscribe replaces. The old one is
+//! closed only once herdr answers on the new one, so no event falls between them.
 //!
 //! Prints `{"bridge":"connected"}` / `{"bridge":"disconnected"}` on each transition,
 //! retries with backoff (1 s doubling to 10 s) and exits when stdin closes.
@@ -21,6 +22,8 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 enum Msg {
     Line(String),
     Eof,
+    /// The subscription connection with this generation sent its first line.
+    SubscriptionStarted(u64),
     /// The subscription connection with this generation ended.
     SubscriptionClosed(u64),
     /// A request could not reach herdr.
@@ -94,9 +97,14 @@ fn open_subscription(path: &Path, line: &str, generation: u64, tx: Sender<Msg>) 
     send_line(&mut stream, line).ok()?;
     let reader = stream.try_clone().ok()?;
     std::thread::spawn(move || {
+        let mut started = false;
         for line in BufReader::new(reader).lines() {
             let Ok(line) = line else { break };
             emit(&line);
+            if !started {
+                started = true;
+                let _ = tx.send(Msg::SubscriptionStarted(generation));
+            }
         }
         let _ = tx.send(Msg::SubscriptionClosed(generation));
     });
@@ -117,8 +125,10 @@ impl Status {
 /// Serves lines while herdr is reachable; returns when it stops being reachable.
 fn serve(path: &Path, rx: &Receiver<Msg>, tx: &Sender<Msg>, generation: &mut u64) {
     let mut subscription: Option<UnixStream> = None;
-    let close = |s: Option<UnixStream>| {
-        if let Some(s) = s {
+    // Replaced subscriptions, kept streaming until the current one has started.
+    let mut retiring: Vec<UnixStream> = Vec::new();
+    let close_all = |current: &mut Option<UnixStream>, retiring: &mut Vec<UnixStream>| {
+        for s in current.take().into_iter().chain(retiring.drain(..)) {
             let _ = s.shutdown(Shutdown::Both);
         }
     };
@@ -127,21 +137,27 @@ fn serve(path: &Path, rx: &Receiver<Msg>, tx: &Sender<Msg>, generation: &mut u64
             Ok(Msg::Line(line)) if is_subscribe(&line) => {
                 *generation += 1;
                 match open_subscription(path, &line, *generation, tx.clone()) {
-                    Some(new) => close(subscription.replace(new)),
+                    Some(new) => retiring.extend(subscription.replace(new)),
                     None => {
-                        close(subscription.take());
+                        close_all(&mut subscription, &mut retiring);
                         return;
                     }
                 }
             }
             Ok(Msg::Line(line)) => spawn_request(path.to_path_buf(), line, tx.clone()),
+            Ok(Msg::SubscriptionStarted(g)) if g == *generation => {
+                for s in retiring.drain(..) {
+                    let _ = s.shutdown(Shutdown::Both);
+                }
+            }
+            Ok(Msg::SubscriptionStarted(_)) => {}
             Ok(Msg::SubscriptionClosed(g)) if g == *generation && subscription.is_some() => {
-                close(subscription.take());
+                close_all(&mut subscription, &mut retiring);
                 return;
             }
             Ok(Msg::SubscriptionClosed(_)) => {}
             Ok(Msg::Unreachable) => {
-                close(subscription.take());
+                close_all(&mut subscription, &mut retiring);
                 *generation += 1; // its reader's close notice is now stale
                 return;
             }

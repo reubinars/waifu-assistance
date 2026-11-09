@@ -184,6 +184,10 @@ fn new_subscription_replaces_old() {
     b.send(SUB2);
     let mut new = herdr.next();
     assert_eq!(new.line, SUB2);
+    // the old one keeps streaming until herdr has started the new one, so no event is lost
+    assert!(!old.closed_within(1), "old subscription closed before the new one started");
+    new.reply(r#"{"id":"island:3","result":{"type":"subscription_started"}}"#);
+    assert_eq!(b.next(2), r#"{"id":"island:3","result":{"type":"subscription_started"}}"#);
     assert!(old.closed_within(2), "old subscription not closed");
     new.reply(r#"{"event":"x"}"#);
     assert_eq!(b.next(2), r#"{"event":"x"}"#);
