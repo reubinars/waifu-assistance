@@ -21,4 +21,6 @@ pub struct Rect {
 }
 
 pub mod anim;
+pub mod agents;
 pub mod herdr;
+pub mod session;
