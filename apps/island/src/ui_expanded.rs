@@ -194,7 +194,7 @@ fn draw_rows(p: &mut Painter, ox: f32, oy: f32, k: f32, s: &Scene) -> Result<()>
         let line = |x: f32, w: f32| Rect { x, y: r.y, w: w.max(0.0), h: r.h };
 
         let time_x = r.x + r.w - RIGHT - TIME_W;
-        let time = p.layout_styled(&row.since, line(time_x, TIME_W), 10.0, 500, Align::Right, true, 0.0)?;
+        let time = p.layout_tabular(&row.since, line(time_x, TIME_W), 10.0, 500, Align::Right)?;
         p.draw_layout(&time, time_x, r.y, TEXT_TERTIARY.fade(k));
 
         let name_x = r.x + NAME_X;
@@ -244,7 +244,7 @@ fn draw_media(p: &mut Painter, ox: f32, oy: f32, k: f32, s: &Scene) -> Result<()
         return draw_buttons(p, ox, oy, 0.35 * k, false, s);
     };
     let title = off(layout::TITLE, ox, oy);
-    let l = p.layout_styled(&m.title, title, 14.0, 600, Align::Left, false, -0.02)?;
+    let l = p.layout_tracked(&m.title, title, 14.0, 600, Align::Left, -0.02)?;
     p.draw_layout(&l, title.x, title.y, TEXT_PRIMARY.fade(k));
     p.text(&m.artist, off(layout::ARTIST, ox, oy), 12.0, 400, TEXT_SECONDARY.fade(k), Align::Left)?;
 
@@ -266,9 +266,9 @@ fn draw_media(p: &mut Painter, ox: f32, oy: f32, k: f32, s: &Scene) -> Result<()
         p.fill(&thumb, Color::white(k));
 
         let times = off(layout::TIMES, ox, oy);
-        let a = p.layout_styled(&m.position, times, 10.0, 500, Align::Left, true, 0.0)?;
+        let a = p.layout_tabular(&m.position, times, 10.0, 500, Align::Left)?;
         p.draw_layout(&a, times.x, times.y, TEXT_SECONDARY.fade(k));
-        let b = p.layout_styled(&m.duration, times, 10.0, 500, Align::Right, true, 0.0)?;
+        let b = p.layout_tabular(&m.duration, times, 10.0, 500, Align::Right)?;
         p.draw_layout(&b, times.x, times.y, TEXT_SECONDARY.fade(k));
     }
     draw_buttons(p, ox, oy, k, m.playing, s)
