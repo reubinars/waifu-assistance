@@ -56,8 +56,17 @@ impl MediaClock {
             (_, Some(t)) if same => Some(t),
             _ => Some(now),
         };
+        // SMTC re-sends an unchanged timeline on unrelated events; the position it carries
+        // is as old as the last real timeline update, so keep that update's time.
+        let stale = same
+            && self
+                .snap
+                .as_ref()
+                .is_some_and(|old| old.playback == snap.playback && old.position_s == snap.position_s);
         self.snap = Some(snap);
-        self.updated_at = Some(now);
+        if !stale || self.updated_at.is_none() {
+            self.updated_at = Some(now);
+        }
     }
 
     pub fn snapshot(&self) -> Option<&MediaSnapshot> {
@@ -177,6 +186,18 @@ mod tests {
         c.position(t0 + ms(1000));
         c.update(Some(snap(20.0, 200.0, Playing)), t0 + ms(1000));
         assert!((c.position(t0 + ms(1000)) - 20.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn stale_reread_does_not_rewind() {
+        // SMTC re-sends the same timeline (e.g. on a metadata or playback-info event)
+        // without a fresh position: the estimate must keep running, not jump back.
+        let t0 = Instant::now();
+        let mut c = MediaClock::default();
+        c.update(Some(snap(0.0, 200.0, Playing)), t0);
+        assert!((c.position(t0 + Duration::from_secs(29)) - 29.0).abs() < 0.01);
+        c.update(Some(snap(0.0, 200.0, Playing)), t0 + Duration::from_secs(30));
+        assert!((c.position(t0 + Duration::from_secs(30)) - 30.0).abs() < 0.01);
     }
 
     #[test]
