@@ -17,6 +17,9 @@ pub struct Config {
     /// Optional executable filename; takes precedence over the window class.
     #[serde(default)]
     pub terminal_process: String,
+    /// Run (a URI or a program) when a jump finds no terminal window; "" = do nothing.
+    #[serde(default)]
+    pub terminal_launch: String,
 }
 
 impl Default for Config {
@@ -28,6 +31,7 @@ impl Default for Config {
             bridge_path: "$HOME/.local/bin/island-bridge".into(),
             terminal_window_class: "CASCADIA_HOSTING_WINDOW_CLASS".into(),
             terminal_process: String::new(),
+            terminal_launch: String::new(),
         }
     }
 }
@@ -74,6 +78,14 @@ mod tests {
         assert_eq!(old.terminal_process, "");
         let warp = Config::parse("terminal_process = \"WaRp.ExE\"").unwrap();
         assert_eq!(warp.terminal_process, "WaRp.ExE");
+        assert_eq!(Config::parse(&warp.to_toml()).unwrap(), warp);
+    }
+
+    #[test]
+    fn terminal_launch_is_optional_and_roundtrips() {
+        assert_eq!(Config::default().terminal_launch, "");
+        let warp = Config::parse("terminal_launch = \"warp://tab_config/herdr\"").unwrap();
+        assert_eq!(warp.terminal_launch, "warp://tab_config/herdr");
         assert_eq!(Config::parse(&warp.to_toml()).unwrap(), warp);
     }
 }

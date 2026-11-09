@@ -4,6 +4,7 @@ use crate::animator::Face;
 use crate::draw::{Align, Color, Painter, TEXT_PRIMARY, TEXT_SECONDARY};
 use island_core::Rect;
 use island_core::anim::{BLOCKED_PULSE_PERIOD, SOUND_BAR_BASE, pulse, sound_bar_scale};
+use island_core::view::centred_status;
 use windows::Win32::Graphics::Direct2D::ID2D1Bitmap1;
 use windows::core::Result;
 
@@ -82,30 +83,46 @@ pub fn draw(p: &mut Painter, face: &Face, r: Rect, k: f32, s: &Scene) -> Result<
             }
         }
         Face::Working { count } => {
-            spinner(p, r.x + PAD + SPINNER_D / 2.0, cy, s.t, k);
-            label(p, &format!("{count} working"), r, PAD + SPINNER_D + GAP, k)?;
+            status(p, &format!("{count} working"), r, SPINNER_D, k, |p, x| {
+                spinner(p, x + SPINNER_D / 2.0, cy, s.t, k);
+                Ok(())
+            })?;
         }
         Face::Done { label: text } => {
-            let (dx, d) = (r.x + PAD + 3.0, 6.0);
-            let dot = p.shape(Rect { x: dx - 3.0, y: cy - 3.0, w: d, h: d }, [3.0; 4])?;
-            p.shadow(&dot, 0.0, 0.0, 6.0, DONE.fade(k))?;
-            p.fill(&dot, DONE.fade(k));
-            label(p, text, r, PAD + d + GAP, k)?;
+            status(p, text, r, 6.0, k, |p, x| {
+                let dot = p.shape(Rect { x, y: cy - 3.0, w: 6.0, h: 6.0 }, [3.0; 4])?;
+                p.shadow(&dot, 0.0, 0.0, 6.0, DONE.fade(k))?;
+                p.fill(&dot, DONE.fade(k));
+                Ok(())
+            })?;
         }
         Face::Blocked { label: text } => {
             let (o, scale) = pulse(s.t, BLOCKED_PULSE_PERIOD);
-            p.circle(r.x + PAD + 3.0, cy, 6.0 * scale, BLOCKED.fade(o * k));
-            label(p, text, r, PAD + 6.0 + GAP, k)?;
+            status(p, text, r, 6.0, k, |p, x| {
+                p.circle(x + 3.0, cy, 6.0 * scale, BLOCKED.fade(o * k));
+                Ok(())
+            })?;
         }
         Face::Expanded(_) => {}
     }
     Ok(())
 }
 
-/// 11/600 primary text from `inset` to the right padding.
-fn label(p: &mut Painter, text: &str, r: Rect, inset: f32, k: f32) -> Result<()> {
-    let tr = Rect { x: r.x + inset, y: r.y, w: (r.w - inset - PAD).max(0.0), h: r.h };
-    p.text(text, tr, 11.0, 600, TEXT_PRIMARY.fade(k), Align::Left)
+/// An icon `icon_w` wide and an 11/600 label, centred together in `r`; `icon` draws the icon from its left x.
+fn status(
+    p: &mut Painter,
+    text: &str,
+    r: Rect,
+    icon_w: f32,
+    k: f32,
+    icon: impl FnOnce(&mut Painter, f32) -> Result<()>,
+) -> Result<()> {
+    let room = (r.w - 2.0 * PAD - icon_w - GAP).max(0.0);
+    let l = p.layout(text, Rect { x: 0.0, y: 0.0, w: room, h: r.h }, 11.0, 600, Align::Left)?;
+    let (icon_x, label_x, _) = centred_status(r, PAD, icon_w, GAP, Painter::width(&l));
+    icon(p, icon_x)?;
+    p.draw_layout(&l, label_x, r.y, TEXT_PRIMARY.fade(k));
+    Ok(())
 }
 
 /// iOS-style activity indicator: 8 spokes, the brightest one stepping round every tick.

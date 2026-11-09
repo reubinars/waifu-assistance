@@ -17,6 +17,7 @@ use std::sync::{
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 use windows::Win32::Foundation::{CloseHandle, HANDLE, HWND, LPARAM, WAIT_OBJECT_0};
+use windows::Win32::System::Com::{COINIT_APARTMENTTHREADED, COINIT_DISABLE_OLE1DDE, CoInitializeEx};
 use windows::Win32::System::JobObjects::{
     AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
     JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JobObjectExtendedLimitInformation, SetInformationJobObject,
@@ -26,11 +27,12 @@ use windows::Win32::System::Threading::{
     INFINITE, OpenProcess, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION, QueryFullProcessImageNameW,
     WaitForSingleObject,
 };
+use windows::Win32::UI::Shell::ShellExecuteW;
 use windows::Win32::UI::WindowsAndMessaging::{
     EnumWindows, GetClassNameW, GetWindowTextLengthW, GetWindowThreadProcessId, IsIconic, IsWindowVisible, SW_RESTORE,
-    SetForegroundWindow, ShowWindowAsync,
+    SW_SHOWNORMAL, SetForegroundWindow, ShowWindowAsync,
 };
-use windows::core::{BOOL, PCWSTR, PWSTR};
+use windows::core::{BOOL, PCWSTR, PWSTR, w};
 
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 const WSL_CHECK: Duration = Duration::from_secs(15);
@@ -136,8 +138,30 @@ impl AgentSource for HerdrSource {
         } else {
             let target = if search.process.is_empty() { &self.config.terminal_window_class } else { &search.process };
             log::info!("terminal window not found ({target})");
+            if !self.config.terminal_launch.is_empty() {
+                launch_terminal(self.config.terminal_launch.clone());
+            }
         }
     }
+}
+
+/// Opens `target` (a URI or a program) the way the Run dialog would. Off the UI thread: the shell wants
+/// an STA and may take a moment. herdr already holds the pane focus, so the new client opens on it.
+fn launch_terminal(target: String) {
+    thread::spawn(move || {
+        let file: Vec<u16> = target.encode_utf16().chain([0]).collect();
+        let r = unsafe {
+            let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
+            ShellExecuteW(None, w!("open"), PCWSTR(file.as_ptr()), PCWSTR::null(), PCWSTR::null(), SW_SHOWNORMAL)
+        };
+        // above 32 is success
+        let code = r.0 as isize;
+        if code > 32 {
+            log::info!("terminal launched: {target}");
+        } else {
+            log::warning!("terminal launch failed ({code}): {target}");
+        }
+    });
 }
 
 impl Drop for HerdrSource {
