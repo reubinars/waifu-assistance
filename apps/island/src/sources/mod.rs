@@ -1,6 +1,7 @@
 //! Background sources (media, agents) and how they reach the UI thread.
 
 pub mod demo;
+pub mod smtc;
 
 use island_core::herdr::Incoming;
 use island_core::media::MediaSnapshot;

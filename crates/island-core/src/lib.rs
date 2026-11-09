@@ -28,4 +28,5 @@ pub mod herdr;
 pub mod media;
 pub mod platform;
 pub mod session;
+pub mod smtc;
 pub mod view;
