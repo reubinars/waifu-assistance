@@ -90,6 +90,8 @@ fn v2(x: f32, y: f32) -> Vector2 {
 }
 
 const IDENTITY: Matrix3x2 = Matrix3x2 { M11: 1.0, M12: 0.0, M21: 0.0, M22: 1.0, M31: 0.0, M32: 0.0 };
+/// The whole of a text layout.
+const ALL_TEXT: DWRITE_TEXT_RANGE = DWRITE_TEXT_RANGE { startPosition: 0, length: u32::MAX };
 
 /// The first installed of Inter, Segoe UI Variable Text, Segoe UI.
 fn pick_family(dwrite: &IDWriteFactory) -> HSTRING {
@@ -381,18 +383,17 @@ impl Painter {
         }
     }
 
-    /// `layout` with tabular figures and/or letter spacing (em).
-    pub fn layout_styled(&mut self, s: &str, r: Rect, size: f32, weight: u16, align: Align, tabular: bool, tracking: f32) -> Result<IDWriteTextLayout> {
+    /// `layout` with tabular figures.
+    pub fn layout_tabular(&mut self, s: &str, r: Rect, size: f32, weight: u16, align: Align) -> Result<IDWriteTextLayout> {
         let l = self.layout(s, r, size, weight, align)?;
-        let all = DWRITE_TEXT_RANGE { startPosition: 0, length: u32::MAX };
-        unsafe {
-            if tabular {
-                l.SetTypography(&self.tabular, all)?;
-            }
-            if tracking != 0.0 {
-                l.cast::<IDWriteTextLayout1>()?.SetCharacterSpacing(0.0, tracking * size, 0.0, all)?;
-            }
-        }
+        unsafe { l.SetTypography(&self.tabular, ALL_TEXT)? };
+        Ok(l)
+    }
+
+    /// `layout` with letter spacing (em).
+    pub fn layout_tracked(&mut self, s: &str, r: Rect, size: f32, weight: u16, align: Align, tracking: f32) -> Result<IDWriteTextLayout> {
+        let l = self.layout(s, r, size, weight, align)?;
+        unsafe { l.cast::<IDWriteTextLayout1>()?.SetCharacterSpacing(0.0, tracking * size, 0.0, ALL_TEXT)? };
         Ok(l)
     }
 

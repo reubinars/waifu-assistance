@@ -2,6 +2,12 @@
 
 const TICKS_PER_SECOND: f64 = 10_000_000.0;
 
+/// Whether a failed WinRT call only means "no object": `GetCurrentSession` with no player. windows-rs
+/// reports a null result as an empty error (HRESULT 0); older releases used `E_POINTER`.
+pub fn is_null_result(hresult: i32) -> bool {
+    hresult == 0 || hresult == 0x8000_4003_u32 as i32
+}
+
 /// A thumbnail can arrive after the text for a track. Retry on metadata events,
 /// including replacement of a previously decoded placeholder. Timeline wakes do not read art.
 #[derive(Default)]
@@ -133,6 +139,14 @@ mod tests {
     use super::*;
     use crate::media::{MediaClock, MediaSnapshot, Playback};
     use std::time::{Duration, Instant};
+
+    #[test]
+    fn a_null_winrt_result_is_not_a_failure() {
+        assert!(is_null_result(0));
+        assert!(is_null_result(0x8000_4003_u32 as i32)); // E_POINTER
+        assert!(!is_null_result(0x8007_0057_u32 as i32)); // E_INVALIDARG
+        assert!(!is_null_result(0x8001_0108_u32 as i32)); // RPC_E_DISCONNECTED: the manager is gone
+    }
 
     #[test]
     fn timeline_is_relative_to_start_and_clamped() {

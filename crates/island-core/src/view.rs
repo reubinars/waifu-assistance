@@ -64,6 +64,25 @@ pub fn choose_collapsed(agents: &AgentTable, media_present: bool) -> Collapsed {
     }
 }
 
+/// How much of the island is on screen.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Shown {
+    Hidden,
+    /// Over a fullscreen window: the collapsed blocked pill, which doesn't expand.
+    CollapsedOnly,
+    All,
+}
+
+/// §7: hidden from the tray, or over a fullscreen window unless an agent is blocked.
+pub fn shown(user_hidden: bool, fullscreen: bool, c: &Collapsed) -> Shown {
+    match (user_hidden, fullscreen, c) {
+        (true, _, _) => Shown::Hidden,
+        (false, false, _) => Shown::All,
+        (false, true, Collapsed::Blocked { .. }) => Shown::CollapsedOnly,
+        (false, true, _) => Shown::Hidden,
+    }
+}
+
 pub fn collapsed_size(c: &Collapsed) -> Size {
     let w = match c {
         Collapsed::Idle => 40.0,
@@ -149,6 +168,12 @@ pub fn jump_target(agents: &AgentTable) -> Option<String> {
         .first(AgentStatus::Blocked)
         .or_else(|| agents.first(AgentStatus::Done))
         .map(|a| a.info.pane_id.clone())
+}
+
+/// A click on the blocked pill over fullscreen can't expand, so with several agents needing
+/// attention it jumps to the longest-blocked one.
+pub fn fullscreen_jump_target(agents: &AgentTable) -> Option<String> {
+    jump_target(agents).or_else(|| agents.first(AgentStatus::Blocked).map(|a| a.info.pane_id.clone()))
 }
 
 /// Time in state for an agent row: `12s`, `4m`, `1h` (whole units, rounded down).
@@ -398,5 +423,34 @@ mod tests {
         assert_eq!(jump_target(&t), None);
         t.remove("w1:p2");
         assert_eq!(jump_target(&t), Some("w1:p3".to_string()));
+    }
+
+    #[test]
+    fn over_fullscreen_a_click_jumps_to_the_oldest_blocked_agent() {
+        let t0 = Instant::now();
+        let mut t = AgentTable::default();
+        t.upsert(test_info("w1:p1", Done), t0);
+        t.upsert(test_info("w1:p2", Blocked), t0 + Duration::from_secs(1));
+        t.upsert(test_info("w1:p3", Blocked), t0 + Duration::from_secs(2));
+        assert_eq!(jump_target(&t), None);
+        assert_eq!(fullscreen_jump_target(&t), Some("w1:p2".to_string()));
+        t.remove("w1:p2");
+        t.remove("w1:p3");
+        assert_eq!(fullscreen_jump_target(&t), Some("w1:p1".to_string()));
+    }
+
+    #[test]
+    fn fullscreen_shows_only_the_blocked_pill() {
+        let blocked = Collapsed::Blocked { label: "a needs you".into(), pane_id: "w1:p1".into() };
+        let done = Collapsed::Done { label: "a done".into(), pane_id: "w1:p1".into() };
+        assert_eq!(shown(false, false, &Collapsed::Idle), Shown::All);
+        assert_eq!(shown(false, false, &blocked), Shown::All);
+        assert_eq!(shown(false, true, &blocked), Shown::CollapsedOnly);
+        for c in [Collapsed::Idle, Collapsed::Media, Collapsed::Working { count: 2 }, done] {
+            assert_eq!(shown(false, true, &c), Shown::Hidden, "{c:?}");
+        }
+        // hidden from the tray stays hidden, even for a blocked agent
+        assert_eq!(shown(true, false, &blocked), Shown::Hidden);
+        assert_eq!(shown(true, true, &blocked), Shown::Hidden);
     }
 }

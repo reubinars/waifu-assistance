@@ -7,11 +7,17 @@ mod app;
 #[cfg(windows)]
 mod draw;
 #[cfg(windows)]
+mod fullscreen;
+#[cfg(windows)]
 mod gfx;
 #[cfg(windows)]
 mod log;
 #[cfg(windows)]
 mod sources;
+#[cfg(windows)]
+mod startup;
+#[cfg(windows)]
+mod tray;
 #[cfg(windows)]
 mod ui_collapsed;
 #[cfg(windows)]
@@ -83,8 +89,12 @@ fn run() -> windows::core::Result<()> {
     log::init(&dir, debug);
     log::info!("island {} starting (demo: {demo})", env!("CARGO_PKG_VERSION"));
     let config = load_config(&dir);
+    if !demo {
+        startup::sync(config.start_with_windows);
+    }
 
     let win = window::create(config.display_mode)?;
+    let visual = win.visual;
     let (tx, rx) = mpsc::channel();
     let ui = UiSender::new(tx, win.visual);
     let (clock, media, agents): (MediaClock, Box<dyn MediaSource>, Box<dyn AgentSource>) = if demo {
@@ -92,8 +102,11 @@ fn run() -> windows::core::Result<()> {
     } else {
         (MediaClock::default(), Box::new(SmtcSource::new()), Box::new(HerdrSource::new(&config)))
     };
-    let mut app = app::App::new(config, win, clock, media, agents);
+    let config_path = (!demo).then(|| dir.join("config.toml"));
+    let mut app = app::App::new(config, config_path, win, clock, media, agents);
     app.start_sources(ui);
+    // keeps the hooks alive for the life of the loop
+    let _fullscreen = fullscreen::install(visual);
 
     let mut msg = MSG::default();
     loop {

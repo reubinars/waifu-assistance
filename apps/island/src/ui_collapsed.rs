@@ -60,8 +60,8 @@ pub fn draw(p: &mut Painter, face: &Face, r: Rect, k: f32, s: &Scene) -> Result<
             if kw > 0.001 {
                 let restore = p.translate(-SLIDE * h, 0.0);
                 if s.playing {
-                    for i in 0..5 {
-                        let bh = BAR_H * SOUND_BAR_BASE[i] * sound_bar_scale(i, s.t);
+                    for (i, base) in SOUND_BAR_BASE.iter().enumerate() {
+                        let bh = BAR_H * base * sound_bar_scale(i, s.t);
                         let x = wx + i as f32 * (BAR_W + BAR_GAP);
                         let bar = Rect { x, y: cy + BAR_H / 2.0 - bh, w: BAR_W, h: bh };
                         p.round_rect(bar, 1.5, s.wave.fade(kw));
