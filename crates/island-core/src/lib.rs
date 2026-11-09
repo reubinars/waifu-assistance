@@ -21,3 +21,4 @@ pub struct Rect {
 }
 
 pub mod anim;
+pub mod herdr;
