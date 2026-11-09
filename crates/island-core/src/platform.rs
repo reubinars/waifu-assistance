@@ -93,6 +93,13 @@ pub fn run_value(exe: &str) -> String {
     format!("\"{exe}\"")
 }
 
+/// Whether this exe may own the Run value. A UNC path (a dev build under `\\wsl.localhost\…`)
+/// would make every logon start WSL, so such a copy leaves the Run value alone.
+pub fn manages_startup(exe: &str) -> bool {
+    let path = exe.strip_prefix(r"\\?\").unwrap_or(exe);
+    !path.is_empty() && !path.starts_with(r"\\") && !path.starts_with(r"UNC\")
+}
+
 /// What startup sync must do to the Run value: `Some(true)` write ours, `Some(false)` delete it,
 /// `None` leave it.
 pub fn startup_change(want: bool, current: Option<&str>, exe: &str) -> Option<bool> {
@@ -203,6 +210,15 @@ mod tests {
     #[test]
     fn run_value_quotes_the_exe_path() {
         assert_eq!(run_value(r"C:\Users\A B\AppData\Local\island\island.exe"), r#""C:\Users\A B\AppData\Local\island\island.exe""#);
+    }
+
+    #[test]
+    fn only_an_exe_on_a_windows_drive_owns_start_with_windows() {
+        assert!(manages_startup(r"C:\Users\A\AppData\Local\island\island.exe"));
+        assert!(!manages_startup(r"\\wsl.localhost\Ubuntu\home\a\island\target\debug\island.exe"));
+        assert!(!manages_startup(r"\\wsl$\Ubuntu\home\a\island.exe"));
+        assert!(!manages_startup(r"\\?\UNC\wsl.localhost\Ubuntu\island.exe"));
+        assert!(!manages_startup(""));
     }
 
     #[test]

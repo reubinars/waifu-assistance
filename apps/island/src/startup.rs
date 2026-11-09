@@ -1,12 +1,12 @@
 //! Start with Windows: the `Island` value under HKCU `Software\Microsoft\Windows\CurrentVersion\Run`.
 
 use crate::log;
-use island_core::platform::{run_value, startup_change};
-use windows::Win32::Foundation::{ERROR_FILE_NOT_FOUND, ERROR_SUCCESS, WIN32_ERROR};
+use island_core::platform::{manages_startup, run_value, startup_change};
+use windows::Win32::Foundation::{E_ACCESSDENIED, ERROR_FILE_NOT_FOUND, ERROR_SUCCESS, WIN32_ERROR};
 use windows::Win32::System::Registry::{
     HKEY_CURRENT_USER, REG_SZ, RRF_RT_REG_SZ, RegDeleteKeyValueW, RegGetValueW, RegSetKeyValueW,
 };
-use windows::core::{HSTRING, PCWSTR, Result, w};
+use windows::core::{Error, HSTRING, PCWSTR, Result, w};
 
 const RUN: PCWSTR = w!("Software\\Microsoft\\Windows\\CurrentVersion\\Run");
 const NAME: PCWSTR = w!("Island");
@@ -19,8 +19,12 @@ fn check(e: WIN32_ERROR) -> Result<()> {
     if e == ERROR_SUCCESS { Ok(()) } else { Err(e.into()) }
 }
 
-/// Writes (`true`) or deletes (`false`) the Run value for the current exe.
+/// Writes (`true`) or deletes (`false`) the Run value for the current exe. Refused for a copy run
+/// from a WSL path: logon would boot WSL, and the installed copy owns the value.
 pub fn set(enabled: bool) -> Result<()> {
+    if !manages_startup(&exe()) {
+        return Err(Error::new(E_ACCESSDENIED, "not changed from a copy outside a Windows drive"));
+    }
     unsafe {
         if enabled {
             let data: Vec<u16> = run_value(&exe()).encode_utf16().chain([0]).collect();
@@ -62,6 +66,10 @@ fn current() -> Option<String> {
 /// Makes the Run value match `want` (and point at this exe).
 pub fn sync(want: bool) {
     let exe = exe();
+    if !manages_startup(&exe) {
+        log::info!("start with Windows left alone: {exe} is not on a Windows drive");
+        return;
+    }
     if let Some(write) = startup_change(want, current().as_deref(), &exe) {
         match set(write) {
             Ok(()) => log::info!("start with Windows {}", if write { "set" } else { "removed" }),

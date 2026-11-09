@@ -170,6 +170,12 @@ pub fn jump_target(agents: &AgentTable) -> Option<String> {
         .map(|a| a.info.pane_id.clone())
 }
 
+/// A click on the blocked pill over fullscreen can't expand, so with several agents needing
+/// attention it jumps to the longest-blocked one.
+pub fn fullscreen_jump_target(agents: &AgentTable) -> Option<String> {
+    jump_target(agents).or_else(|| agents.first(AgentStatus::Blocked).map(|a| a.info.pane_id.clone()))
+}
+
 /// Time in state for an agent row: `12s`, `4m`, `1h` (whole units, rounded down).
 pub fn time_in_state(d: std::time::Duration) -> String {
     let s = d.as_secs();
@@ -417,6 +423,20 @@ mod tests {
         assert_eq!(jump_target(&t), None);
         t.remove("w1:p2");
         assert_eq!(jump_target(&t), Some("w1:p3".to_string()));
+    }
+
+    #[test]
+    fn over_fullscreen_a_click_jumps_to_the_oldest_blocked_agent() {
+        let t0 = Instant::now();
+        let mut t = AgentTable::default();
+        t.upsert(test_info("w1:p1", Done), t0);
+        t.upsert(test_info("w1:p2", Blocked), t0 + Duration::from_secs(1));
+        t.upsert(test_info("w1:p3", Blocked), t0 + Duration::from_secs(2));
+        assert_eq!(jump_target(&t), None);
+        assert_eq!(fullscreen_jump_target(&t), Some("w1:p2".to_string()));
+        t.remove("w1:p2");
+        t.remove("w1:p3");
+        assert_eq!(fullscreen_jump_target(&t), Some("w1:p1".to_string()));
     }
 
     #[test]

@@ -17,7 +17,8 @@ use island_core::session::HerdrSession;
 use island_core::view::layout::{MAX_ROWS, SEEK};
 use island_core::view::{
     Collapsed, DisplayMode, EXPANDED, ExpandedHit, Shown, Tab, WINDOW, choose_collapsed, clock_label, collapsed_size,
-    corner_radii, default_tab, hit_expanded, hit_rounded, island_rect, jump_target, shown, tabs_visible, time_in_state,
+    corner_radii, default_tab, fullscreen_jump_target, hit_expanded, hit_rounded, island_rect, jump_target, shown,
+    tabs_visible, time_in_state,
 };
 use island_core::{Point, Rect, Size};
 use std::time::{Duration, Instant};
@@ -346,7 +347,9 @@ impl App {
         let now = Instant::now();
         if !self.expanded {
             let attention = matches!(self.collapsed, Collapsed::Blocked { .. } | Collapsed::Done { .. });
-            match jump_target(&self.session.agents).filter(|_| attention) {
+            let agents = &self.session.agents;
+            let target = if self.fullscreen { fullscreen_jump_target(agents) } else { jump_target(agents) };
+            match target.filter(|_| attention) {
                 Some(pane) => self.jump(&pane),
                 None if self.fullscreen => {}
                 None => self.expand(default_tab(&self.collapsed), true, now),
