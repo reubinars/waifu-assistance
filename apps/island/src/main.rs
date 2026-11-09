@@ -52,7 +52,9 @@ fn load_config(dir: &std::path::Path) -> island_core::config::Config {
 fn run() -> windows::core::Result<()> {
     use island_core::media::MediaClock;
     use sources::demo::{DEMO_LINGER, DemoAgents, DemoMedia};
-    use sources::{AgentSource, MediaSource, NoSource, UiSender};
+    use sources::herdr::HerdrSource;
+    use sources::smtc::SmtcSource;
+    use sources::{AgentSource, MediaSource, UiSender};
     use std::sync::mpsc;
     use std::time::Instant;
     use windows::Win32::Foundation::{ERROR_ALREADY_EXISTS, GetLastError, WAIT_OBJECT_0};
@@ -88,7 +90,7 @@ fn run() -> windows::core::Result<()> {
     let (clock, media, agents): (MediaClock, Box<dyn MediaSource>, Box<dyn AgentSource>) = if demo {
         (MediaClock::with_linger(DEMO_LINGER), Box::new(DemoMedia::default()), Box::new(DemoAgents))
     } else {
-        (MediaClock::default(), Box::new(NoSource), Box::new(NoSource))
+        (MediaClock::default(), Box::new(SmtcSource::new()), Box::new(HerdrSource::new(&config)))
     };
     let mut app = app::App::new(config, win, clock, media, agents);
     app.start_sources(ui);

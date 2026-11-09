@@ -1,6 +1,8 @@
 //! Background sources (media, agents) and how they reach the UI thread.
 
 pub mod demo;
+pub mod herdr;
+pub mod smtc;
 
 use island_core::herdr::Incoming;
 use island_core::media::MediaSnapshot;
@@ -17,7 +19,6 @@ pub enum SourceEvent {
     /// One line from the bridge, parsed.
     Herdr(Incoming),
     /// The bridge process exited or could not start.
-    #[allow(dead_code, reason = "sent by the herdr bridge source (Chunk C)")]
     BridgeDown,
     /// `--demo` only: drive the island as a user would.
     Demo(DemoAction),
@@ -79,18 +80,4 @@ pub trait AgentSource {
     fn send(&self, line: &str);
     /// Brings the terminal window forward (after `agent.focus`).
     fn raise_terminal(&self);
-}
-
-/// Used when a source isn't available.
-pub struct NoSource;
-
-impl MediaSource for NoSource {
-    fn start(&mut self, _tx: UiSender) {}
-    fn command(&self, _c: MediaCommand) {}
-}
-
-impl AgentSource for NoSource {
-    fn start(&mut self, _tx: UiSender) {}
-    fn send(&self, _line: &str) {}
-    fn raise_terminal(&self) {}
 }

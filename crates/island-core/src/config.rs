@@ -14,6 +14,9 @@ pub struct Config {
     pub bridge_path: String,
     /// Window class to bring forward after focusing an agent.
     pub terminal_window_class: String,
+    /// Optional executable filename; takes precedence over the window class.
+    #[serde(default)]
+    pub terminal_process: String,
 }
 
 impl Default for Config {
@@ -24,6 +27,7 @@ impl Default for Config {
             wsl_distro: String::new(),
             bridge_path: "$HOME/.local/bin/island-bridge".into(),
             terminal_window_class: "CASCADIA_HOSTING_WINDOW_CLASS".into(),
+            terminal_process: String::new(),
         }
     }
 }
@@ -62,5 +66,14 @@ mod tests {
     fn config_roundtrip() {
         let c = Config { wsl_distro: "Ubuntu".into(), ..Config::default() };
         assert_eq!(Config::parse(&c.to_toml()).unwrap(), c);
+    }
+
+    #[test]
+    fn terminal_process_is_optional_and_roundtrips() {
+        let old = Config::parse("terminal_window_class = \"custom\"").unwrap();
+        assert_eq!(old.terminal_process, "");
+        let warp = Config::parse("terminal_process = \"WaRp.ExE\"").unwrap();
+        assert_eq!(warp.terminal_process, "WaRp.ExE");
+        assert_eq!(Config::parse(&warp.to_toml()).unwrap(), warp);
     }
 }
