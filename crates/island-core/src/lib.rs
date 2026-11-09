@@ -19,3 +19,5 @@ pub struct Rect {
     pub w: f32,
     pub h: f32,
 }
+
+pub mod anim;
