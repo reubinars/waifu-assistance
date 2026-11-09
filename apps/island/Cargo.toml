@@ -5,4 +5,7 @@ version.workspace = true
 
 [dependencies]
 island-core.workspace = true
+
+# Windows-only so `cargo test --workspace` still builds in WSL.
+[target.'cfg(windows)'.dependencies]
 windows.workspace = true

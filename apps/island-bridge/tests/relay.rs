@@ -152,7 +152,7 @@ fn each_request_gets_its_own_connection() {
     b.send(r#"{"id":"island:9","method":"agent.get","params":{"target":"w1:p1"}}"#);
     let mut first = herdr.next();
     let mut second = herdr.next();
-    let mut got = vec![first.line.clone(), second.line.clone()];
+    let mut got = [first.line.clone(), second.line.clone()];
     got.sort();
     assert_eq!(got[0], LIST);
     assert!(got[1].contains("agent.get"));
