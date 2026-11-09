@@ -20,6 +20,8 @@ pub struct Config {
     /// Run (a URI or a program) when a jump finds no terminal window; "" = do nothing.
     #[serde(default)]
     pub terminal_launch: String,
+    /// Where the island sits along the top edge: 0 = far left, 0.5 = centre, 1 = far right.
+    pub position: f32,
 }
 
 impl Default for Config {
@@ -32,6 +34,7 @@ impl Default for Config {
             terminal_window_class: "CASCADIA_HOSTING_WINDOW_CLASS".into(),
             terminal_process: String::new(),
             terminal_launch: String::new(),
+            position: 0.5,
         }
     }
 }
@@ -87,5 +90,13 @@ mod tests {
         let warp = Config::parse("terminal_launch = \"warp://tab_config/herdr\"").unwrap();
         assert_eq!(warp.terminal_launch, "warp://tab_config/herdr");
         assert_eq!(Config::parse(&warp.to_toml()).unwrap(), warp);
+    }
+
+    #[test]
+    fn position_defaults_to_the_centre_and_roundtrips() {
+        assert_eq!(Config::default().position, 0.5);
+        let moved = Config::parse("position = 0.3").unwrap();
+        assert_eq!(moved.position, 0.3);
+        assert_eq!(Config::parse(&moved.to_toml()).unwrap(), moved);
     }
 }

@@ -122,14 +122,37 @@ pub fn corner_radii(mode: DisplayMode, radius: f32) -> [f32; 4] {
     }
 }
 
-/// The window's top-left in physical pixels: centred on the monitor, at the top of the
-/// work area (pill) or of the whole monitor (attached).
-pub fn window_origin(mode: DisplayMode, work_area: Rect, bounds: Rect, scale: f32) -> Point {
-    let area = match mode {
+/// The span the window slides along: the work area (pill) or the whole monitor (attached).
+fn top_area(mode: DisplayMode, work_area: Rect, bounds: Rect) -> Rect {
+    match mode {
         DisplayMode::Pill => work_area,
         DisplayMode::Attached => bounds,
-    };
-    Point { x: area.x + ((area.w - WINDOW.w * scale) / 2.0).round(), y: area.y }
+    }
+}
+
+/// The window's top-left in physical pixels, at the top of the work area (pill) or of the whole
+/// monitor (attached). `position` runs from 0 (left edge) through 0.5 (centred) to 1 (right edge);
+/// out of range it is clamped, and NaN, or a monitor narrower than the window, centres it.
+pub fn window_origin(mode: DisplayMode, work_area: Rect, bounds: Rect, scale: f32, position: f32) -> Point {
+    let area = top_area(mode, work_area, bounds);
+    let room = area.w - WINDOW.w * scale;
+    let p = if room > 0.0 && !position.is_nan() { position.clamp(0.0, 1.0) } else { 0.5 };
+    Point { x: area.x + (room * p).round(), y: area.y }
+}
+
+/// The `position` that puts the window's left edge at `x` (physical pixels), clamped to 0..=1.
+pub fn window_position(mode: DisplayMode, work_area: Rect, bounds: Rect, scale: f32, x: f32) -> f32 {
+    let area = top_area(mode, work_area, bounds);
+    let room = area.w - WINDOW.w * scale;
+    if room > 0.0 { ((x - area.x) / room).clamp(0.0, 1.0) } else { 0.5 }
+}
+
+/// A press on the collapsed island becomes a drag once the pointer has moved this far sideways.
+const DRAG_START: f32 = 4.0;
+
+/// Whether a sideways move of `dx` physical pixels is a drag rather than a click.
+pub fn is_drag(dx: i32, scale: f32) -> bool {
+    dx.abs() as f32 / scale > DRAG_START
 }
 
 /// Whether `p` lies inside `rect` with the given corner radii.
@@ -359,15 +382,15 @@ mod tests {
         assert_eq!(corner_radii(DisplayMode::Pill, 20.0), [20.0; 4]);
         let wa = rect(0.0, 0.0, 1920.0, 1040.0);
         let b = rect(0.0, 0.0, 1920.0, 1080.0);
-        assert_eq!(window_origin(DisplayMode::Pill, wa, b, 1.0), Point { x: 750.0, y: 0.0 });
+        assert_eq!(window_origin(DisplayMode::Pill, wa, b, 1.0, 0.5), Point { x: 750.0, y: 0.0 });
         let wa15 = rect(0.0, 0.0, 2880.0, 1680.0);
-        assert_eq!(window_origin(DisplayMode::Pill, wa15, wa15, 1.5), Point { x: 1125.0, y: 0.0 });
+        assert_eq!(window_origin(DisplayMode::Pill, wa15, wa15, 1.5, 0.5), Point { x: 1125.0, y: 0.0 });
         let top_taskbar = rect(0.0, 48.0, 1920.0, 1032.0);
-        assert_eq!(window_origin(DisplayMode::Pill, top_taskbar, b, 1.0).y, 48.0);
-        assert_eq!(window_origin(DisplayMode::Attached, top_taskbar, b, 1.0).y, 0.0);
+        assert_eq!(window_origin(DisplayMode::Pill, top_taskbar, b, 1.0, 0.5).y, 48.0);
+        assert_eq!(window_origin(DisplayMode::Attached, top_taskbar, b, 1.0, 0.5).y, 0.0);
         // second monitor to the left of the primary
         let left = rect(-1920.0, 0.0, 1920.0, 1080.0);
-        assert_eq!(window_origin(DisplayMode::Pill, left, left, 1.0).x, -1170.0);
+        assert_eq!(window_origin(DisplayMode::Pill, left, left, 1.0, 0.5).x, -1170.0);
     }
 
     #[test]
@@ -475,5 +498,44 @@ mod tests {
         let pill = rect(100.0, 0.0, 160.0, 37.0);
         // room for the label is 160 - 2 * 10 - 14 - 8 = 118; the caller trims it to that
         assert_eq!(centred_status(pill, 10.0, 14.0, 8.0, 300.0), (110.0, 132.0, 118.0));
+    }
+
+    #[test]
+    fn position_slides_the_window_along_the_top() {
+        let wa = rect(0.0, 0.0, 1920.0, 1040.0);
+        let b = rect(0.0, 0.0, 1920.0, 1080.0);
+        // the window is 420 wide, so its left edge goes from 0 to 1500
+        assert_eq!(window_origin(DisplayMode::Pill, wa, b, 1.0, 0.0), Point { x: 0.0, y: 0.0 });
+        assert_eq!(window_origin(DisplayMode::Pill, wa, b, 1.0, 1.0), Point { x: 1500.0, y: 0.0 });
+        assert_eq!(window_origin(DisplayMode::Pill, wa, b, 1.0, 0.2), Point { x: 300.0, y: 0.0 });
+        // a hand-edited config can't push it off screen
+        assert_eq!(window_origin(DisplayMode::Pill, wa, b, 1.0, 7.0).x, 1500.0);
+        assert_eq!(window_origin(DisplayMode::Pill, wa, b, 1.0, -1.0).x, 0.0);
+        assert_eq!(window_origin(DisplayMode::Pill, wa, b, 1.0, f32::NAN).x, 750.0);
+    }
+
+    #[test]
+    fn window_position_inverts_window_origin() {
+        let left = rect(-1920.0, 0.0, 1920.0, 1080.0);
+        assert_eq!(window_position(DisplayMode::Pill, left, left, 1.0, -1620.0), 0.2);
+        // dragged past an edge
+        assert_eq!(window_position(DisplayMode::Pill, left, left, 1.0, 50.0), 1.0);
+        assert_eq!(window_position(DisplayMode::Pill, left, left, 1.0, -5000.0), 0.0);
+        // attached measures against the whole monitor, like window_origin
+        let wa = rect(100.0, 0.0, 1820.0, 1080.0);
+        let b = rect(0.0, 0.0, 1920.0, 1080.0);
+        assert_eq!(window_position(DisplayMode::Attached, wa, b, 1.0, 750.0), 0.5);
+        // a monitor narrower than the window: the window stays centred
+        let tiny = rect(0.0, 0.0, 300.0, 600.0);
+        assert_eq!(window_position(DisplayMode::Pill, tiny, tiny, 1.0, 0.0), 0.5);
+    }
+
+    #[test]
+    fn a_drag_starts_past_four_dips() {
+        assert!(!is_drag(4, 1.0));
+        assert!(is_drag(5, 1.0));
+        assert!(is_drag(-5, 1.0));
+        assert!(!is_drag(6, 1.5));
+        assert!(is_drag(7, 1.5));
     }
 }

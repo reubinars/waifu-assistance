@@ -10,7 +10,7 @@ From WSL, with Rust and [`cargo-xwin`](https://github.com/rust-cross/cargo-xwin)
 scripts/install.sh
 ```
 
-This builds both programs, installs the bridge to `~/.local/bin/island-bridge` and `island.exe` to `%LOCALAPPDATA%\island\`, then starts the island (stopping any copy already running). Run it again to update. The tray icon (a white dot) has Hide/Show, Pill/Attached, Start with Windows and Quit.
+This builds both programs, installs the bridge to `~/.local/bin/island-bridge` and `island.exe` to `%LOCALAPPDATA%\island\`, then starts the island (stopping any copy already running). Run it again to update. Drag the pill left or right to move it along the top edge; the spot is saved. The tray icon (a white dot) has Hide/Show, Pill/Attached, Reset position, Start with Windows and Quit.
 
 ## Config
 
@@ -19,6 +19,7 @@ This builds both programs, installs the bridge to `~/.local/bin/island-bridge` a
 | Key | Default | |
 |---|---|---|
 | `display_mode` | `"pill"` | `"pill"` floats below the top edge; `"attached"` hangs from it |
+| `position` | `0.5` | where the island sits along the top edge: `0` far left, `0.5` centre, `1` far right; set by dragging it |
 | `start_with_windows` | `true` | kept in sync with `HKCU\…\Run\Island` at every start |
 | `wsl_distro` | `""` | distro running herdr; `""` = the default distro |
 | `bridge_path` | `"$HOME/.local/bin/island-bridge"` | bridge path inside WSL |

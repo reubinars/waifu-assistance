@@ -93,7 +93,7 @@ fn run() -> windows::core::Result<()> {
         startup::sync(config.start_with_windows);
     }
 
-    let win = window::create(config.display_mode)?;
+    let win = window::create(config.display_mode, config.position)?;
     let visual = win.visual;
     let (tx, rx) = mpsc::channel();
     let ui = UiSender::new(tx, win.visual);

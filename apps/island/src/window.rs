@@ -214,7 +214,7 @@ pub struct Windows {
     prev_foreground: Option<HWND>,
 }
 
-pub fn create(mode: DisplayMode) -> Result<Windows> {
+pub fn create(mode: DisplayMode, position: f32) -> Result<Windows> {
     unsafe {
         let instance = GetModuleHandleW(None)?.into();
         let cursor = LoadCursorW(None, IDC_ARROW)?;
@@ -290,17 +290,17 @@ pub fn create(mode: DisplayMode) -> Result<Windows> {
             placed: None,
             prev_foreground: None,
         };
-        win.place(mode);
+        win.place(mode, position);
         let _ = ShowWindow(visual, SW_SHOWNOACTIVATE);
         Ok(win)
     }
 }
 
 impl Windows {
-    /// Puts the visual window at the top centre of the primary monitor; updates `scale`.
-    pub fn place(&mut self, mode: DisplayMode) {
+    /// Puts the visual window at `position` along the top of the primary monitor; updates `scale`.
+    pub fn place(&mut self, mode: DisplayMode, position: f32) {
         let (work, bounds, scale) = primary_monitor();
-        let o = window_origin(mode, work, bounds, scale);
+        let o = window_origin(mode, work, bounds, scale, position);
         let (w, h) = self.size_px_for(scale);
         self.origin = (o.x as i32, o.y as i32);
         self.scale = scale;
@@ -310,7 +310,7 @@ impl Windows {
                 log::warning!("place window: {e}");
             }
         }
-        log::info!("window at {:?} scale {scale}", self.origin);
+        log::debug!("window at {:?} scale {scale}", self.origin);
     }
 
     fn size_px_for(&self, scale: f32) -> (u32, u32) {
