@@ -2,6 +2,28 @@
 
 use crate::Rect;
 use crate::config::Config;
+use std::time::Duration;
+
+/// Child failures back off, while a stable bridge earns a fresh retry budget.
+pub struct BridgeBackoff {
+    next_seconds: u64,
+}
+
+impl Default for BridgeBackoff {
+    fn default() -> Self { Self { next_seconds: 1 } }
+}
+
+impl BridgeBackoff {
+    pub fn failed(&mut self) -> Duration {
+        let delay = self.next_seconds;
+        self.next_seconds = (delay * 2).min(30);
+        Duration::from_secs(delay)
+    }
+
+    pub fn ran_for(&mut self, uptime: Duration) {
+        if uptime >= Duration::from_secs(30) { *self = Self::default(); }
+    }
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Distro {
@@ -119,5 +141,17 @@ mod tests {
         assert!(!is_fullscreen(m, m, "X", true));
         // larger than the monitor (borderless games often overhang) still counts
         assert!(is_fullscreen(Rect { x: -8.0, y: -8.0, w: 1936.0, h: 1096.0 }, m, "UnityWndClass", false));
+    }
+
+    #[test]
+    fn bridge_restarts_back_off_and_reset_only_after_a_stable_run() {
+        use std::time::Duration;
+        let mut retry = BridgeBackoff::default();
+        let seconds: Vec<_> = (0..8).map(|_| retry.failed().as_secs()).collect();
+        assert_eq!(seconds, [1, 2, 4, 8, 16, 30, 30, 30]);
+        retry.ran_for(Duration::from_secs(2));
+        assert_eq!(retry.failed().as_secs(), 30);
+        retry.ran_for(Duration::from_secs(30));
+        assert_eq!(retry.failed().as_secs(), 1);
     }
 }
