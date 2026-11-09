@@ -36,6 +36,8 @@ version = "0.1.0"
 dependencies = [
  "island-core",
  "windows",
+ "windows-core",
+ "windows-numerics",
 ]
 
 [[package]]

@@ -33,18 +33,29 @@ pub const LINGER_SECS: u64 = 60;
 /// A backward step smaller than this within one track is reporting jitter, not a seek.
 const JITTER_SECS: f64 = 2.0;
 
-#[derive(Default)]
 pub struct MediaClock {
     snap: Option<MediaSnapshot>,
     updated_at: Option<Instant>,
     last_shown: f64,
     paused_at: Option<Instant>,
+    linger: Duration,
+}
+
+impl Default for MediaClock {
+    fn default() -> MediaClock {
+        MediaClock::with_linger(Duration::from_secs(LINGER_SECS))
+    }
 }
 
 impl MediaClock {
+    /// A clock whose media stays shown for `linger` after it stops playing.
+    pub fn with_linger(linger: Duration) -> MediaClock {
+        MediaClock { snap: None, updated_at: None, last_shown: 0.0, paused_at: None, linger }
+    }
+
     pub fn update(&mut self, snap: Option<MediaSnapshot>, now: Instant) {
         let Some(snap) = snap else {
-            *self = MediaClock::default();
+            *self = MediaClock::with_linger(self.linger);
             return;
         };
         let same = self.snap.as_ref().is_some_and(|old| old.same_track(&snap));
@@ -110,8 +121,15 @@ impl MediaClock {
         }
         match self.paused_at {
             None => true,
-            Some(t) => now.saturating_duration_since(t) < Duration::from_secs(LINGER_SECS),
+            Some(t) => now.saturating_duration_since(t) < self.linger,
         }
+    }
+
+    /// How long paused media stays shown from `now`; None while playing, absent or expired.
+    pub fn linger_left(&self, now: Instant) -> Option<Duration> {
+        self.snap.as_ref()?;
+        let left = self.linger.checked_sub(now.saturating_duration_since(self.paused_at?))?;
+        (!left.is_zero()).then_some(left)
     }
 
     pub fn is_playing(&self) -> bool {
@@ -238,5 +256,23 @@ mod tests {
         c.update(None, t0 + Duration::from_secs(63));
         assert!(!c.is_present(t0 + Duration::from_secs(63)));
         assert!(c.snapshot().is_none());
+    }
+
+    #[test]
+    fn custom_linger_and_time_left() {
+        let t0 = Instant::now();
+        let mut c = MediaClock::with_linger(Duration::from_secs(3));
+        c.update(Some(snap(10.0, 200.0, Playing)), t0);
+        assert_eq!(c.linger_left(t0), None);
+        c.update(Some(snap(10.0, 200.0, Paused)), t0 + ms(1000));
+        assert_eq!(c.linger_left(t0 + ms(2000)), Some(ms(2000)));
+        assert!(c.is_present(t0 + ms(3900)));
+        assert!(!c.is_present(t0 + ms(4100)));
+        assert_eq!(c.linger_left(t0 + ms(4100)), None);
+        // clearing media keeps the custom linger
+        c.update(None, t0 + ms(5000));
+        c.update(Some(snap(0.0, 200.0, Paused)), t0 + ms(5000));
+        assert!(!c.is_present(t0 + ms(8100)));
+        assert_eq!(MediaClock::default().linger_left(t0), None);
     }
 }
