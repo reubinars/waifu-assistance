@@ -56,7 +56,7 @@ impl Hot {
 
 const STILL: Fade = Fade { from: 0.0, to: 0.0, start: 0.0, duration: 0.0 };
 
-fn fade_to(f: &mut Fade, to: f32, t: f32, duration: f32) {
+fn fade_to(f: &mut Fade, to: f32, t: f64, duration: f32) {
     if f.to != to {
         *f = Fade { from: f.value_at(t), to, start: t, duration };
     }
@@ -77,7 +77,7 @@ impl Default for Hover {
 }
 
 impl Hover {
-    pub fn set_hot(&mut self, hot: Option<Hot>, t: f32) {
+    pub fn set_hot(&mut self, hot: Option<Hot>, t: f64) {
         self.hot = hot;
         for (i, f) in self.hover.iter_mut().enumerate() {
             let on = hot.is_some_and(|h| h.index() == i);
@@ -86,7 +86,7 @@ impl Hover {
         }
     }
 
-    pub fn set_pressed(&mut self, pressed: Option<Hot>, t: f32) {
+    pub fn set_pressed(&mut self, pressed: Option<Hot>, t: f64) {
         self.pressed = pressed;
         for (i, f) in self.press.iter_mut().enumerate() {
             let on = pressed.is_some_and(|h| h.index() == i);
@@ -99,15 +99,15 @@ impl Hover {
         *self = Hover::default();
     }
 
-    fn hover(&self, h: Hot, t: f32) -> f32 {
+    fn hover(&self, h: Hot, t: f64) -> f32 {
         self.hover[h.index()].value_at(t)
     }
 
-    fn press(&self, h: Hot, t: f32) -> f32 {
+    fn press(&self, h: Hot, t: f64) -> f32 {
         self.press[h.index()].value_at(t)
     }
 
-    pub fn busy(&self, t: f32) -> bool {
+    pub fn busy(&self, t: f64) -> bool {
         self.hover.iter().chain(&self.press).any(|f| !f.done_at(t))
     }
 }
@@ -132,7 +132,7 @@ pub struct Media {
 }
 
 pub struct Scene<'a> {
-    pub t: f32,
+    pub t: f64,
     pub tabs: bool,
     pub rows: Vec<Row>,
     pub media: Option<Media>,

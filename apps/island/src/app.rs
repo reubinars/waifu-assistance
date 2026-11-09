@@ -7,7 +7,7 @@ use crate::log;
 use crate::sources::{AgentSource, ArtImage, DemoAction, MediaCommand, MediaSource, SourceEvent, UiSender};
 use crate::ui_collapsed::{self, SPINNER_TICK_MS, Scene};
 use crate::ui_expanded::{self, Hot, Hover};
-use crate::window::{Event, Windows};
+use crate::window::{Event, VK_ESCAPE, Windows};
 use island_core::config::Config;
 use island_core::media::MediaClock;
 use island_core::session::HerdrSession;
@@ -18,10 +18,11 @@ use island_core::view::{
 };
 use island_core::{Point, Rect, Size};
 use std::time::{Duration, Instant};
-use windows::Win32::Foundation::HANDLE;
+use windows::Win32::Foundation::{D2DERR_RECREATE_TARGET, HANDLE};
+use windows::Win32::Graphics::Dxgi::{DXGI_ERROR_DEVICE_HUNG, DXGI_ERROR_DEVICE_REMOVED, DXGI_ERROR_DEVICE_RESET};
 use windows::Win32::Graphics::Direct2D::ID2D1Bitmap1;
 use windows::Win32::UI::WindowsAndMessaging::{KillTimer, SetTimer};
-use windows::core::Result;
+use windows::core::{Error, Result};
 
 const COLLAPSED_RADIUS: f32 = 20.0;
 const EXPANDED_RADIUS: f32 = 32.0;
@@ -37,7 +38,6 @@ pub const TIMER_TICK: usize = 5;
 const LEAVE_COLLAPSE: Duration = Duration::from_secs(2);
 /// Deactivation right after expanding (the click that expanded) doesn't collapse.
 const DEACTIVATE_ARM: Duration = Duration::from_millis(150);
-const VK_ESCAPE: u32 = 0x1b;
 
 struct Device {
     gfx: Gfx,
@@ -129,8 +129,8 @@ impl App {
         self.agent_src.start(tx);
     }
 
-    fn secs(&self, now: Instant) -> f32 {
-        now.saturating_duration_since(self.t0).as_secs_f32()
+    fn secs(&self, now: Instant) -> f64 {
+        now.saturating_duration_since(self.t0).as_secs_f64()
     }
 
     fn mode(&self) -> DisplayMode {
@@ -483,11 +483,18 @@ impl App {
             }
         }
         if let Err(e) = self.render(now, t) {
-            log::warning!("frame failed, rebuilding the device: {e}");
             self.device = None;
             self.art_bmp = None;
-            self.dirty = true;
-            return true;
+            if device_lost(&e) {
+                log::warning!("graphics device lost, rebuilding: {e}");
+                self.dirty = true;
+                return true;
+            }
+            // anything else would fail the same way on a fresh device: don't spin on it
+            log::error!("frame failed: {e}; rebuilding the device in 1 s");
+            self.set_timer(TIMER_RETRY, Duration::from_secs(1));
+            self.animating = false;
+            return false;
         }
         self.animating = self.anim.busy(t) || self.hover.busy(t) || self.continuous();
         let tick = !self.animating && self.anim.face == Face::Expanded(Tab::Agents);
@@ -514,12 +521,19 @@ impl App {
         self.animating
     }
 
-    fn render(&mut self, now: Instant, t: f32) -> Result<()> {
+    fn render(&mut self, now: Instant, t: f64) -> Result<()> {
         let Some(dev) = self.device.as_mut() else { return Ok(()) };
         if self.art_bmp.is_none()
             && let Some(a) = &self.art
         {
-            self.art_bmp = Some(dev.painter.bitmap(&a.bgra, a.width, a.height)?);
+            match dev.painter.bitmap(&a.bgra, a.width, a.height) {
+                Ok(b) => self.art_bmp = Some(b),
+                Err(e) => {
+                    // bad art must not fail every frame: drop it and show the placeholder
+                    log::warning!("album art unusable: {e}");
+                    self.art = None;
+                }
+            }
         }
         let present = self.clock.is_present(now);
         let media = match self.clock.snapshot().filter(|_| present).cloned() {
@@ -589,7 +603,7 @@ fn draw_island(
     dev: &mut Device,
     anim: &Animator,
     mode: DisplayMode,
-    t: f32,
+    t: f64,
     scene: &Scene,
     ex: &ui_expanded::Scene,
 ) -> Result<()> {
@@ -685,4 +699,9 @@ fn draw_backdrop(p: &mut Painter, b: &Backdrop) -> Result<()> {
     }
     p.fill(&shape, Color::BLACK);
     Ok(())
+}
+
+/// The errors after which the device must be rebuilt (and rebuilding helps).
+fn device_lost(e: &Error) -> bool {
+    [D2DERR_RECREATE_TARGET, DXGI_ERROR_DEVICE_REMOVED, DXGI_ERROR_DEVICE_RESET, DXGI_ERROR_DEVICE_HUNG].contains(&e.code())
 }

@@ -23,7 +23,7 @@ pub const SPINNER_TICK_MS: u32 = 100;
 
 pub struct Scene<'a> {
     /// Seconds on the app clock.
-    pub t: f32,
+    pub t: f64,
     pub art: Option<&'a ID2D1Bitmap1>,
     pub playing: bool,
     pub wave: Color,
@@ -109,7 +109,7 @@ fn label(p: &mut Painter, text: &str, r: Rect, inset: f32, k: f32) -> Result<()>
 }
 
 /// iOS-style activity indicator: 8 spokes, the brightest one stepping round every tick.
-fn spinner(p: &Painter, cx: f32, cy: f32, t: f32, k: f32) {
+fn spinner(p: &Painter, cx: f32, cy: f32, t: f64, k: f32) {
     let step = ((t * 1000.0) as u64 / SPINNER_TICK_MS as u64 % 8) as usize;
     let (r0, r1) = (SPINNER_D * 0.25, SPINNER_D / 2.0);
     for i in 0..8 {

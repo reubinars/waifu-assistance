@@ -27,7 +27,8 @@ use windows::Win32::Graphics::DirectWrite::{
     IDWriteFontCollection, IDWriteTextFormat, IDWriteTextLayout, IDWriteTextLayout1, IDWriteTypography,
 };
 use windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_B8G8R8A8_UNORM;
-use windows::core::{HSTRING, Interface, Result, w};
+use windows::Win32::Foundation::E_INVALIDARG;
+use windows::core::{Error, HSTRING, Interface, Result, w};
 use windows_numerics::{Matrix3x2, Vector2};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -416,7 +417,11 @@ impl Painter {
         Ok(())
     }
 
+    /// A bitmap from premultiplied BGRA; E_INVALIDARG unless `bgra` holds a whole w×h image.
     pub fn bitmap(&self, bgra: &[u8], w: u32, h: u32) -> Result<ID2D1Bitmap1> {
+        if !island_core::color::bgra_fits(bgra, w, h) {
+            return Err(Error::new(E_INVALIDARG, format!("{w}x{h} image in {} bytes", bgra.len())));
+        }
         let props = D2D1_BITMAP_PROPERTIES1 {
             pixelFormat: D2D1_PIXEL_FORMAT { format: DXGI_FORMAT_B8G8R8A8_UNORM, alphaMode: D2D1_ALPHA_MODE_PREMULTIPLIED },
             dpiX: 96.0,

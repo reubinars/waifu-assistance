@@ -16,7 +16,7 @@ use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::HiDpi::{GetDpiForMonitor, MDT_EFFECTIVE_DPI};
 use windows::Win32::UI::Input::KeyboardAndMouse::{ReleaseCapture, SetCapture, TME_LEAVE, TRACKMOUSEEVENT, TrackMouseEvent};
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, GWL_EXSTYLE, GetForegroundWindow, GetWindowLongPtrW, IsWindow, WM_CAPTURECHANGED, HTTRANSPARENT, IDC_ARROW, LWA_ALPHA, LoadCursorW,
+    CreateWindowExW, DefWindowProcW, GWL_EXSTYLE, GetForegroundWindow, GetWindowLongPtrW, IsWindow, WM_CAPTURECHANGED, WM_CLOSE, HTTRANSPARENT, IDC_ARROW, LWA_ALPHA, LoadCursorW,
     MA_NOACTIVATE, PostQuitMessage, RegisterClassExW, SW_SHOWNOACTIVATE, SWP_NOACTIVATE, SWP_NOZORDER, SWP_SHOWWINDOW,
     SetForegroundWindow, SetLayeredWindowAttributes, SetWindowLongPtrW, SetWindowPos, ShowWindow, WM_ACTIVATE,
     WM_DESTROY, WM_DISPLAYCHANGE, WM_DPICHANGED, WM_KEYDOWN, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEACTIVATE,
@@ -24,6 +24,9 @@ use windows::Win32::UI::WindowsAndMessaging::{
     WS_EX_NOACTIVATE, WS_EX_NOREDIRECTIONBITMAP, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_POPUP,
 };
 use windows::core::{PCWSTR, Result, w};
+
+/// Virtual-key code of Esc (Win32_UI_Input_KeyboardAndMouse, not worth a feature).
+pub const VK_ESCAPE: u32 = 0x1b;
 
 #[derive(Clone, Copy, Debug)]
 pub enum Event {
@@ -125,6 +128,12 @@ extern "system" fn input_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> L
         }
         WM_CAPTURECHANGED => {
             push(Event::CaptureLost);
+            LRESULT(0)
+        }
+        // Alt+F4 on the focused (expanded) island: collapse like Esc. Letting DefWindowProc
+        // destroy the input window would leave an island that can never be clicked again.
+        WM_CLOSE => {
+            push(Event::Key(VK_ESCAPE));
             LRESULT(0)
         }
         WM_ACTIVATE => {

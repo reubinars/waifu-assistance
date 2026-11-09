@@ -23,6 +23,17 @@ pub fn dominant_color(bgra: &[u8], width: u32, height: u32) -> Option<[u8; 3]> {
     Some([(best[1] / n) as u8, (best[2] / n) as u8, (best[3] / n) as u8])
 }
 
+/// Largest image side turned into a bitmap: every Direct3D feature level accepts 2048, and
+/// media thumbnails are a few hundred pixels.
+pub const MAX_IMAGE_SIDE: u32 = 2048;
+
+/// True when `bgra` holds a whole `width`×`height` 32-bit image that can become a bitmap:
+/// non-empty, within [`MAX_IMAGE_SIDE`], and long enough to read `width * height * 4` bytes.
+pub fn bgra_fits(bgra: &[u8], width: u32, height: u32) -> bool {
+    let sides_ok = (1..=MAX_IMAGE_SIDE).contains(&width) && (1..=MAX_IMAGE_SIDE).contains(&height);
+    sides_ok && bgra.len() >= width as usize * height as usize * 4
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -46,5 +57,17 @@ mod tests {
         let short: Vec<u8> = [0u8, 0, 255, 255].repeat(3);
         assert_eq!(dominant_color(&short, 4, 4), Some([255, 0, 0]));
         assert_eq!(dominant_color(&[], 0, 0), None);
+    }
+
+    #[test]
+    fn bgra_fits_only_whole_nonempty_images() {
+        assert!(bgra_fits(&[0; 16], 2, 2));
+        assert!(bgra_fits(&[0; 20], 2, 2), "extra bytes are harmless");
+        assert!(!bgra_fits(&[0; 15], 2, 2), "short buffer would be read past its end");
+        assert!(!bgra_fits(&[], 0, 0));
+        assert!(!bgra_fits(&[0; 16], 0, 4));
+        assert!(!bgra_fits(&[0; 16], 4, 0));
+        assert!(!bgra_fits(&[0; 16], u32::MAX, u32::MAX), "size overflow");
+        assert!(!bgra_fits(&vec![0; 4 * 2049], 2049, 1), "wider than every feature level accepts");
     }
 }

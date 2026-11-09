@@ -101,26 +101,28 @@ pub fn ease_in_out(t: f32) -> f32 {
     cubic_bezier(0.42, 0.0, 0.58, 1.0, t)
 }
 
-/// A one-shot eased transition between two values, in seconds on the app clock.
+/// A one-shot eased transition between two values. Times are seconds on the app clock, in
+/// f64: an f32 clock loses whole frames of precision after a few days of uptime.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Fade {
     pub from: f32,
     pub to: f32,
-    pub start: f32,
+    pub start: f64,
     pub duration: f32,
 }
 
 impl Fade {
-    pub fn value_at(&self, t: f32) -> f32 {
+    pub fn value_at(&self, t: f64) -> f32 {
         if self.done_at(t) {
             return self.to;
         }
-        let p = ((t - self.start) / self.duration).clamp(0.0, 1.0);
+        let p = ((t - self.start) as f32 / self.duration).clamp(0.0, 1.0);
         self.from + (self.to - self.from) * ease(p)
     }
 
-    pub fn done_at(&self, t: f32) -> bool {
-        t >= self.start + self.duration
+    pub fn done_at(&self, t: f64) -> bool {
+        // elapsed time is small, so f32 is exact enough and matches `duration`'s precision
+        (t - self.start) as f32 >= self.duration
     }
 }
 
@@ -131,13 +133,13 @@ const SOUND_BAR_DELAY: [f32; 5] = [0.0, 0.12, 0.24, 0.08, 0.18];
 pub const SOUND_BAR_BASE: [f32; 5] = [0.35, 0.65, 0.45, 0.85, 0.55];
 
 /// Vertical scale of sound bar `bar` (0..5) at `t` seconds since the wave started.
-pub fn sound_bar_scale(bar: usize, t: f32) -> f32 {
-    let (dur, delay) = (SOUND_BAR_DURATION[bar], SOUND_BAR_DELAY[bar]);
+pub fn sound_bar_scale(bar: usize, t: f64) -> f32 {
+    let (dur, delay) = (SOUND_BAR_DURATION[bar] as f64, SOUND_BAR_DELAY[bar] as f64);
     if t < delay {
         return 1.0;
     }
     let cycles = (t - delay) / dur;
-    let p = ease_in_out(cycles.fract());
+    let p = ease_in_out(cycles.fract() as f32);
     let rising = (cycles.floor() as u64).is_multiple_of(2);
     if rising { 0.25 + 0.75 * p } else { 1.0 - 0.75 * p }
 }
@@ -146,16 +148,16 @@ pub fn sound_bar_scale(bar: usize, t: f32) -> f32 {
 pub const BLOCKED_PULSE_PERIOD: f32 = 1.2;
 
 /// (opacity, scale) of a pulsing dot: (0.25, 0.9) at the ends of the period, (0.6, 1.1) halfway.
-pub fn pulse(t: f32, period: f32) -> (f32, f32) {
-    let phase = (t / period).rem_euclid(1.0);
+pub fn pulse(t: f64, period: f32) -> (f32, f32) {
+    let phase = (t / period as f64).rem_euclid(1.0) as f32;
     let p = if phase < 0.5 { ease_in_out(phase * 2.0) } else { ease_in_out((1.0 - phase) * 2.0) };
     (0.25 + 0.35 * p, 0.9 + 0.2 * p)
 }
 
 /// The expanded art glow (§6.3): opacity 0.3↔0.6 and scale 0.95↔1.05, ease-in-out,
 /// 3 s each way.
-pub fn breathe(t: f32) -> (f32, f32) {
-    let phase = (t / 6.0).rem_euclid(1.0);
+pub fn breathe(t: f64) -> (f32, f32) {
+    let phase = (t / 6.0).rem_euclid(1.0) as f32;
     let p = if phase < 0.5 { ease_in_out(phase * 2.0) } else { ease_in_out((1.0 - phase) * 2.0) };
     (0.3 + 0.3 * p, 0.95 + 0.1 * p)
 }
@@ -163,6 +165,30 @@ pub fn breathe(t: f32) -> (f32, f32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Six days of uptime: an island that starts with Windows easily runs this long.
+    const UPTIME: f64 = 6.0 * 86_400.0;
+
+    #[test]
+    fn fades_advance_every_frame_after_days_of_uptime() {
+        let f = Fade { from: 0.0, to: 1.0, start: UPTIME, duration: 0.2 };
+        let mut last = 0.0;
+        for i in 1..12 {
+            let v = f.value_at(UPTIME + i as f64 / 60.0);
+            assert!(v > last, "frame {i}: {v} <= {last}");
+            last = v;
+        }
+    }
+
+    #[test]
+    fn sound_bars_move_every_frame_after_days_of_uptime() {
+        let mut last = sound_bar_scale(0, UPTIME);
+        for i in 1..12 {
+            let v = sound_bar_scale(0, UPTIME + i as f64 / 60.0);
+            assert!(v != last, "frame {i}: bar stuck at {v}");
+            last = v;
+        }
+    }
 
     /// Runs the island spring from 40 to 360 at `fps` for a whole number of frames.
     fn run(fps: f32, secs: f32) -> (Spring, f32) {
