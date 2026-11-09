@@ -13,13 +13,13 @@ pub enum Face {
     Working { count: usize },
     Done { label: String },
     Blocked { label: String },
-    #[allow(dead_code)]
     Expanded(Tab),
 }
 
 const CROSS_FADE: f32 = 0.2;
 const GLOW_FADE: f32 = 0.8;
 const WAVE_FADE: f32 = 0.6;
+const HOVER_FADE: f32 = 0.2;
 
 #[derive(Clone, Copy)]
 struct ColorFade {
@@ -63,6 +63,8 @@ pub struct Animator {
     glow: Fade,
     glow_color: ColorFade,
     wave_color: ColorFade,
+    /// Hover on the collapsed media pill.
+    hover: Fade,
     last: Option<f32>,
 }
 
@@ -78,6 +80,7 @@ impl Animator {
             glow: Fade { from: 0.0, to: 0.0, start: 0.0, duration: 0.0 },
             glow_color: ColorFade::still(Color::white(1.0)),
             wave_color: ColorFade::still(Color::white(1.0)),
+            hover: Fade { from: 0.0, to: 0.0, start: 0.0, duration: 0.0 },
             last: None,
         }
     }
@@ -106,6 +109,17 @@ impl Animator {
 
     pub fn set_wave_color(&mut self, color: Color, t: f32) {
         self.wave_color.retarget(color, t, WAVE_FADE);
+    }
+
+    pub fn set_hover(&mut self, on: bool, t: f32) {
+        let to = if on { 1.0 } else { 0.0 };
+        if to != self.hover.to {
+            self.hover = Fade { from: self.hover.value_at(t), to, start: t, duration: HOVER_FADE };
+        }
+    }
+
+    pub fn hover(&self, t: f32) -> f32 {
+        self.hover.value_at(t)
     }
 
     /// Advances the springs to `t`.
@@ -149,6 +163,7 @@ impl Animator {
             || !self.glow.done_at(t)
             || !self.glow_color.done_at(t)
             || !self.wave_color.done_at(t)
+            || !self.hover.done_at(t)
     }
 
     /// Forgets the last frame time, so the next step doesn't jump after an idle stretch.

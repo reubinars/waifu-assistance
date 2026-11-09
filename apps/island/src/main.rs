@@ -15,6 +15,8 @@ mod sources;
 #[cfg(windows)]
 mod ui_collapsed;
 #[cfg(windows)]
+mod ui_expanded;
+#[cfg(windows)]
 mod window;
 
 #[cfg(not(windows))]
@@ -84,7 +86,7 @@ fn run() -> windows::core::Result<()> {
     let (tx, rx) = mpsc::channel();
     let ui = UiSender::new(tx, win.visual);
     let (clock, media, agents): (MediaClock, Box<dyn MediaSource>, Box<dyn AgentSource>) = if demo {
-        (MediaClock::with_linger(DEMO_LINGER), Box::new(DemoMedia), Box::new(DemoAgents))
+        (MediaClock::with_linger(DEMO_LINGER), Box::new(DemoMedia::default()), Box::new(DemoAgents))
     } else {
         (MediaClock::default(), Box::new(NoSource), Box::new(NoSource))
     };

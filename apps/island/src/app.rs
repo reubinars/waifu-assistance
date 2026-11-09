@@ -4,16 +4,19 @@ use crate::animator::{Animator, Face};
 use crate::draw::{Color, Painter};
 use crate::gfx::Gfx;
 use crate::log;
-use crate::sources::{AgentSource, ArtImage, MediaSource, SourceEvent, UiSender};
+use crate::sources::{AgentSource, ArtImage, DemoAction, MediaCommand, MediaSource, SourceEvent, UiSender};
 use crate::ui_collapsed::{self, SPINNER_TICK_MS, Scene};
+use crate::ui_expanded::{self, Hot, Hover};
 use crate::window::{Event, Windows};
 use island_core::config::Config;
 use island_core::media::MediaClock;
 use island_core::session::HerdrSession;
+use island_core::view::layout::{MAX_ROWS, SEEK};
 use island_core::view::{
-    Collapsed, DisplayMode, EXPANDED, Tab, WINDOW, choose_collapsed, collapsed_size, corner_radii, island_rect,
+    Collapsed, DisplayMode, EXPANDED, ExpandedHit, Tab, WINDOW, choose_collapsed, clock_label, collapsed_size,
+    corner_radii, default_tab, hit_expanded, hit_rounded, island_rect, jump_target, tabs_visible, time_in_state,
 };
-use island_core::{Rect, Size};
+use island_core::{Point, Rect, Size};
 use std::time::{Duration, Instant};
 use windows::Win32::Foundation::HANDLE;
 use windows::Win32::Graphics::Direct2D::ID2D1Bitmap1;
@@ -26,6 +29,15 @@ const EXPANDED_RADIUS: f32 = 32.0;
 pub const TIMER_LINGER: usize = 1;
 pub const TIMER_SPINNER: usize = 2;
 pub const TIMER_RETRY: usize = 3;
+/// Collapse after the mouse has been outside the expanded island for 2 s.
+pub const TIMER_LEAVE: usize = 4;
+/// Redraws the agents tab's time-in-state labels.
+pub const TIMER_TICK: usize = 5;
+
+const LEAVE_COLLAPSE: Duration = Duration::from_secs(2);
+/// Deactivation right after expanding (the click that expanded) doesn't collapse.
+const DEACTIVATE_ARM: Duration = Duration::from_millis(150);
+const VK_ESCAPE: u32 = 0x1b;
 
 struct Device {
     gfx: Gfx,
@@ -61,9 +73,11 @@ pub struct App {
     art_bmp: Option<ID2D1Bitmap1>,
     collapsed: Collapsed,
     expanded: bool,
+    expanded_at: Option<Instant>,
     tab: Tab,
-    #[allow(dead_code)]
-    hovered: bool,
+    hover: Hover,
+    /// Seekbar position (0..=1) while it is dragged.
+    drag: Option<f32>,
     anim: Animator,
     device: Option<Device>,
     media: Box<dyn MediaSource>,
@@ -72,6 +86,7 @@ pub struct App {
     dirty: bool,
     animating: bool,
     spinner_on: bool,
+    tick_on: bool,
 }
 
 impl App {
@@ -93,8 +108,10 @@ impl App {
             art_bmp: None,
             collapsed,
             expanded: false,
+            expanded_at: None,
             tab: Tab::Media,
-            hovered: false,
+            hover: Hover::default(),
+            drag: None,
             anim,
             device: None,
             media,
@@ -103,6 +120,7 @@ impl App {
             dirty: true,
             animating: false,
             spinner_on: false,
+            tick_on: false,
         }
     }
 
@@ -133,6 +151,15 @@ impl App {
                 }
             }
             SourceEvent::BridgeDown => self.session.bridge_down(),
+            SourceEvent::Demo(a) => match a {
+                DemoAction::Expand(tab) => self.expand(tab, false, now),
+                DemoAction::Collapse => self.collapse(),
+                DemoAction::Mode(m) => {
+                    self.config.display_mode = m;
+                    self.anim.set_hover(false, self.secs(now));
+                    self.reposition();
+                }
+            },
         }
         self.retarget(now);
     }
@@ -149,12 +176,203 @@ impl App {
                 self.kill_timer(TIMER_RETRY);
                 self.dirty = true;
             }
+            Event::Timer(TIMER_LEAVE) => {
+                self.kill_timer(TIMER_LEAVE);
+                self.collapse();
+            }
+            Event::Timer(TIMER_TICK) => self.dirty = true,
             Event::Timer(_) => {}
             Event::Reposition => self.reposition(),
-            Event::MouseMove(..) => self.hovered = true,
-            Event::MouseLeave => self.hovered = false,
-            Event::MouseDown(..) | Event::MouseUp(..) | Event::Key(_) | Event::Activate(_) => {}
+            Event::MouseMove(x, y) => self.on_mouse_move(self.win.to_dip(x, y)),
+            Event::MouseLeave => self.on_mouse_leave(),
+            Event::MouseDown(x, y) => self.on_mouse_down(self.win.to_dip(x, y)),
+            Event::MouseUp(x, y) => self.on_click(self.win.to_dip(x, y)),
+            Event::Key(vk) => self.on_key(vk),
+            Event::Activate(false) => self.on_deactivate(now),
+            Event::Activate(true) => {}
+            Event::CaptureLost => {
+                if self.drag.take().is_some() {
+                    self.hover.set_pressed(None, self.secs(now));
+                    self.dirty = true;
+                }
+            }
         }
+    }
+
+    /// The expanded island's top-left once settled (DIPs); what clicks are tested against.
+    fn expanded_origin(&self) -> Point {
+        let r = island_rect(self.mode(), EXPANDED);
+        Point { x: r.x, y: r.y }
+    }
+
+    fn expanded_hit(&mut self, p: Point) -> Option<ExpandedHit> {
+        let o = self.expanded_origin();
+        let present = self.clock.is_present(Instant::now());
+        let tabs = tabs_visible(&self.session.agents, present);
+        let rows = self.session.agents.rows(MAX_ROWS).len();
+        let seekable = present && self.clock.seekable();
+        hit_expanded(self.tab, tabs, rows, seekable, Point { x: p.x - o.x, y: p.y - o.y })
+    }
+
+    fn seek_fraction(&self, p: Point) -> f32 {
+        ((p.x - self.expanded_origin().x - SEEK.x) / SEEK.w).clamp(0.0, 1.0)
+    }
+
+    pub fn on_mouse_move(&mut self, p: Point) {
+        let t = self.secs(Instant::now());
+        if self.drag.is_some() {
+            self.on_drag_seek(self.seek_fraction(p), false);
+            return;
+        }
+        self.kill_timer(TIMER_LEAVE);
+        if self.expanded {
+            let hot = self.expanded_hit(p).map(Hot::of);
+            if hot != self.hover.hot {
+                self.hover.set_hot(hot, t);
+                self.dirty = true;
+            }
+        } else {
+            // the input region is a rectangle-ish GDI region; only the drawn shape counts
+            let mode = self.mode();
+            let inside = hit_rounded(island_rect(mode, self.anim.size()), corner_radii(mode, self.anim.r.value), p);
+            self.anim.set_hover(inside && self.collapsed == Collapsed::Media, t);
+            self.dirty = true;
+        }
+    }
+
+    pub fn on_mouse_leave(&mut self) {
+        if self.drag.is_some() {
+            return;
+        }
+        let t = self.secs(Instant::now());
+        self.hover.set_hot(None, t);
+        self.anim.set_hover(false, t);
+        if self.expanded {
+            self.set_timer(TIMER_LEAVE, LEAVE_COLLAPSE);
+        }
+        self.dirty = true;
+    }
+
+    pub fn on_mouse_down(&mut self, p: Point) {
+        let now = Instant::now();
+        if !self.expanded {
+            let attention = matches!(self.collapsed, Collapsed::Blocked { .. } | Collapsed::Done { .. });
+            match jump_target(&self.session.agents).filter(|_| attention) {
+                Some(pane) => self.jump(&pane),
+                None => self.expand(default_tab(&self.collapsed), true, now),
+            }
+            return;
+        }
+        let hit = self.expanded_hit(p);
+        if let Some(ExpandedHit::Seek(f)) = hit {
+            self.drag = Some(f);
+            self.win.capture(true);
+        }
+        self.hover.set_pressed(hit.map(Hot::of), self.secs(now));
+        self.dirty = true;
+    }
+
+    /// Mouse up: acts on what was pressed, if the cursor is still on it.
+    pub fn on_click(&mut self, p: Point) {
+        if self.drag.is_some() {
+            self.on_drag_seek(self.seek_fraction(p), true);
+            return;
+        }
+        let pressed = self.hover.pressed.take();
+        self.hover.set_pressed(None, self.secs(Instant::now()));
+        self.dirty = true;
+        if !self.expanded {
+            return;
+        }
+        let Some(hit) = self.expanded_hit(p) else { return };
+        if pressed != Some(Hot::of(hit)) {
+            return;
+        }
+        match hit {
+            ExpandedHit::Tab(tab) => {
+                self.tab = tab;
+                self.hover.reset();
+                self.retarget(Instant::now());
+            }
+            ExpandedHit::Row(i) => {
+                let pane = self.session.agents.rows(MAX_ROWS).get(i).map(|a| a.info.pane_id.clone());
+                if let Some(pane) = pane {
+                    self.jump(&pane);
+                }
+            }
+            ExpandedHit::Prev => self.media.command(MediaCommand::Previous),
+            ExpandedHit::PlayPause => self.media.command(MediaCommand::PlayPause),
+            ExpandedHit::Next => self.media.command(MediaCommand::Next),
+            ExpandedHit::Seek(_) => {}
+        }
+    }
+
+    pub fn on_key(&mut self, vk: u32) {
+        if vk == VK_ESCAPE {
+            self.collapse();
+        }
+    }
+
+    pub fn on_deactivate(&mut self, now: Instant) {
+        if self.expanded && self.expanded_at.is_some_and(|at| now.saturating_duration_since(at) > DEACTIVATE_ARM) {
+            self.collapse();
+        }
+    }
+
+    /// Seekbar drag: shows `fraction` while held; on release seeks there.
+    pub fn on_drag_seek(&mut self, fraction: f32, released: bool) {
+        self.dirty = true;
+        if !released {
+            self.drag = Some(fraction);
+            return;
+        }
+        self.drag = None;
+        self.win.capture(false);
+        self.hover.set_pressed(None, self.secs(Instant::now()));
+        let now = Instant::now();
+        if let Some(snap) = self.clock.snapshot().filter(|_| self.clock.seekable()).cloned() {
+            let pos = fraction as f64 * snap.duration_s;
+            self.media.command(MediaCommand::Seek(pos));
+            // show the new position until the source reports it
+            self.clock.update(Some(island_core::media::MediaSnapshot { position_s: pos, ..snap }), now);
+        }
+    }
+
+    /// §4.5: focus the pane, raise the terminal, collapse.
+    fn jump(&mut self, pane: &str) {
+        log::info!("jump to {pane}");
+        let line = self.session.focus(pane);
+        self.agent_src.send(&line);
+        self.agent_src.raise_terminal();
+        self.collapse();
+    }
+
+    fn expand(&mut self, tab: Tab, activate: bool, now: Instant) {
+        self.expanded = true;
+        self.expanded_at = Some(now);
+        self.tab = tab;
+        self.hover.reset();
+        self.anim.set_hover(false, self.secs(now));
+        if activate {
+            self.win.activate();
+        }
+        self.retarget(now);
+    }
+
+    fn collapse(&mut self) {
+        if !self.expanded {
+            return;
+        }
+        self.expanded = false;
+        self.expanded_at = None;
+        if self.drag.take().is_some() {
+            self.win.capture(false);
+        }
+        self.hover.reset();
+        self.anim.set_hover(false, self.secs(Instant::now()));
+        self.kill_timer(TIMER_LEAVE);
+        self.win.deactivate();
+        self.retarget(Instant::now());
     }
 
     fn reposition(&mut self) {
@@ -181,6 +399,13 @@ impl App {
         if collapsed != self.collapsed {
             log::debug!("collapsed {collapsed:?}");
             self.collapsed = collapsed;
+        }
+        if self.expanded && !tabs_visible(&self.session.agents, present) {
+            if !self.session.agents.is_empty() {
+                self.tab = Tab::Agents;
+            } else if present {
+                self.tab = Tab::Media;
+            }
         }
         let (size, radius, face) = if self.expanded {
             (EXPANDED, EXPANDED_RADIUS, Face::Expanded(self.tab))
@@ -232,7 +457,7 @@ impl App {
     /// Whether the content itself moves every frame (sound wave, blocked pulse).
     fn continuous(&self) -> bool {
         match self.anim.face {
-            Face::Media => self.clock.is_playing(),
+            Face::Media | Face::Expanded(Tab::Media) => self.clock.is_playing(),
             Face::Blocked { .. } => true,
             _ => false,
         }
@@ -257,14 +482,23 @@ impl App {
                 }
             }
         }
-        if let Err(e) = self.render(t) {
+        if let Err(e) = self.render(now, t) {
             log::warning!("frame failed, rebuilding the device: {e}");
             self.device = None;
             self.art_bmp = None;
             self.dirty = true;
             return true;
         }
-        self.animating = self.anim.busy(t) || self.continuous();
+        self.animating = self.anim.busy(t) || self.hover.busy(t) || self.continuous();
+        let tick = !self.animating && self.anim.face == Face::Expanded(Tab::Agents);
+        if tick != self.tick_on {
+            self.tick_on = tick;
+            if tick {
+                self.set_timer(TIMER_TICK, Duration::from_secs(1));
+            } else {
+                self.kill_timer(TIMER_TICK);
+            }
+        }
         let spin = !self.animating && matches!(self.anim.face, Face::Working { .. });
         if spin != self.spinner_on {
             self.spinner_on = spin;
@@ -280,22 +514,68 @@ impl App {
         self.animating
     }
 
-    fn render(&mut self, t: f32) -> Result<()> {
+    fn render(&mut self, now: Instant, t: f32) -> Result<()> {
         let Some(dev) = self.device.as_mut() else { return Ok(()) };
         if self.art_bmp.is_none()
             && let Some(a) = &self.art
         {
             self.art_bmp = Some(dev.painter.bitmap(&a.bgra, a.width, a.height)?);
         }
-        dev.gfx.begin();
-        dev.painter.begin_frame();
-        let scene = Scene {
+        let present = self.clock.is_present(now);
+        let media = match self.clock.snapshot().filter(|_| present).cloned() {
+            None => None,
+            Some(snap) => {
+                let pos = match self.drag {
+                    Some(f) => f as f64 * snap.duration_s,
+                    None => self.clock.position(now),
+                };
+                Some(ui_expanded::Media {
+                    playing: self.clock.is_playing(),
+                    seekable: self.clock.seekable(),
+                    progress: self.drag.unwrap_or_else(|| self.clock.progress(now)),
+                    position: clock_label(pos),
+                    duration: clock_label(snap.duration_s),
+                    title: snap.title,
+                    artist: snap.artist,
+                })
+            }
+        };
+        let rows = self
+            .session
+            .agents
+            .rows(MAX_ROWS)
+            .into_iter()
+            .map(|a| ui_expanded::Row {
+                status: a.info.status,
+                name: a.display_name().to_string(),
+                title: a.info.title.clone().unwrap_or_default(),
+                folder: a.folder().to_string(),
+                since: time_in_state(now.saturating_duration_since(a.since)),
+            })
+            .collect();
+        let (title, artist) = media.as_ref().map_or(("", ""), |m| (m.title.as_str(), m.artist.as_str()));
+        let (title, artist) = (title.to_string(), artist.to_string());
+        let collapsed = Scene {
             t,
             art: self.art_bmp.as_ref(),
             playing: self.clock.is_playing(),
             wave: self.anim.wave_color(t),
+            hover: self.anim.hover(t),
+            title: &title,
+            artist: &artist,
         };
-        let drawn = draw_island(dev, &self.anim, self.config.display_mode, t, &scene);
+        let expanded = ui_expanded::Scene {
+            t,
+            tabs: tabs_visible(&self.session.agents, present),
+            rows,
+            media,
+            art: self.art_bmp.as_ref(),
+            accent: self.art.as_ref().and_then(|a| a.accent).map(|[r, g, b]| Color::rgba(r, g, b, 1.0)),
+            hover: &self.hover,
+        };
+        dev.gfx.begin();
+        dev.painter.begin_frame();
+        let drawn = draw_island(dev, &self.anim, self.config.display_mode, t, &collapsed, &expanded);
         let presented = dev.gfx.end();
         drawn.and(presented)
     }
@@ -305,7 +585,14 @@ fn outset(r: Rect, by: f32) -> Rect {
     Rect { x: r.x - by, y: r.y - by, w: r.w + 2.0 * by, h: r.h + 2.0 * by }
 }
 
-fn draw_island(dev: &mut Device, anim: &Animator, mode: DisplayMode, t: f32, scene: &Scene) -> Result<()> {
+fn draw_island(
+    dev: &mut Device,
+    anim: &Animator,
+    mode: DisplayMode,
+    t: f32,
+    scene: &Scene,
+    ex: &ui_expanded::Scene,
+) -> Result<()> {
     let size = anim.size();
     let rect = island_rect(mode, Size { w: size.w.max(1.0), h: size.h.max(1.0) });
     let radii = corner_radii(mode, anim.r.value);
@@ -333,10 +620,32 @@ fn draw_island(dev: &mut Device, anim: &Animator, mode: DisplayMode, t: f32, sce
     let (k_new, k_old) = anim.face_opacity(t);
     let mut drawn = Ok(());
     if let Some(old) = &anim.old {
-        drawn = ui_collapsed::draw(p, old, rect, k_old, scene);
+        drawn = draw_face(p, old, &anim.face, rect, k_old, scene, ex);
     }
-    let drawn = drawn.and_then(|_| ui_collapsed::draw(p, &anim.face, rect, k_new, scene));
+    let other = anim.old.as_ref().unwrap_or(&anim.face);
+    let drawn = drawn.and_then(|_| draw_face(p, &anim.face, other, rect, k_new, scene, ex));
     p.pop_layer();
+    drawn
+}
+
+/// One face at opacity `k`; `other` is the face it is fading against.
+fn draw_face(
+    p: &mut Painter,
+    face: &Face,
+    other: &Face,
+    rect: Rect,
+    k: f32,
+    scene: &Scene,
+    ex: &ui_expanded::Scene,
+) -> Result<()> {
+    let Face::Expanded(tab) = face else { return ui_collapsed::draw(p, face, rect, k, scene) };
+    // centred on the island as it grows, top-aligned
+    let (ox, oy) = (rect.x + rect.w / 2.0 - EXPANDED.w / 2.0, rect.y);
+    // entering from (or leaving to) the collapsed island: scale 0.92→1; switching tabs: no scale
+    let scale = if matches!(other, Face::Expanded(_)) { 1.0 } else { 0.92 + 0.08 * k };
+    let restore = p.scale_about(scale, ox + EXPANDED.w / 2.0, oy + EXPANDED.h / 2.0);
+    let drawn = ui_expanded::draw(p, *tab, ox, oy, k, ex);
+    p.set_transform(restore);
     drawn
 }
 

@@ -17,7 +17,17 @@ pub enum SourceEvent {
     /// One line from the bridge, parsed.
     Herdr(Incoming),
     /// The bridge process exited or could not start.
+    #[allow(dead_code, reason = "sent by the herdr bridge source (Chunk C)")]
     BridgeDown,
+    /// `--demo` only: drive the island as a user would.
+    Demo(DemoAction),
+}
+
+#[derive(Clone, Copy, Debug)]
+pub enum DemoAction {
+    Expand(island_core::view::Tab),
+    Collapse,
+    Mode(island_core::view::DisplayMode),
 }
 
 /// Premultiplied BGRA album art.
@@ -49,7 +59,6 @@ impl UiSender {
     }
 }
 
-#[allow(dead_code)]
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum MediaCommand {
     PlayPause,

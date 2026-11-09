@@ -14,9 +14,9 @@ use windows::Win32::Graphics::Gdi::{
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::HiDpi::{GetDpiForMonitor, MDT_EFFECTIVE_DPI};
-use windows::Win32::UI::Input::KeyboardAndMouse::{TME_LEAVE, TRACKMOUSEEVENT, TrackMouseEvent};
+use windows::Win32::UI::Input::KeyboardAndMouse::{ReleaseCapture, SetCapture, TME_LEAVE, TRACKMOUSEEVENT, TrackMouseEvent};
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, GWL_EXSTYLE, GetWindowLongPtrW, HTTRANSPARENT, IDC_ARROW, LWA_ALPHA, LoadCursorW,
+    CreateWindowExW, DefWindowProcW, GWL_EXSTYLE, GetForegroundWindow, GetWindowLongPtrW, IsWindow, WM_CAPTURECHANGED, HTTRANSPARENT, IDC_ARROW, LWA_ALPHA, LoadCursorW,
     MA_NOACTIVATE, PostQuitMessage, RegisterClassExW, SW_SHOWNOACTIVATE, SWP_NOACTIVATE, SWP_NOZORDER, SWP_SHOWWINDOW,
     SetForegroundWindow, SetLayeredWindowAttributes, SetWindowLongPtrW, SetWindowPos, ShowWindow, WM_ACTIVATE,
     WM_DESTROY, WM_DISPLAYCHANGE, WM_DPICHANGED, WM_KEYDOWN, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEACTIVATE,
@@ -38,6 +38,8 @@ pub enum Event {
     Timer(usize),
     /// DPI, display or work area changed.
     Reposition,
+    /// The input window lost mouse capture (mid-drag).
+    CaptureLost,
 }
 
 /// Win32_UI_Controls, not worth a feature.
@@ -121,6 +123,10 @@ extern "system" fn input_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> L
             push(Event::Key(wp.0 as u32));
             LRESULT(0)
         }
+        WM_CAPTURECHANGED => {
+            push(Event::CaptureLost);
+            LRESULT(0)
+        }
         WM_ACTIVATE => {
             push(Event::Activate((wp.0 & 0xffff) != 0));
             LRESULT(0)
@@ -154,6 +160,8 @@ pub struct Windows {
     pub scale: f32,
     /// Last input-window placement: x, y, w, h, corner diameter, attached.
     placed: Option<(i32, i32, i32, i32, i32, bool)>,
+    /// The foreground window before the island took focus.
+    prev_foreground: Option<HWND>,
 }
 
 pub fn create(mode: DisplayMode) -> Result<Windows> {
@@ -205,7 +213,7 @@ pub fn create(mode: DisplayMode) -> Result<Windows> {
             Some(instance),
             None,
         )?;
-        let mut win = Windows { visual, input, origin: (0, 0), scale: 1.0, placed: None };
+        let mut win = Windows { visual, input, origin: (0, 0), scale: 1.0, placed: None, prev_foreground: None };
         win.place(mode);
         let _ = ShowWindow(visual, SW_SHOWNOACTIVATE);
         Ok(win)
@@ -267,16 +275,50 @@ impl Windows {
         }
     }
 
-    /// Lets the input window take focus (expanded) or not (collapsed).
-    #[allow(dead_code)]
-    pub fn set_activatable(&self, on: bool) {
+    /// Expanded: the input window may take focus, and takes it.
+    pub fn activate(&mut self) {
+        unsafe {
+            let fg = GetForegroundWindow();
+            if fg != self.input && !fg.is_invalid() {
+                self.prev_foreground = Some(fg);
+            }
+            self.set_noactivate(false);
+            if !SetForegroundWindow(self.input).as_bool() {
+                log::debug!("SetForegroundWindow refused");
+            }
+        }
+    }
+
+    /// Collapsed: no focus again. If the island still has it, it goes back to the window that
+    /// had it before.
+    pub fn deactivate(&mut self) {
+        self.set_noactivate(true);
+        let prev = self.prev_foreground.take();
+        unsafe {
+            if GetForegroundWindow() == self.input
+                && let Some(prev) = prev
+                && IsWindow(Some(prev)).as_bool()
+            {
+                let _ = SetForegroundWindow(prev);
+            }
+        }
+    }
+
+    fn set_noactivate(&self, on: bool) {
         unsafe {
             let ex = GetWindowLongPtrW(self.input, GWL_EXSTYLE);
             let flag = WS_EX_NOACTIVATE.0 as isize;
-            let ex = if on { ex & !flag } else { ex | flag };
-            SetWindowLongPtrW(self.input, GWL_EXSTYLE, ex);
+            SetWindowLongPtrW(self.input, GWL_EXSTYLE, if on { ex | flag } else { ex & !flag });
+        }
+    }
+
+    /// Keeps mouse input coming while the seekbar is dragged outside the island.
+    pub fn capture(&self, on: bool) {
+        unsafe {
             if on {
-                let _ = SetForegroundWindow(self.input);
+                SetCapture(self.input);
+            } else {
+                let _ = ReleaseCapture();
             }
         }
     }

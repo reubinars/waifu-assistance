@@ -23,7 +23,8 @@ use windows::Win32::Graphics::DirectWrite::{
     DWRITE_PARAGRAPH_ALIGNMENT_CENTER, DWRITE_TEXT_ALIGNMENT, DWRITE_TEXT_ALIGNMENT_CENTER,
     DWRITE_TEXT_ALIGNMENT_LEADING, DWRITE_TEXT_ALIGNMENT_TRAILING, DWRITE_TRIMMING,
     DWRITE_TRIMMING_GRANULARITY_CHARACTER, DWRITE_WORD_WRAPPING_NO_WRAP, DWriteCreateFactory, IDWriteFactory,
-    IDWriteFontCollection, IDWriteTextFormat, IDWriteTextLayout,
+    DWRITE_FONT_FEATURE, DWRITE_FONT_FEATURE_TAG_TABULAR_FIGURES, DWRITE_TEXT_METRICS, DWRITE_TEXT_RANGE,
+    IDWriteFontCollection, IDWriteTextFormat, IDWriteTextLayout, IDWriteTextLayout1, IDWriteTypography,
 };
 use windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_B8G8R8A8_UNORM;
 use windows::core::{HSTRING, Interface, Result, w};
@@ -114,6 +115,7 @@ pub struct Painter {
     dwrite: IDWriteFactory,
     brush: ID2D1SolidColorBrush,
     family: HSTRING,
+    tabular: IDWriteTypography,
     formats: HashMap<(u32, u16), IDWriteTextFormat>,
     /// Shadow effects; one per shadow drawn this frame, reused across frames.
     shadows: Vec<ID2D1Effect>,
@@ -128,12 +130,15 @@ impl Painter {
             dc.SetTextAntialiasMode(D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE);
             let family = pick_family(&dwrite);
             log::info!("font family {family}");
+            let tabular = dwrite.CreateTypography()?;
+            tabular.AddFontFeature(DWRITE_FONT_FEATURE { nameTag: DWRITE_FONT_FEATURE_TAG_TABULAR_FIGURES, parameter: 1 })?;
             Ok(Painter {
                 dc,
                 factory,
                 dwrite,
                 brush,
                 family,
+                tabular,
                 formats: HashMap::new(),
                 shadows: Vec::new(),
                 shadows_used: 0,
@@ -207,10 +212,6 @@ impl Painter {
         unsafe { self.dc.FillGeometry(g, self.brush(c), None) }
     }
 
-    pub fn stroke(&self, g: &ID2D1Geometry, c: Color, width: f32) {
-        unsafe { self.dc.DrawGeometry(g, self.brush(c), width, None) }
-    }
-
     /// CSS `box-shadow: dx dy blur color` of geometry `g` (no spread). Blur radius B is a
     /// Gaussian with standard deviation B/2.
     pub fn shadow(&mut self, g: &ID2D1Geometry, dx: f32, dy: f32, blur: f32, c: Color) -> Result<()> {
@@ -260,19 +261,42 @@ impl Painter {
         unsafe { self.dc.PopLayer() }
     }
 
-    /// Scales everything drawn until `reset_transform` by `k` around (cx, cy).
-    pub fn scale_about(&self, k: f32, cx: f32, cy: f32) {
-        let m = Matrix3x2 { M11: k, M12: 0.0, M21: 0.0, M22: k, M31: cx - k * cx, M32: cy - k * cy };
+    pub fn transform(&self) -> Matrix3x2 {
+        let mut m = IDENTITY;
+        unsafe { self.dc.GetTransform(&mut m) };
+        m
+    }
+
+    pub fn set_transform(&self, m: Matrix3x2) {
         unsafe { self.dc.SetTransform(&m) }
     }
 
-    pub fn translate(&self, dx: f32, dy: f32) {
-        let m = Matrix3x2 { M31: dx, M32: dy, ..IDENTITY };
-        unsafe { self.dc.SetTransform(&m) }
+    /// Scales what is drawn next by `k` around (cx, cy), on top of the current transform;
+    /// returns the transform to restore.
+    pub fn scale_about(&self, k: f32, cx: f32, cy: f32) -> Matrix3x2 {
+        let s = Matrix3x2 { M11: k, M12: 0.0, M21: 0.0, M22: k, M31: cx - k * cx, M32: cy - k * cy };
+        self.then(s)
     }
 
-    pub fn reset_transform(&self) {
-        unsafe { self.dc.SetTransform(&IDENTITY) }
+    /// Moves what is drawn next by (dx, dy), on top of the current transform; returns the
+    /// transform to restore.
+    pub fn translate(&self, dx: f32, dy: f32) -> Matrix3x2 {
+        self.then(Matrix3x2 { M31: dx, M32: dy, ..IDENTITY })
+    }
+
+    fn then(&self, a: Matrix3x2) -> Matrix3x2 {
+        let b = self.transform();
+        // row vectors: p · a · b
+        let m = Matrix3x2 {
+            M11: a.M11 * b.M11 + a.M12 * b.M21,
+            M12: a.M11 * b.M12 + a.M12 * b.M22,
+            M21: a.M21 * b.M11 + a.M22 * b.M21,
+            M22: a.M21 * b.M12 + a.M22 * b.M22,
+            M31: a.M31 * b.M11 + a.M32 * b.M21 + b.M31,
+            M32: a.M31 * b.M12 + a.M32 * b.M22 + b.M32,
+        };
+        self.set_transform(m);
+        b
     }
 
     pub fn circle(&self, cx: f32, cy: f32, d: f32, c: Color) {
@@ -283,6 +307,23 @@ impl Painter {
     pub fn circle_outline(&self, cx: f32, cy: f32, d: f32, c: Color, width: f32) {
         let e = D2D1_ELLIPSE { point: v2(cx, cy), radiusX: d / 2.0, radiusY: d / 2.0 };
         unsafe { self.dc.DrawEllipse(&e, self.brush(c), width, None) }
+    }
+
+    /// A filled polygon through `pts`.
+    pub fn polygon(&self, pts: &[(f32, f32)], c: Color) -> Result<()> {
+        let Some((&(x0, y0), rest)) = pts.split_first() else { return Ok(()) };
+        unsafe {
+            let path: ID2D1PathGeometry1 = self.factory.CreatePathGeometry()?;
+            let sink = path.Open()?;
+            sink.BeginFigure(v2(x0, y0), D2D1_FIGURE_BEGIN_FILLED);
+            for &(x, y) in rest {
+                sink.AddLine(v2(x, y));
+            }
+            sink.EndFigure(D2D1_FIGURE_END_CLOSED);
+            sink.Close()?;
+            self.dc.FillGeometry(&path, self.brush(c), None);
+        }
+        Ok(())
     }
 
     pub fn round_rect(&self, r: Rect, radius: f32, c: Color) {
@@ -337,6 +378,30 @@ impl Painter {
             l.SetTextAlignment(a)?;
             Ok(l)
         }
+    }
+
+    /// `layout` with tabular figures and/or letter spacing (em).
+    pub fn layout_styled(&mut self, s: &str, r: Rect, size: f32, weight: u16, align: Align, tabular: bool, tracking: f32) -> Result<IDWriteTextLayout> {
+        let l = self.layout(s, r, size, weight, align)?;
+        let all = DWRITE_TEXT_RANGE { startPosition: 0, length: u32::MAX };
+        unsafe {
+            if tabular {
+                l.SetTypography(&self.tabular, all)?;
+            }
+            if tracking != 0.0 {
+                l.cast::<IDWriteTextLayout1>()?.SetCharacterSpacing(0.0, tracking * size, 0.0, all)?;
+            }
+        }
+        Ok(l)
+    }
+
+    /// The laid-out text's width (after trimming).
+    pub fn width(l: &IDWriteTextLayout) -> f32 {
+        let mut m = DWRITE_TEXT_METRICS::default();
+        unsafe {
+            let _ = l.GetMetrics(&mut m);
+        }
+        m.width
     }
 
     pub fn draw_layout(&self, l: &IDWriteTextLayout, x: f32, y: f32, c: Color) {

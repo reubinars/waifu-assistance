@@ -1,11 +1,25 @@
 //! `--demo`: scripted fake media and agents that cycle through every island state.
 
-use super::{AgentSource, ArtImage, MediaCommand, MediaSource, SourceEvent, UiSender};
+use super::{AgentSource, ArtImage, DemoAction, MediaCommand, MediaSource, SourceEvent, UiSender};
 use crate::log;
 use island_core::herdr::{AgentInfo, AgentStatus, Incoming};
 use island_core::media::{MediaSnapshot, Playback};
+use island_core::view::{DisplayMode, Tab};
+use std::sync::Mutex;
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
+
+/// The song the script last sent and when, so `DemoMedia` can answer commands against it.
+static SONG: Mutex<Option<(MediaSnapshot, Instant)>> = Mutex::new(None);
+
+fn media(tx: &UiSender, snap: Option<MediaSnapshot>) {
+    *SONG.lock().unwrap() = snap.clone().map(|s| (s, Instant::now()));
+    tx.send(SourceEvent::Media(snap));
+}
+
+fn demo(tx: &UiSender, a: DemoAction) {
+    tx.send(SourceEvent::Demo(a));
+}
 
 /// How long paused media stays shown in the demo.
 pub const DEMO_LINGER: Duration = Duration::from_secs(3);
@@ -70,16 +84,16 @@ fn script(tx: UiSender) {
     let long_dir = "/home/demo/ディレクトリ-with-a-very-long-name";
     loop {
         // idle
-        tx.send(SourceEvent::Media(None));
+        media(&tx, None);
         tx.send(SourceEvent::Art(None));
         agents(&tx, vec![]);
         thread::sleep(STEP);
         // media playing
         tx.send(SourceEvent::Art(Some(gradient_art())));
-        tx.send(SourceEvent::Media(Some(song(Playback::Playing))));
+        media(&tx, Some(song(Playback::Playing)));
         thread::sleep(STEP);
         // working ×2 (media off: media outranks working)
-        tx.send(SourceEvent::Media(None));
+        media(&tx, None);
         agents(&tx, working());
         thread::sleep(STEP);
         // done
@@ -93,10 +107,35 @@ fn script(tx: UiSender) {
         list.push(agent("w1:p5", "codex", AgentStatus::Blocked, "Allow edit to Cargo.toml?", proj));
         agents(&tx, list);
         thread::sleep(STEP);
+        // expanded: agents tab (5 agents, 4 rows), then media tab; then attached mode
+        let rows = vec![
+            agent("w1:p6", "gemini", AgentStatus::Idle, "Waiting for input", "/home/demo/projects/nil"),
+            agent("w1:p1", "claude", AgentStatus::Working, "Refactoring the herdr parser", proj),
+            agent("w1:p4", "claude", AgentStatus::Blocked, &long_title, long_dir),
+            agent("w1:p3", "codex", AgentStatus::Done, "Implemented the tray", "/home/demo/rea"),
+            agent("w1:p2", "opencode", AgentStatus::Working, "Writing tests", "/home/demo/projects/nil"),
+        ];
+        agents(&tx, rows);
+        tx.send(SourceEvent::Art(Some(gradient_art())));
+        media(&tx, Some(song(Playback::Playing)));
+        thread::sleep(Duration::from_secs(1));
+        demo(&tx, DemoAction::Expand(Tab::Agents));
+        thread::sleep(STEP);
+        demo(&tx, DemoAction::Expand(Tab::Media));
+        thread::sleep(STEP);
+        demo(&tx, DemoAction::Collapse);
+        agents(&tx, vec![]);
+        demo(&tx, DemoAction::Mode(DisplayMode::Attached));
+        thread::sleep(STEP);
+        demo(&tx, DemoAction::Expand(Tab::Media));
+        thread::sleep(STEP);
+        demo(&tx, DemoAction::Collapse);
+        thread::sleep(Duration::from_secs(1));
+        demo(&tx, DemoAction::Mode(DisplayMode::Pill));
         // media paused: lingers DEMO_LINGER, then the island shrinks to idle by itself
         agents(&tx, vec![]);
         tx.send(SourceEvent::Art(Some(gradient_art())));
-        tx.send(SourceEvent::Media(Some(song(Playback::Paused))));
+        media(&tx, Some(song(Playback::Paused)));
         thread::sleep(STEP + DEMO_LINGER);
     }
 }
@@ -117,12 +156,36 @@ impl AgentSource for DemoAgents {
     }
 }
 
-pub struct DemoMedia;
+/// Answers play/pause, seek and skip by changing the current demo song.
+#[derive(Default)]
+pub struct DemoMedia {
+    tx: Option<UiSender>,
+}
 
 impl MediaSource for DemoMedia {
-    fn start(&mut self, _tx: UiSender) {}
+    fn start(&mut self, tx: UiSender) {
+        self.tx = Some(tx);
+    }
 
     fn command(&self, c: MediaCommand) {
         log::info!("demo media command {c:?}");
+        let Some(tx) = &self.tx else { return };
+        let mut song = SONG.lock().unwrap();
+        let Some((s, at)) = song.as_mut() else { return };
+        if s.playback == Playback::Playing {
+            s.position_s = (s.position_s + at.elapsed().as_secs_f64()).min(s.duration_s);
+        }
+        *at = Instant::now();
+        match c {
+            MediaCommand::PlayPause => {
+                s.playback = if s.playback == Playback::Playing { Playback::Paused } else { Playback::Playing };
+            }
+            MediaCommand::Seek(pos) => s.position_s = pos,
+            MediaCommand::Next | MediaCommand::Previous => {
+                s.title = if s.title == "Midnight City" { "Wait".into() } else { "Midnight City".into() };
+                s.position_s = 0.0;
+            }
+        }
+        tx.send(SourceEvent::Media(Some(s.clone())));
     }
 }

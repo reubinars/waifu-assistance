@@ -139,6 +139,35 @@ pub fn hit_rounded(rect: Rect, radii: [f32; 4], p: Point) -> bool {
     true
 }
 
+/// The pane to jump to when the collapsed island is clicked: the one agent that is blocked or
+/// done, if exactly one is.
+pub fn jump_target(agents: &AgentTable) -> Option<String> {
+    if agents.count(AgentStatus::Blocked) + agents.count(AgentStatus::Done) != 1 {
+        return None;
+    }
+    agents
+        .first(AgentStatus::Blocked)
+        .or_else(|| agents.first(AgentStatus::Done))
+        .map(|a| a.info.pane_id.clone())
+}
+
+/// Time in state for an agent row: `12s`, `4m`, `1h` (whole units, rounded down).
+pub fn time_in_state(d: std::time::Duration) -> String {
+    let s = d.as_secs();
+    match s {
+        0..60 => format!("{s}s"),
+        60..3600 => format!("{}m", s / 60),
+        _ => format!("{}h", s / 3600),
+    }
+}
+
+/// A media time: `m:ss`, or `h:mm:ss` from an hour.
+pub fn clock_label(secs: f64) -> String {
+    let s = secs.max(0.0) as u64;
+    let (h, m, s) = (s / 3600, s / 60 % 60, s % 60);
+    if h > 0 { format!("{h}:{m:02}:{s:02}") } else { format!("{m}:{s:02}") }
+}
+
 /// Expanded-island layout, relative to the expanded island's top-left (DIPs).
 pub mod layout {
     use crate::Rect;
@@ -333,5 +362,41 @@ mod tests {
         assert_eq!(hit_expanded(Tab::Agents, false, 0, false, p(300.0, 20.0)), None);
         // buttons only exist on the media tab
         assert_eq!(hit_expanded(Tab::Agents, true, 0, false, p(180.0, 160.0)), None);
+    }
+
+    #[test]
+    fn time_in_state_labels() {
+        let s = Duration::from_secs;
+        assert_eq!(time_in_state(s(0)), "0s");
+        assert_eq!(time_in_state(s(12)), "12s");
+        assert_eq!(time_in_state(s(59)), "59s");
+        assert_eq!(time_in_state(s(60)), "1m");
+        assert_eq!(time_in_state(s(4 * 60 + 59)), "4m");
+        assert_eq!(time_in_state(s(3599)), "59m");
+        assert_eq!(time_in_state(s(3600)), "1h");
+        assert_eq!(time_in_state(s(30 * 3600)), "30h");
+    }
+
+    #[test]
+    fn clock_labels() {
+        assert_eq!(clock_label(0.0), "0:00");
+        assert_eq!(clock_label(42.7), "0:42");
+        assert_eq!(clock_label(243.0), "4:03");
+        assert_eq!(clock_label(3723.0), "1:02:03");
+        assert_eq!(clock_label(-5.0), "0:00");
+    }
+
+    #[test]
+    fn jump_only_when_exactly_one_agent_needs_attention() {
+        let t0 = Instant::now();
+        let mut t = AgentTable::default();
+        t.upsert(test_info("w1:p1", Working), t0);
+        assert_eq!(jump_target(&t), None);
+        t.upsert(test_info("w1:p2", Done), t0);
+        assert_eq!(jump_target(&t), Some("w1:p2".to_string()));
+        t.upsert(test_info("w1:p3", Blocked), t0);
+        assert_eq!(jump_target(&t), None);
+        t.remove("w1:p2");
+        assert_eq!(jump_target(&t), Some("w1:p3".to_string()));
     }
 }

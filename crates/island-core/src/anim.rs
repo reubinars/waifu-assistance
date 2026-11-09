@@ -152,6 +152,14 @@ pub fn pulse(t: f32, period: f32) -> (f32, f32) {
     (0.25 + 0.35 * p, 0.9 + 0.2 * p)
 }
 
+/// The expanded art glow (§6.3): opacity 0.3↔0.6 and scale 0.95↔1.05, ease-in-out,
+/// 3 s each way.
+pub fn breathe(t: f32) -> (f32, f32) {
+    let phase = (t / 6.0).rem_euclid(1.0);
+    let p = if phase < 0.5 { ease_in_out(phase * 2.0) } else { ease_in_out((1.0 - phase) * 2.0) };
+    (0.3 + 0.3 * p, 0.95 + 0.1 * p)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -230,5 +238,17 @@ mod tests {
         assert!((o - 0.6).abs() < 1e-3 && (s - 1.1).abs() < 1e-3);
         let (o, _) = pulse(1.2, BLOCKED_PULSE_PERIOD);
         assert!((o - 0.25).abs() < 1e-3);
+    }
+
+    #[test]
+    fn art_glow_breathes_over_3s_alternating() {
+        let (o, s) = breathe(0.0);
+        assert!((o - 0.3).abs() < 1e-3 && (s - 0.95).abs() < 1e-3);
+        let (o, s) = breathe(3.0);
+        assert!((o - 0.6).abs() < 1e-3 && (s - 1.05).abs() < 1e-3);
+        let (o, _) = breathe(6.0);
+        assert!((o - 0.3).abs() < 1e-3);
+        let (o, _) = breathe(1.5);
+        assert!(o > 0.3 && o < 0.6);
     }
 }

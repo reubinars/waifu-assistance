@@ -30,11 +30,10 @@ pub struct Gfx {
     pub dc: ID2D1DeviceContext,
     swap: IDXGISwapChain1,
     waitable: HANDLE,
-    dcomp: IDCompositionDevice,
+    _dcomp: IDCompositionDevice,
     _target: IDCompositionTarget,
     _visual: IDCompositionVisual,
     _d3d: ID3D11Device,
-    size: (u32, u32),
     /// Vblanks per present: about 60 fps whatever the refresh rate.
     sync: u32,
 }
@@ -111,7 +110,7 @@ impl Gfx {
 
             let sync = sync_interval();
             log::info!("graphics ready: {}x{} px, present every {sync} vblank(s)", size.0, size.1);
-            let gfx = Gfx { factory, dc, swap, waitable, dcomp, _target: target, _visual: visual, _d3d: d3d, size, sync };
+            let gfx = Gfx { factory, dc, swap, waitable, _dcomp: dcomp, _target: target, _visual: visual, _d3d: d3d, sync };
             gfx.bind_target(scale)?;
             Ok(gfx)
         }
@@ -136,17 +135,6 @@ impl Gfx {
             self.dc.SetDpi(dpi, dpi);
         }
         Ok(())
-    }
-
-    /// Resizes the swap chain after a DPI or display change.
-    pub fn resize(&mut self, size: (u32, u32), scale: f32) -> Result<()> {
-        unsafe {
-            self.dc.SetTarget(None);
-            self.swap.ResizeBuffers(0, size.0.max(1), size.1.max(1), DXGI_FORMAT_B8G8R8A8_UNORM, FLAGS)?;
-        }
-        self.size = size;
-        self.bind_target(scale)?;
-        unsafe { self.dcomp.Commit() }
     }
 
     /// Signalled when the swap chain can take the next frame.
