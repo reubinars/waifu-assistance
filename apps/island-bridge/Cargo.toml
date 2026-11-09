@@ -1,0 +1,6 @@
+[package]
+name = "island-bridge"
+edition.workspace = true
+version.workspace = true
+
+[dependencies]
