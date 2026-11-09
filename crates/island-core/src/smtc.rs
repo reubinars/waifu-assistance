@@ -3,11 +3,11 @@
 const TICKS_PER_SECOND: f64 = 10_000_000.0;
 
 /// A thumbnail can arrive after the text for a track. Retry on metadata events,
-/// but never turn timeline ticks into artwork downloads or decode successful art twice.
+/// including replacement of a previously decoded placeholder. Timeline wakes do not read art.
 #[derive(Default)]
 pub struct ArtRetry {
     track: Option<String>,
-    ready: bool,
+    last_hash: Option<u64>,
 }
 
 impl ArtRetry {
@@ -15,13 +15,41 @@ impl ArtRetry {
         let changed = self.track.as_deref() != Some(track);
         if changed {
             self.track = Some(track.to_owned());
-            self.ready = false;
+            self.last_hash = None;
         }
-        !self.ready && (changed || metadata_event)
+        changed || metadata_event
     }
 
-    pub fn obtained(&mut self, success: bool) {
-        self.ready = success;
+    /// `None` represents no visible artwork. Remember only what the UI was sent.
+    pub fn should_publish(&mut self, hash: Option<u64>) -> bool {
+        let changed = self.last_hash != hash;
+        self.last_hash = hash;
+        changed
+    }
+}
+
+/// Fingerprint of decoded PBGRA pixels, with placeholder detection.
+pub struct ArtFingerprint {
+    pub hash: u64,
+    pub opaque_fraction: f64,
+    pub visible: bool,
+}
+
+impl ArtFingerprint {
+    pub fn new(bgra: &[u8]) -> Self {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        bgra.hash(&mut hasher);
+        let pixels = bgra.as_chunks::<4>().0.iter();
+        let count = pixels.len();
+        // Alpha <= 4/255 is effectively invisible, even if RGB bytes vary.
+        let opaque = pixels.clone().filter(|p| p[3] > 4).count();
+        let uniform = pixels.clone().all(|p| Some(p) == pixels.clone().next());
+        Self {
+            hash: hasher.finish(),
+            opaque_fraction: if count == 0 { 0.0 } else { opaque as f64 / count as f64 },
+            visible: opaque > 0 && !uniform,
+        }
     }
 }
 
@@ -191,19 +219,43 @@ mod tests {
     }
 
     #[test]
-    fn delayed_art_retries_only_on_metadata_until_success() {
+    fn art_is_reread_on_metadata_even_after_success() {
         let mut art = ArtRetry::default();
         assert!(art.should_read("track", false)); // first snapshot
-        art.obtained(false); // missing thumbnail or failed decode
         assert!(!art.should_read("track", false)); // timeline/playback wake
         assert!(art.should_read("track", true)); // delayed metadata
-        art.obtained(false);
         assert!(art.should_read("track", true)); // still retry after error
-        art.obtained(true);
-        assert!(!art.should_read("track", true));
+        assert!(art.should_publish(Some(42))); // successfully decoded art
+        assert!(art.should_read("track", true));
         assert!(!art.should_read("track", false));
         assert!(art.should_read("next", false));
-        art.obtained(false);
         assert!(art.should_read("next", true));
+    }
+
+    #[test]
+    fn artwork_rejects_transparent_and_uniform_placeholders() {
+        for pixels in [&[0, 0, 0, 0, 1, 1, 1, 4][..], &[90, 90, 90, 255, 90, 90, 90, 255][..], &[]] {
+            assert!(!ArtFingerprint::new(pixels).visible);
+        }
+        let art = ArtFingerprint::new(&[0, 0, 0, 255, 0, 0, 200, 255]);
+        assert!(art.visible);
+        assert_eq!(art.opaque_fraction, 1.0);
+        assert_eq!(ArtFingerprint::new(&[0, 0, 0, 0, 0, 0, 200, 255]).opaque_fraction, 0.5);
+        assert_ne!(art.hash, ArtFingerprint::new(&[0, 0, 0, 255, 0, 0, 201, 255]).hash);
+    }
+
+    #[test]
+    fn artwork_only_publishes_pixel_changes_including_removal() {
+        let mut art = ArtRetry::default();
+        assert!(art.should_read("track", false));
+        assert!(!art.should_publish(None));
+        assert!(art.should_publish(Some(1)));
+        assert!(!art.should_publish(Some(1)));
+        assert!(art.should_publish(Some(2)));
+        assert!(art.should_publish(None));
+        assert!(!art.should_publish(None));
+        assert!(art.should_publish(Some(2)));
+        assert!(art.should_read("next", false));
+        assert!(art.should_publish(Some(2))); // UI was cleared for the new track
     }
 }

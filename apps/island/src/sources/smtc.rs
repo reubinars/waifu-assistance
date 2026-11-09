@@ -5,7 +5,7 @@ use super::{ArtImage, MediaCommand, MediaSource, SourceEvent, UiSender};
 use crate::log;
 use island_core::color::dominant_color;
 use island_core::media::{MediaSnapshot, Playback};
-use island_core::smtc::{ArtRetry, SessionSelection, Timeline, TrackTimeline};
+use island_core::smtc::{ArtFingerprint, ArtRetry, SessionSelection, Timeline, TrackTimeline};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -315,18 +315,30 @@ fn run_manager(ui: &UiSender, tx: &Sender<Wake>, rx: &Receiver<Wake>, next_id: &
                     ui.send(SourceEvent::Art(None));
                 }
                 if art_retry.should_read(&key, metadata_event) {
-                    let art = match read_art(&properties) {
+                    let mut art = match read_art(&properties) {
                         Ok(art) => art,
                         Err(e) => {
                             log::warning!("SMTC album art unavailable: {e}");
                             None
                         }
                     };
-                    if art.is_some() {
-                        log::info!("SMTC album art decoded: 140x140 PBGRA");
+                    let hash = art.as_ref().and_then(|image| {
+                        let fingerprint = ArtFingerprint::new(&image.bgra);
+                        log::debug!(
+                            "SMTC album art decoded: hash={:016x}, opaque-pixel fraction={:.4}, visible={}",
+                            fingerprint.hash,
+                            fingerprint.opaque_fraction,
+                            fingerprint.visible
+                        );
+                        fingerprint.visible.then_some(fingerprint.hash)
+                    });
+                    if hash.is_none() {
+                        art = None;
                     }
-                    art_retry.obtained(art.is_some());
-                    ui.send(SourceEvent::Art(art));
+                    if art_retry.should_publish(hash) {
+                        log::debug!("SMTC album art published: {hash:?}");
+                        ui.send(SourceEvent::Art(art));
+                    }
                 }
                 Ok(())
             })();
