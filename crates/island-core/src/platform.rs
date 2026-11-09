@@ -4,6 +4,12 @@ use crate::Rect;
 use crate::config::Config;
 use std::time::Duration;
 
+/// Windows image paths use backslashes even when this policy is tested on Linux.
+pub fn terminal_process_matches(configured: &str, image_path: &str) -> bool {
+    !configured.is_empty()
+        && image_path.rsplit(['\\', '/']).next().is_some_and(|name| name.eq_ignore_ascii_case(configured))
+}
+
 /// Child failures back off, while a stable bridge earns a fresh retry budget.
 pub struct BridgeBackoff {
     next_seconds: u64,
@@ -93,6 +99,15 @@ pub fn is_fullscreen(fg: Rect, monitor: Rect, class: &str, is_own: bool) -> bool
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn terminal_process_matches_only_the_image_filename_case_insensitively() {
+        assert!(terminal_process_matches("warp.exe", r"C:\Users\Victus\AppData\Local\Warp\WaRp.ExE"));
+        assert!(terminal_process_matches("WARP.EXE", "warp.exe"));
+        assert!(!terminal_process_matches("warp.exe", r"C:\warp.exe\other.exe"));
+        assert!(!terminal_process_matches("warp.exe", r"C:\app\notwarp.exe"));
+        assert!(!terminal_process_matches("", ""));
+    }
 
     fn utf16le(s: &str) -> Vec<u8> {
         s.encode_utf16().flat_map(u16::to_le_bytes).collect()

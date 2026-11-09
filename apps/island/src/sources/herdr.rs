@@ -4,7 +4,9 @@ use super::{AgentSource, SourceEvent, UiSender};
 use crate::log;
 use island_core::config::Config;
 use island_core::herdr::{Incoming, parse_line};
-use island_core::platform::{BridgeBackoff, bridge_command, parse_wsl_list_verbose, should_run_bridge};
+use island_core::platform::{
+    BridgeBackoff, bridge_command, parse_wsl_list_verbose, should_run_bridge, terminal_process_matches,
+};
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::os::windows::{io::AsRawHandle, process::CommandExt};
 use std::process::{Child, Command, Stdio};
@@ -20,11 +22,15 @@ use windows::Win32::System::JobObjects::{
     JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JobObjectExtendedLimitInformation, SetInformationJobObject,
     TerminateJobObject,
 };
-use windows::Win32::System::Threading::{INFINITE, WaitForSingleObject};
-use windows::Win32::UI::WindowsAndMessaging::{
-    EnumWindows, GetClassNameW, IsIconic, IsWindowVisible, SW_RESTORE, SetForegroundWindow, ShowWindowAsync,
+use windows::Win32::System::Threading::{
+    INFINITE, OpenProcess, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION, QueryFullProcessImageNameW,
+    WaitForSingleObject,
 };
-use windows::core::{BOOL, PCWSTR};
+use windows::Win32::UI::WindowsAndMessaging::{
+    EnumWindows, GetClassNameW, GetWindowTextLengthW, GetWindowThreadProcessId, IsIconic, IsWindowVisible, SW_RESTORE,
+    SetForegroundWindow, ShowWindowAsync,
+};
+use windows::core::{BOOL, PCWSTR, PWSTR};
 
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 const WSL_CHECK: Duration = Duration::from_secs(15);
@@ -73,19 +79,47 @@ impl AgentSource for HerdrSource {
     fn raise_terminal(&self) {
         struct Search {
             class: Vec<u16>,
+            process: String,
             found: Option<HWND>,
         }
         unsafe extern "system" fn visit(hwnd: HWND, param: LPARAM) -> BOOL {
             let search = unsafe { &mut *(param.0 as *mut Search) };
-            let mut class = [0u16; 256];
-            let len = unsafe { GetClassNameW(hwnd, &mut class) } as usize;
-            if class[..len] == search.class && unsafe { IsWindowVisible(hwnd) }.as_bool() {
+            if !unsafe { IsWindowVisible(hwnd) }.as_bool() {
+                return BOOL(1);
+            }
+            let matches = if search.process.is_empty() {
+                let mut class = [0u16; 256];
+                let len = unsafe { GetClassNameW(hwnd, &mut class) } as usize;
+                class[..len] == search.class
+            } else {
+                if unsafe { GetWindowTextLengthW(hwnd) } <= 0 {
+                    return BOOL(1);
+                }
+                let mut pid = 0;
+                unsafe { GetWindowThreadProcessId(hwnd, Some(&mut pid)) };
+                let Ok(process) = (unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) }) else {
+                    return BOOL(1);
+                };
+                let mut image = vec![0u16; 32768];
+                let mut len = image.len() as u32;
+                let result = unsafe {
+                    QueryFullProcessImageNameW(process, PROCESS_NAME_WIN32, PWSTR(image.as_mut_ptr()), &mut len)
+                };
+                let _ = unsafe { CloseHandle(process) };
+                result.is_ok()
+                    && terminal_process_matches(&search.process, &String::from_utf16_lossy(&image[..len as usize]))
+            };
+            if matches {
                 search.found = Some(hwnd);
                 return BOOL(0);
             }
             BOOL(1)
         }
-        let mut search = Search { class: self.config.terminal_window_class.encode_utf16().collect(), found: None };
+        let mut search = Search {
+            class: self.config.terminal_window_class.encode_utf16().collect(),
+            process: self.config.terminal_process.clone(),
+            found: None,
+        };
         unsafe {
             let _ = EnumWindows(Some(visit), LPARAM(&mut search as *mut _ as isize));
         }
@@ -100,7 +134,8 @@ impl AgentSource for HerdrSource {
                 log::info!("terminal foreground: {raised}");
             }
         } else {
-            log::info!("terminal window not found ({})", self.config.terminal_window_class);
+            let target = if search.process.is_empty() { &self.config.terminal_window_class } else { &search.process };
+            log::info!("terminal window not found ({target})");
         }
     }
 }
