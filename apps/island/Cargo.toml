@@ -1,0 +1,8 @@
+[package]
+name = "island"
+edition.workspace = true
+version.workspace = true
+
+[dependencies]
+island-core.workspace = true
+windows.workspace = true
