@@ -7,6 +7,8 @@ mod app;
 #[cfg(windows)]
 mod draw;
 #[cfg(windows)]
+mod fullscreen;
+#[cfg(windows)]
 mod gfx;
 #[cfg(windows)]
 mod log;
@@ -92,6 +94,7 @@ fn run() -> windows::core::Result<()> {
     }
 
     let win = window::create(config.display_mode)?;
+    let visual = win.visual;
     let (tx, rx) = mpsc::channel();
     let ui = UiSender::new(tx, win.visual);
     let (clock, media, agents): (MediaClock, Box<dyn MediaSource>, Box<dyn AgentSource>) = if demo {
@@ -102,6 +105,8 @@ fn run() -> windows::core::Result<()> {
     let config_path = (!demo).then(|| dir.join("config.toml"));
     let mut app = app::App::new(config, config_path, win, clock, media, agents);
     app.start_sources(ui);
+    // keeps the hooks alive for the life of the loop
+    let _fullscreen = fullscreen::install(visual);
 
     let mut msg = MSG::default();
     loop {

@@ -64,6 +64,25 @@ pub fn choose_collapsed(agents: &AgentTable, media_present: bool) -> Collapsed {
     }
 }
 
+/// How much of the island is on screen.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Shown {
+    Hidden,
+    /// Over a fullscreen window: the collapsed blocked pill, which doesn't expand.
+    CollapsedOnly,
+    All,
+}
+
+/// §7: hidden from the tray, or over a fullscreen window unless an agent is blocked.
+pub fn shown(user_hidden: bool, fullscreen: bool, c: &Collapsed) -> Shown {
+    match (user_hidden, fullscreen, c) {
+        (true, _, _) => Shown::Hidden,
+        (false, false, _) => Shown::All,
+        (false, true, Collapsed::Blocked { .. }) => Shown::CollapsedOnly,
+        (false, true, _) => Shown::Hidden,
+    }
+}
+
 pub fn collapsed_size(c: &Collapsed) -> Size {
     let w = match c {
         Collapsed::Idle => 40.0,
@@ -398,5 +417,20 @@ mod tests {
         assert_eq!(jump_target(&t), None);
         t.remove("w1:p2");
         assert_eq!(jump_target(&t), Some("w1:p3".to_string()));
+    }
+
+    #[test]
+    fn fullscreen_shows_only_the_blocked_pill() {
+        let blocked = Collapsed::Blocked { label: "a needs you".into(), pane_id: "w1:p1".into() };
+        let done = Collapsed::Done { label: "a done".into(), pane_id: "w1:p1".into() };
+        assert_eq!(shown(false, false, &Collapsed::Idle), Shown::All);
+        assert_eq!(shown(false, false, &blocked), Shown::All);
+        assert_eq!(shown(false, true, &blocked), Shown::CollapsedOnly);
+        for c in [Collapsed::Idle, Collapsed::Media, Collapsed::Working { count: 2 }, done] {
+            assert_eq!(shown(false, true, &c), Shown::Hidden, "{c:?}");
+        }
+        // hidden from the tray stays hidden, even for a blocked agent
+        assert_eq!(shown(true, false, &blocked), Shown::Hidden);
+        assert_eq!(shown(true, true, &blocked), Shown::Hidden);
     }
 }

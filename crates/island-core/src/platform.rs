@@ -120,8 +120,10 @@ pub fn dot_icon_bgra(size: u32) -> Vec<u8> {
 }
 
 /// A foreground window that covers its whole monitor and isn't the desktop, the taskbar or us.
-pub fn is_fullscreen(fg: Rect, monitor: Rect, class: &str, is_own: bool) -> bool {
-    if is_own || matches!(class, "Progman" | "WorkerW" | "Shell_TrayWnd") {
+/// `app_maximized`: maximized with a caption, an ordinary app window (its invisible borders
+/// overhang the monitor when the taskbar auto-hides), never fullscreen.
+pub fn is_fullscreen(fg: Rect, monitor: Rect, class: &str, is_own: bool, app_maximized: bool) -> bool {
+    if is_own || app_maximized || matches!(class, "Progman" | "WorkerW" | "Shell_TrayWnd") {
         return false;
     }
     fg.x <= monitor.x && fg.y <= monitor.y && fg.x + fg.w >= monitor.x + monitor.w && fg.y + fg.h >= monitor.y + monitor.h
@@ -179,14 +181,23 @@ mod tests {
     #[test]
     fn fullscreen() {
         let m = Rect { x: 0.0, y: 0.0, w: 1920.0, h: 1080.0 };
-        assert!(is_fullscreen(m, m, "Chrome_WidgetWin_1", false));
-        assert!(!is_fullscreen(m, m, "WorkerW", false));
-        assert!(!is_fullscreen(m, m, "Progman", false));
-        assert!(!is_fullscreen(m, m, "Shell_TrayWnd", false));
-        assert!(!is_fullscreen(Rect { h: 1040.0, ..m }, m, "Chrome_WidgetWin_1", false));
-        assert!(!is_fullscreen(m, m, "X", true));
+        assert!(is_fullscreen(m, m, "Chrome_WidgetWin_1", false, false));
+        assert!(!is_fullscreen(m, m, "WorkerW", false, false));
+        assert!(!is_fullscreen(m, m, "Progman", false, false));
+        assert!(!is_fullscreen(m, m, "Shell_TrayWnd", false, false));
+        assert!(!is_fullscreen(Rect { h: 1040.0, ..m }, m, "Chrome_WidgetWin_1", false, false));
+        assert!(!is_fullscreen(m, m, "X", true, false));
         // larger than the monitor (borderless games often overhang) still counts
-        assert!(is_fullscreen(Rect { x: -8.0, y: -8.0, w: 1936.0, h: 1096.0 }, m, "UnityWndClass", false));
+        assert!(is_fullscreen(Rect { x: -8.0, y: -8.0, w: 1936.0, h: 1096.0 }, m, "UnityWndClass", false, false));
+    }
+
+    #[test]
+    fn a_maximized_app_window_is_not_fullscreen() {
+        // with an auto-hiding taskbar a maximized window's invisible borders overhang the monitor
+        let m = Rect { x: 0.0, y: 0.0, w: 1920.0, h: 1080.0 };
+        let maximized = Rect { x: -8.0, y: -8.0, w: 1936.0, h: 1096.0 };
+        assert!(!is_fullscreen(maximized, m, "WINDOWSCLIENT", false, true));
+        assert!(is_fullscreen(maximized, m, "WINDOWSCLIENT", false, false));
     }
 
     #[test]

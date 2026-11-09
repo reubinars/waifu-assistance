@@ -3,6 +3,7 @@
 //! A third, never-shown window owns the tray icon. Window procedures only queue events; the
 //! main loop hands them to `App`.
 
+use crate::fullscreen::WM_APP_FULLSCREEN;
 use crate::log;
 use crate::tray::WM_APP_TRAY;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -54,6 +55,8 @@ pub enum Event {
     TrayMenu(i32, i32),
     /// Explorer (re)started: the tray icon must be added again.
     TaskbarCreated,
+    /// The foreground window started (true) or stopped (false) covering the main monitor.
+    Fullscreen(bool),
 }
 
 /// Win32_UI_Controls, not worth a feature.
@@ -97,6 +100,10 @@ extern "system" fn visual_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
         }
         WM_DPICHANGED | WM_DISPLAYCHANGE | WM_SETTINGCHANGE => {
             push(Event::Reposition);
+            LRESULT(0)
+        }
+        WM_APP_FULLSCREEN => {
+            push(Event::Fullscreen(wp.0 != 0));
             LRESULT(0)
         }
         WM_DESTROY => {

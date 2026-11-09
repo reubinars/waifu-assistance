@@ -2,6 +2,7 @@
 
 use crate::animator::{Animator, Face};
 use crate::draw::{Color, Painter};
+use crate::fullscreen;
 use crate::gfx::Gfx;
 use crate::log;
 use crate::sources::{AgentSource, ArtImage, DemoAction, MediaCommand, MediaSource, SourceEvent, UiSender};
@@ -15,8 +16,8 @@ use island_core::media::MediaClock;
 use island_core::session::HerdrSession;
 use island_core::view::layout::{MAX_ROWS, SEEK};
 use island_core::view::{
-    Collapsed, DisplayMode, EXPANDED, ExpandedHit, Tab, WINDOW, choose_collapsed, clock_label, collapsed_size,
-    corner_radii, default_tab, hit_expanded, hit_rounded, island_rect, jump_target, tabs_visible, time_in_state,
+    Collapsed, DisplayMode, EXPANDED, ExpandedHit, Shown, Tab, WINDOW, choose_collapsed, clock_label, collapsed_size,
+    corner_radii, default_tab, hit_expanded, hit_rounded, island_rect, jump_target, shown, tabs_visible, time_in_state,
 };
 use island_core::{Point, Rect, Size};
 use std::time::{Duration, Instant};
@@ -92,6 +93,8 @@ pub struct App {
     tray: Option<Tray>,
     /// Hidden from the tray menu.
     user_hidden: bool,
+    /// The foreground window covers the main monitor.
+    fullscreen: bool,
     /// Where tray changes are saved; `None` (demo) keeps them in memory and leaves the registry alone.
     config_path: Option<std::path::PathBuf>,
 }
@@ -111,6 +114,7 @@ impl App {
         App {
             tray,
             user_hidden: false,
+            fullscreen: false,
             config_path,
             config,
             win,
@@ -170,6 +174,7 @@ impl App {
             },
         }
         self.retarget(now);
+        self.apply_visibility();
     }
 
     pub fn on_window_event(&mut self, e: Event) {
@@ -190,7 +195,10 @@ impl App {
             }
             Event::Timer(TIMER_TICK) => self.dirty = true,
             Event::Timer(_) => {}
-            Event::Reposition => self.reposition(),
+            Event::Reposition => {
+                self.reposition();
+                fullscreen::check(self.win.visual);
+            }
             Event::MouseMove(x, y) => self.on_mouse_move(self.win.to_dip(x, y)),
             Event::MouseLeave => self.on_mouse_leave(),
             Event::MouseDown(x, y) => self.on_mouse_down(self.win.to_dip(x, y)),
@@ -211,7 +219,12 @@ impl App {
                     t.readd();
                 }
             }
+            Event::Fullscreen(on) => {
+                log::info!("fullscreen {on}");
+                self.fullscreen = on;
+            }
         }
+        self.apply_visibility();
     }
 
     fn on_tray_menu(&mut self, x: i32, y: i32) {
@@ -259,14 +272,20 @@ impl App {
     }
 
     /// Shows or hides the windows to match what should be visible.
+    /// Over a fullscreen app only a blocked agent shows, and only collapsed.
     fn apply_visibility(&mut self) {
-        let on = !self.user_hidden;
-        if !on {
+        let s = shown(self.user_hidden, self.fullscreen, &self.collapsed);
+        if s != Shown::All {
             self.collapse();
-            self.anim.pause();
         }
-        self.win.set_visible(on);
-        self.dirty = true;
+        let on = s != Shown::Hidden;
+        if on != self.win.visible() {
+            if !on {
+                self.anim.pause();
+            }
+            self.win.set_visible(on);
+            self.dirty = true;
+        }
     }
 
     /// The expanded island's top-left once settled (DIPs); what clicks are tested against.
@@ -329,6 +348,7 @@ impl App {
             let attention = matches!(self.collapsed, Collapsed::Blocked { .. } | Collapsed::Done { .. });
             match jump_target(&self.session.agents).filter(|_| attention) {
                 Some(pane) => self.jump(&pane),
+                None if self.fullscreen => {}
                 None => self.expand(default_tab(&self.collapsed), true, now),
             }
             return;
