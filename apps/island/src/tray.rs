@@ -27,11 +27,13 @@ const ID_PILL: u32 = 2;
 const ID_ATTACHED: u32 = 3;
 const ID_STARTUP: u32 = 4;
 const ID_QUIT: u32 = 5;
+const ID_RESET: u32 = 6;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Command {
     ToggleShown,
     Mode(DisplayMode),
+    ResetPosition,
     ToggleStartup,
     Quit,
 }
@@ -110,10 +112,11 @@ impl Tray {
         unsafe {
             let menu = CreatePopupMenu().ok()?;
             let check = |on: bool| if on { MF_STRING | MF_CHECKED } else { MF_STRING };
-            let items: [(u32, _, PCWSTR); 5] = [
+            let items: [(u32, _, PCWSTR); 6] = [
                 (ID_SHOW, MF_STRING, if visible { w!("Hide") } else { w!("Show") }),
                 (ID_PILL, MF_STRING, w!("Pill")),
                 (ID_ATTACHED, MF_STRING, w!("Attached")),
+                (ID_RESET, MF_STRING, w!("Reset position")),
                 (ID_STARTUP, check(cfg.start_with_windows), w!("Start with Windows")),
                 (ID_QUIT, MF_STRING, w!("Quit")),
             ];
@@ -134,6 +137,7 @@ impl Tray {
                 ID_SHOW => Some(Command::ToggleShown),
                 ID_PILL => Some(Command::Mode(DisplayMode::Pill)),
                 ID_ATTACHED => Some(Command::Mode(DisplayMode::Attached)),
+                ID_RESET => Some(Command::ResetPosition),
                 ID_STARTUP => Some(Command::ToggleStartup),
                 ID_QUIT => Some(Command::Quit),
                 _ => None,

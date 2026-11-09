@@ -10,15 +10,15 @@ use crate::startup;
 use crate::tray::{self, Tray};
 use crate::ui_collapsed::{self, SPINNER_TICK_MS, Scene};
 use crate::ui_expanded::{self, Hot, Hover};
-use crate::window::{Event, VK_ESCAPE, Windows};
+use crate::window::{self, Event, VK_ESCAPE, Windows};
 use island_core::config::Config;
 use island_core::media::MediaClock;
 use island_core::session::HerdrSession;
 use island_core::view::layout::{MAX_ROWS, SEEK};
 use island_core::view::{
     Collapsed, DisplayMode, EXPANDED, ExpandedHit, Shown, Tab, WINDOW, choose_collapsed, clock_label, collapsed_size,
-    corner_radii, default_tab, fullscreen_jump_target, hit_expanded, hit_rounded, island_rect, jump_target, shown,
-    tabs_visible, time_in_state,
+    corner_radii, default_tab, fullscreen_jump_target, hit_expanded, hit_rounded, is_drag, island_rect, jump_target,
+    shown, tabs_visible, time_in_state, window_position,
 };
 use island_core::{Point, Rect, Size};
 use std::time::{Duration, Instant};
@@ -42,6 +42,15 @@ pub const TIMER_TICK: usize = 5;
 const LEAVE_COLLAPSE: Duration = Duration::from_secs(2);
 /// Deactivation right after expanding (the click that expanded) doesn't collapse.
 const DEACTIVATE_ARM: Duration = Duration::from_millis(150);
+
+/// A press on the collapsed island: a click on release, or a drag along the top edge once it moves.
+#[derive(Clone, Copy)]
+struct Press {
+    /// Where the press started and where the window was then, screen pixels.
+    x: i32,
+    window_x: i32,
+    dragging: bool,
+}
 
 struct Device {
     gfx: Gfx,
@@ -82,6 +91,7 @@ pub struct App {
     hover: Hover,
     /// Seekbar position (0..=1) while it is dragged.
     drag: Option<f32>,
+    press: Option<Press>,
     anim: Animator,
     device: Option<Device>,
     media: Box<dyn MediaSource>,
@@ -129,6 +139,7 @@ impl App {
             tab: Tab::Media,
             hover: Hover::default(),
             drag: None,
+            press: None,
             anim,
             device: None,
             media,
@@ -200,14 +211,21 @@ impl App {
                 self.reposition();
                 fullscreen::check(self.win.visual);
             }
+            Event::MouseMove(x, _) if self.press.is_some() => self.on_press_move(x),
             Event::MouseMove(x, y) => self.on_mouse_move(self.win.to_dip(x, y)),
             Event::MouseLeave => self.on_mouse_leave(),
+            Event::MouseDown(x, _) if !self.expanded => self.on_press(x),
             Event::MouseDown(x, y) => self.on_mouse_down(self.win.to_dip(x, y)),
+            Event::MouseUp(..) if self.press.is_some() => self.on_release(),
             Event::MouseUp(x, y) => self.on_click(self.win.to_dip(x, y)),
             Event::Key(vk) => self.on_key(vk),
             Event::Activate(false) => self.on_deactivate(now),
             Event::Activate(true) => {}
             Event::CaptureLost => {
+                // capture lost mid-drag: the island stays where it got to
+                if self.press.take().is_some_and(|p| p.dragging) {
+                    self.save_config();
+                }
                 if self.drag.take().is_some() {
                     self.hover.set_pressed(None, self.secs(now));
                     self.dirty = true;
@@ -241,6 +259,11 @@ impl App {
             Some(tray::Command::Mode(m)) if m != self.mode() => {
                 self.set_mode(m, now);
                 self.retarget(now);
+                self.save_config();
+            }
+            Some(tray::Command::ResetPosition) => {
+                self.config.position = 0.5;
+                self.reposition();
                 self.save_config();
             }
             Some(tray::Command::ToggleStartup) => {
@@ -343,19 +366,57 @@ impl App {
         self.dirty = true;
     }
 
+    /// Press on the collapsed island: wait to see whether it is a click or a drag.
+    fn on_press(&mut self, x: i32) {
+        self.press = Some(Press { x, window_x: self.win.origin.0, dragging: false });
+        self.win.capture(true);
+    }
+
+    /// Past the drag threshold the island follows the pointer along the top edge.
+    fn on_press_move(&mut self, x: i32) {
+        let Some(mut press) = self.press else { return };
+        let dx = x - press.x;
+        if !press.dragging {
+            if !is_drag(dx, self.win.scale) {
+                return;
+            }
+            press.dragging = true;
+            self.press = Some(press);
+            self.anim.set_hover(false, self.secs(Instant::now()));
+        }
+        let (work, bounds, scale) = window::primary_monitor();
+        self.config.position = window_position(self.mode(), work, bounds, scale, (press.window_x + dx) as f32);
+        // only the origin changes, so the device and its swap chain stay
+        self.win.place(self.mode(), self.config.position);
+        self.dirty = true;
+    }
+
+    /// Release: a drag saves where the island now sits; anything else is a click.
+    fn on_release(&mut self) {
+        let Some(press) = self.press.take() else { return };
+        self.win.capture(false);
+        if press.dragging {
+            log::info!("moved to position {}", self.config.position);
+            self.save_config();
+        } else {
+            self.on_collapsed_click(Instant::now());
+        }
+    }
+
+    /// Click on the collapsed island: jump to an agent that needs you, else expand.
+    fn on_collapsed_click(&mut self, now: Instant) {
+        let attention = matches!(self.collapsed, Collapsed::Blocked { .. } | Collapsed::Done { .. });
+        let agents = &self.session.agents;
+        let target = if self.fullscreen { fullscreen_jump_target(agents) } else { jump_target(agents) };
+        match target.filter(|_| attention) {
+            Some(pane) => self.jump(&pane),
+            None if self.fullscreen => {}
+            None => self.expand(default_tab(&self.collapsed), true, now),
+        }
+    }
+
     pub fn on_mouse_down(&mut self, p: Point) {
         let now = Instant::now();
-        if !self.expanded {
-            let attention = matches!(self.collapsed, Collapsed::Blocked { .. } | Collapsed::Done { .. });
-            let agents = &self.session.agents;
-            let target = if self.fullscreen { fullscreen_jump_target(agents) } else { jump_target(agents) };
-            match target.filter(|_| attention) {
-                Some(pane) => self.jump(&pane),
-                None if self.fullscreen => {}
-                None => self.expand(default_tab(&self.collapsed), true, now),
-            }
-            return;
-        }
         let hit = self.expanded_hit(p);
         if let Some(ExpandedHit::Seek(f)) = hit {
             self.drag = Some(f);
@@ -470,7 +531,7 @@ impl App {
 
     fn reposition(&mut self) {
         let old = (self.win.origin, self.win.scale);
-        self.win.place(self.mode());
+        self.win.place(self.mode(), self.config.position);
         if (self.win.origin, self.win.scale) != old {
             // the swap chain and every device resource are sized for the old scale
             self.device = None;
