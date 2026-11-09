@@ -1,0 +1,5 @@
+# Upstream reference clone (own git repo)
+/WinIsland/
+
+# Rust
+/target/
