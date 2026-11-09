@@ -40,30 +40,11 @@ pub struct HerdrSource {
     config: Config,
     output: Output,
     control: Option<Sender<Control>>,
-    focus: Sender<Option<isize>>,
 }
 
 impl HerdrSource {
     pub fn new(config: &Config) -> Self {
-        let (focus, requests) = mpsc::channel::<Option<isize>>();
-        let terminal_class = config.terminal_window_class.clone();
-        thread::spawn(move || {
-            for hwnd in requests {
-                let Some(hwnd) = hwnd else {
-                    log::info!("terminal window not found ({terminal_class})");
-                    continue;
-                };
-                let hwnd = HWND(hwnd as _);
-                unsafe {
-                    if IsIconic(hwnd).as_bool() {
-                        let _ = ShowWindowAsync(hwnd, SW_RESTORE);
-                    }
-                    let raised = SetForegroundWindow(hwnd).as_bool();
-                    log::info!("terminal foreground: {raised}");
-                }
-            }
-        });
-        Self { config: config.clone(), output: Arc::new(Mutex::new(None)), control: None, focus }
+        Self { config: config.clone(), output: Arc::new(Mutex::new(None)), control: None }
     }
 }
 
@@ -108,9 +89,19 @@ impl AgentSource for HerdrSource {
         unsafe {
             let _ = EnumWindows(Some(visit), LPARAM(&mut search as *mut _ as isize));
         }
-        // Even restore/activation and diagnostic file IO cannot synchronously
-        // wait on another thread while the island handles the user's click.
-        let _ = self.focus.send(search.found.map(|hwnd| hwnd.0 as isize));
+        // Raise before App::jump collapses: deactivate() must see the terminal
+        // as foreground and avoid restoring the previously active window.
+        if let Some(hwnd) = search.found {
+            unsafe {
+                if IsIconic(hwnd).as_bool() {
+                    let _ = ShowWindowAsync(hwnd, SW_RESTORE);
+                }
+                let raised = SetForegroundWindow(hwnd).as_bool();
+                log::info!("terminal foreground: {raised}");
+            }
+        } else {
+            log::info!("terminal window not found ({})", self.config.terminal_window_class);
+        }
     }
 }
 
