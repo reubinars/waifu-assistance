@@ -1,8 +1,15 @@
 //! Two windows (ledger Task 10 ruling): a click-through visual window the island is composed
 //! into, and an invisible owned input window shaped like the island that takes the clicks.
-//! Window procedures only queue events; the main loop hands them to `App`.
+//! A third, never-shown window owns the tray icon. Window procedures only queue events; the
+//! main loop hands them to `App`.
 
 use crate::log;
+use crate::tray::WM_APP_TRAY;
+use std::sync::atomic::{AtomicU32, Ordering};
+use windows::Win32::UI::Shell::NIN_SELECT;
+use windows::Win32::UI::WindowsAndMessaging::{
+    HWND_TOPMOST, RegisterWindowMessageW, SW_HIDE, SWP_NOMOVE, SWP_NOSIZE, WM_CONTEXTMENU,
+};
 use island_core::view::{DisplayMode, WINDOW, window_origin};
 use island_core::{Point, Rect};
 use std::cell::RefCell;
@@ -43,10 +50,18 @@ pub enum Event {
     Reposition,
     /// The input window lost mouse capture (mid-drag).
     CaptureLost,
+    /// The tray icon was clicked: open its menu at this screen point.
+    TrayMenu(i32, i32),
+    /// Explorer (re)started: the tray icon must be added again.
+    TaskbarCreated,
 }
 
 /// Win32_UI_Controls, not worth a feature.
 const WM_MOUSELEAVE: u32 = 0x02A3;
+/// NIN_SELECT | NINF_KEY; not in the windows crate.
+const NIN_KEYSELECT: u32 = NIN_SELECT | 1;
+
+static TASKBAR_CREATED: AtomicU32 = AtomicU32::new(0);
 
 thread_local! {
     static EVENTS: RefCell<VecDeque<Event>> = const { RefCell::new(VecDeque::new()) };
@@ -90,6 +105,22 @@ extern "system" fn visual_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
         }
         _ => unsafe { DefWindowProcW(hwnd, msg, wp, lp) },
     }
+}
+
+extern "system" fn tray_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
+    if msg == WM_APP_TRAY {
+        // NOTIFYICON_VERSION_4: the event is in LOWORD(lParam), the anchor point in wParam
+        if matches!((lp.0 & 0xffff) as u32, WM_CONTEXTMENU | NIN_SELECT | NIN_KEYSELECT) {
+            let (x, y) = xy(LPARAM(wp.0 as isize));
+            push(Event::TrayMenu(x, y));
+        }
+        return LRESULT(0);
+    }
+    if msg != 0 && msg == TASKBAR_CREATED.load(Ordering::Relaxed) {
+        push(Event::TaskbarCreated);
+        return LRESULT(0);
+    }
+    unsafe { DefWindowProcW(hwnd, msg, wp, lp) }
 }
 
 extern "system" fn input_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
@@ -164,6 +195,9 @@ pub fn primary_monitor() -> (Rect, Rect, f32) {
 pub struct Windows {
     pub visual: HWND,
     pub input: HWND,
+    /// Hidden; receives the tray icon's messages and `TaskbarCreated`.
+    pub tray: HWND,
+    visible: bool,
     /// Visual window top-left, physical pixels.
     pub origin: (i32, i32),
     pub scale: f32,
@@ -180,6 +214,7 @@ pub fn create(mode: DisplayMode) -> Result<Windows> {
         for (name, proc_) in [
             (w!("IslandVisual"), visual_proc as unsafe extern "system" fn(_, _, _, _) -> _),
             (w!("IslandInput"), input_proc),
+            (w!("IslandTray"), tray_proc),
         ] {
             let class = WNDCLASSEXW {
                 cbSize: size_of::<WNDCLASSEXW>() as u32,
@@ -222,7 +257,32 @@ pub fn create(mode: DisplayMode) -> Result<Windows> {
             Some(instance),
             None,
         )?;
-        let mut win = Windows { visual, input, origin: (0, 0), scale: 1.0, placed: None, prev_foreground: None };
+        TASKBAR_CREATED.store(RegisterWindowMessageW(w!("TaskbarCreated")), Ordering::Relaxed);
+        // top-level (not message-only) so it gets the TaskbarCreated broadcast; never shown
+        let tray = CreateWindowExW(
+            WS_EX_TOOLWINDOW,
+            w!("IslandTray"),
+            w!("Island"),
+            WS_POPUP,
+            0,
+            0,
+            0,
+            0,
+            None,
+            None,
+            Some(instance),
+            None,
+        )?;
+        let mut win = Windows {
+            visual,
+            input,
+            tray,
+            visible: true,
+            origin: (0, 0),
+            scale: 1.0,
+            placed: None,
+            prev_foreground: None,
+        };
         win.place(mode);
         let _ = ShowWindow(visual, SW_SHOWNOACTIVATE);
         Ok(win)
@@ -272,8 +332,9 @@ impl Windows {
             return;
         }
         self.placed = Some(key);
+        let show = if self.visible { SWP_SHOWWINDOW } else { Default::default() };
         unsafe {
-            let _ = SetWindowPos(self.input, None, key.0, key.1, w, h, SWP_NOACTIVATE | SWP_NOZORDER | SWP_SHOWWINDOW);
+            let _ = SetWindowPos(self.input, None, key.0, key.1, w, h, SWP_NOACTIVATE | SWP_NOZORDER | show);
             let rgn = CreateRoundRectRgn(0, 0, w + 1, h + 1, d, d);
             if attached {
                 let top = CreateRectRgn(0, 0, w, h / 2);
@@ -281,6 +342,29 @@ impl Windows {
                 let _ = DeleteObject(top.into());
             }
             SetWindowRgn(self.input, Some(rgn), true);
+        }
+    }
+
+    pub fn visible(&self) -> bool {
+        self.visible
+    }
+
+    /// Shows or hides both windows. Shown again, the island goes back on top of other topmost
+    /// windows; the input window reappears at the next `shape_input`.
+    pub fn set_visible(&mut self, on: bool) {
+        if on == self.visible {
+            return;
+        }
+        self.visible = on;
+        self.placed = None;
+        unsafe {
+            if on {
+                let flags = SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW;
+                let _ = SetWindowPos(self.visual, Some(HWND_TOPMOST), 0, 0, 0, 0, flags);
+            } else {
+                let _ = ShowWindow(self.input, SW_HIDE);
+                let _ = ShowWindow(self.visual, SW_HIDE);
+            }
         }
     }
 

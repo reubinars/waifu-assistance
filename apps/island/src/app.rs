@@ -5,6 +5,8 @@ use crate::draw::{Color, Painter};
 use crate::gfx::Gfx;
 use crate::log;
 use crate::sources::{AgentSource, ArtImage, DemoAction, MediaCommand, MediaSource, SourceEvent, UiSender};
+use crate::startup;
+use crate::tray::{self, Tray};
 use crate::ui_collapsed::{self, SPINNER_TICK_MS, Scene};
 use crate::ui_expanded::{self, Hot, Hover};
 use crate::window::{Event, VK_ESCAPE, Windows};
@@ -21,7 +23,7 @@ use std::time::{Duration, Instant};
 use windows::Win32::Foundation::{D2DERR_RECREATE_TARGET, HANDLE};
 use windows::Win32::Graphics::Dxgi::{DXGI_ERROR_DEVICE_HUNG, DXGI_ERROR_DEVICE_REMOVED, DXGI_ERROR_DEVICE_RESET};
 use windows::Win32::Graphics::Direct2D::ID2D1Bitmap1;
-use windows::Win32::UI::WindowsAndMessaging::{KillTimer, SetTimer};
+use windows::Win32::UI::WindowsAndMessaging::{KillTimer, PostQuitMessage, SetTimer};
 use windows::core::{Error, Result};
 
 const COLLAPSED_RADIUS: f32 = 20.0;
@@ -87,11 +89,17 @@ pub struct App {
     animating: bool,
     spinner_on: bool,
     tick_on: bool,
+    tray: Option<Tray>,
+    /// Hidden from the tray menu.
+    user_hidden: bool,
+    /// Where tray changes are saved; `None` (demo) keeps them in memory and leaves the registry alone.
+    config_path: Option<std::path::PathBuf>,
 }
 
 impl App {
     pub fn new(
         config: Config,
+        config_path: Option<std::path::PathBuf>,
         win: Windows,
         clock: MediaClock,
         media: Box<dyn MediaSource>,
@@ -99,7 +107,11 @@ impl App {
     ) -> App {
         let collapsed = Collapsed::Idle;
         let anim = Animator::new(collapsed_size(&collapsed), COLLAPSED_RADIUS, Face::Idle);
+        let tray = Tray::add(win.tray).inspect_err(|e| log::error!("tray icon: {e}")).ok();
         App {
+            tray,
+            user_hidden: false,
+            config_path,
             config,
             win,
             session: HerdrSession::default(),
@@ -154,11 +166,7 @@ impl App {
             SourceEvent::Demo(a) => match a {
                 DemoAction::Expand(tab) => self.expand(tab, false, now),
                 DemoAction::Collapse => self.collapse(),
-                DemoAction::Mode(m) => {
-                    self.config.display_mode = m;
-                    self.anim.set_hover(false, self.secs(now));
-                    self.reposition();
-                }
+                DemoAction::Mode(m) => self.set_mode(m, now),
             },
         }
         self.retarget(now);
@@ -196,7 +204,69 @@ impl App {
                     self.dirty = true;
                 }
             }
+            Event::TrayMenu(x, y) => self.on_tray_menu(x, y),
+            Event::TaskbarCreated => {
+                log::info!("taskbar created: re-adding the tray icon");
+                if let Some(t) = &self.tray {
+                    t.readd();
+                }
+            }
         }
+    }
+
+    fn on_tray_menu(&mut self, x: i32, y: i32) {
+        let Some(tray) = &self.tray else { return };
+        let picked = tray.show_menu(x, y, &self.config, !self.user_hidden);
+        log::debug!("tray: {picked:?}");
+        let now = Instant::now();
+        match picked {
+            Some(tray::Command::ToggleShown) => {
+                self.user_hidden = !self.user_hidden;
+                self.apply_visibility();
+            }
+            Some(tray::Command::Mode(m)) if m != self.mode() => {
+                self.set_mode(m, now);
+                self.retarget(now);
+                self.save_config();
+            }
+            Some(tray::Command::ToggleStartup) => {
+                let on = !self.config.start_with_windows;
+                if self.config_path.is_some()
+                    && let Err(e) = startup::set(on)
+                {
+                    log::warning!("start with Windows: {e}");
+                    return;
+                }
+                self.config.start_with_windows = on;
+                self.save_config();
+            }
+            Some(tray::Command::Quit) => unsafe { PostQuitMessage(0) },
+            _ => {}
+        }
+    }
+
+    fn set_mode(&mut self, m: DisplayMode, now: Instant) {
+        self.config.display_mode = m;
+        self.anim.set_hover(false, self.secs(now));
+        self.reposition();
+    }
+
+    fn save_config(&self) {
+        let Some(path) = &self.config_path else { return };
+        if let Err(e) = std::fs::write(path, self.config.to_toml()) {
+            log::warning!("could not write {}: {e}", path.display());
+        }
+    }
+
+    /// Shows or hides the windows to match what should be visible.
+    fn apply_visibility(&mut self) {
+        let on = !self.user_hidden;
+        if !on {
+            self.collapse();
+            self.anim.pause();
+        }
+        self.win.set_visible(on);
+        self.dirty = true;
     }
 
     /// The expanded island's top-left once settled (DIPs); what clicks are tested against.
@@ -445,8 +515,9 @@ impl App {
         }
     }
 
+    /// Nothing is drawn while hidden; showing again marks the island dirty.
     pub fn wants_frame(&self) -> bool {
-        self.dirty || self.animating
+        self.win.visible() && (self.dirty || self.animating)
     }
 
     /// The swap chain's frame-latency handle, once the device exists.

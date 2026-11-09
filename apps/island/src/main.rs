@@ -13,6 +13,10 @@ mod log;
 #[cfg(windows)]
 mod sources;
 #[cfg(windows)]
+mod startup;
+#[cfg(windows)]
+mod tray;
+#[cfg(windows)]
 mod ui_collapsed;
 #[cfg(windows)]
 mod ui_expanded;
@@ -83,6 +87,9 @@ fn run() -> windows::core::Result<()> {
     log::init(&dir, debug);
     log::info!("island {} starting (demo: {demo})", env!("CARGO_PKG_VERSION"));
     let config = load_config(&dir);
+    if !demo {
+        startup::sync(config.start_with_windows);
+    }
 
     let win = window::create(config.display_mode)?;
     let (tx, rx) = mpsc::channel();
@@ -92,7 +99,8 @@ fn run() -> windows::core::Result<()> {
     } else {
         (MediaClock::default(), Box::new(SmtcSource::new()), Box::new(HerdrSource::new(&config)))
     };
-    let mut app = app::App::new(config, win, clock, media, agents);
+    let config_path = (!demo).then(|| dir.join("config.toml"));
+    let mut app = app::App::new(config, config_path, win, clock, media, agents);
     app.start_sources(ui);
 
     let mut msg = MSG::default();

@@ -88,6 +88,37 @@ pub fn bridge_command(cfg: &Config) -> Vec<String> {
     args
 }
 
+/// The `Island` value under HKCU `...\CurrentVersion\Run`: the exe path, quoted.
+pub fn run_value(exe: &str) -> String {
+    format!("\"{exe}\"")
+}
+
+/// What startup sync must do to the Run value: `Some(true)` write ours, `Some(false)` delete it,
+/// `None` leave it.
+pub fn startup_change(want: bool, current: Option<&str>, exe: &str) -> Option<bool> {
+    match (want, current) {
+        (true, Some(v)) if v == run_value(exe) => None,
+        (true, _) => Some(true),
+        (false, Some(_)) => Some(false),
+        (false, None) => None,
+    }
+}
+
+/// The tray icon: a white dot filling `size`×`size`, BGRA with straight alpha, top-down rows.
+pub fn dot_icon_bgra(size: u32) -> Vec<u8> {
+    let c = size as f32 / 2.0;
+    let r = c - 1.0;
+    let mut px = Vec::with_capacity((size * size * 4) as usize);
+    for y in 0..size {
+        for x in 0..size {
+            let d = ((x as f32 + 0.5 - c).powi(2) + (y as f32 + 0.5 - c).powi(2)).sqrt();
+            let a = (r - d + 0.5).clamp(0.0, 1.0);
+            px.extend([255, 255, 255, (a * 255.0).round() as u8]);
+        }
+    }
+    px
+}
+
 /// A foreground window that covers its whole monitor and isn't the desktop, the taskbar or us.
 pub fn is_fullscreen(fg: Rect, monitor: Rect, class: &str, is_own: bool) -> bool {
     if is_own || matches!(class, "Progman" | "WorkerW" | "Shell_TrayWnd") {
@@ -156,6 +187,40 @@ mod tests {
         assert!(!is_fullscreen(m, m, "X", true));
         // larger than the monitor (borderless games often overhang) still counts
         assert!(is_fullscreen(Rect { x: -8.0, y: -8.0, w: 1936.0, h: 1096.0 }, m, "UnityWndClass", false));
+    }
+
+    #[test]
+    fn run_value_quotes_the_exe_path() {
+        assert_eq!(run_value(r"C:\Users\A B\AppData\Local\island\island.exe"), r#""C:\Users\A B\AppData\Local\island\island.exe""#);
+    }
+
+    #[test]
+    fn startup_sync_writes_or_deletes_only_on_mismatch() {
+        let exe = r"C:\island\island.exe";
+        let ours = run_value(exe);
+        assert_eq!(startup_change(true, None, exe), Some(true));
+        assert_eq!(startup_change(true, Some(&ours), exe), None);
+        // a stale path (the exe moved) is rewritten
+        assert_eq!(startup_change(true, Some(r#""D:\old\island.exe""#), exe), Some(true));
+        assert_eq!(startup_change(false, Some(&ours), exe), Some(false));
+        assert_eq!(startup_change(false, Some(r#""D:\old\island.exe""#), exe), Some(false));
+        assert_eq!(startup_change(false, None, exe), None);
+    }
+
+    #[test]
+    fn tray_dot_is_a_white_antialiased_circle() {
+        let px = dot_icon_bgra(16);
+        assert_eq!(px.len(), 16 * 16 * 4);
+        let at = |x: usize, y: usize| &px[(y * 16 + x) * 4..(y * 16 + x) * 4 + 4];
+        assert_eq!(at(8, 8), [255, 255, 255, 255]);
+        assert_eq!(at(0, 0)[3], 0);
+        assert_eq!(at(15, 15)[3], 0);
+        // straight (not premultiplied) alpha: colour stays white on the soft edge
+        let edge = px.chunks(4).find(|p| p[3] > 0 && p[3] < 255).expect("an antialiased edge");
+        assert_eq!(&edge[..3], [255, 255, 255]);
+        // symmetric
+        assert_eq!(at(3, 8), at(12, 8));
+        assert_eq!(at(8, 3), at(8, 12));
     }
 
     #[test]
