@@ -26,3 +26,4 @@ pub mod color;
 pub mod herdr;
 pub mod media;
 pub mod session;
+pub mod view;
