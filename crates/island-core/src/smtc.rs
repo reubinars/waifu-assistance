@@ -7,7 +7,8 @@ const TICKS_PER_SECOND: f64 = 10_000_000.0;
 #[derive(Default)]
 pub struct ArtRetry {
     track: Option<String>,
-    last_hash: Option<u64>,
+    // Outer None means nothing has been published for this track yet.
+    last_hash: Option<Option<u64>>,
 }
 
 impl ArtRetry {
@@ -22,8 +23,8 @@ impl ArtRetry {
 
     /// `None` represents no visible artwork. Remember only what the UI was sent.
     pub fn should_publish(&mut self, hash: Option<u64>) -> bool {
-        let changed = self.last_hash != hash;
-        self.last_hash = hash;
+        let changed = self.last_hash != Some(hash);
+        self.last_hash = Some(hash);
         changed
     }
 }
@@ -245,10 +246,20 @@ mod tests {
     }
 
     #[test]
+    fn new_track_with_blank_art_clears_previous_tracks_art() {
+        let mut art = ArtRetry::default();
+        assert!(art.should_read("previous", false));
+        assert!(art.should_publish(Some(42)));
+        assert!(art.should_read("new", false));
+        assert!(art.should_publish(None));
+        assert!(!art.should_publish(None));
+    }
+
+    #[test]
     fn artwork_only_publishes_pixel_changes_including_removal() {
         let mut art = ArtRetry::default();
         assert!(art.should_read("track", false));
-        assert!(!art.should_publish(None));
+        assert!(art.should_publish(None));
         assert!(art.should_publish(Some(1)));
         assert!(!art.should_publish(Some(1)));
         assert!(art.should_publish(Some(2)));
