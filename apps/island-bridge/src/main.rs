@@ -1,22 +1,30 @@
 //! island-bridge: relays newline-delimited JSON between stdio and herdr's Unix socket.
 //!
-//! island.exe runs this inside WSL. It prints `{"bridge":"connected"}` /
-//! `{"bridge":"disconnected"}` on each transition, reconnects with backoff
-//! (1 s doubling to 10 s) and exits when stdin closes.
+//! herdr answers one request per connection, and a subscribed connection only streams
+//! events. So each request line gets its own short connection, and `events.subscribe`
+//! lines get one long-lived connection that each new subscribe replaces.
+//!
+//! Prints `{"bridge":"connected"}` / `{"bridge":"disconnected"}` on each transition,
+//! retries with backoff (1 s doubling to 10 s) and exits when stdin closes.
 
 use std::io::{self, BufRead, BufReader, Write};
+use std::net::Shutdown;
 use std::os::unix::net::UnixStream;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::time::{Duration, Instant};
 
 const MIN_BACKOFF: Duration = Duration::from_secs(1);
 const MAX_BACKOFF: Duration = Duration::from_secs(10);
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 
 enum Msg {
     Line(String),
     Eof,
-    SocketClosed(u64),
+    /// The subscription connection with this generation ended.
+    SubscriptionClosed(u64),
+    /// A request could not reach herdr.
+    Unreachable,
 }
 
 fn socket_path() -> PathBuf {
@@ -39,15 +47,14 @@ fn emit(line: &str) {
     }
 }
 
-struct Status(Option<bool>);
+fn is_subscribe(line: &str) -> bool {
+    line.contains(r#""method":"events.subscribe""#)
+}
 
-impl Status {
-    fn set(&mut self, connected: bool) {
-        if self.0 != Some(connected) {
-            self.0 = Some(connected);
-            emit(if connected { r#"{"bridge":"connected"}"# } else { r#"{"bridge":"disconnected"}"# });
-        }
-    }
+fn send_line(stream: &mut UnixStream, line: &str) -> io::Result<()> {
+    stream.write_all(line.as_bytes())?;
+    stream.write_all(b"\n")?;
+    stream.flush()
 }
 
 fn spawn_stdin_reader(tx: Sender<Msg>) {
@@ -62,37 +69,88 @@ fn spawn_stdin_reader(tx: Sender<Msg>) {
     });
 }
 
-fn spawn_socket_reader(stream: UnixStream, generation: u64, tx: Sender<Msg>) {
+/// One request, one connection, one response line.
+fn spawn_request(path: PathBuf, line: String, tx: Sender<Msg>) {
     std::thread::spawn(move || {
-        for line in BufReader::new(stream).lines() {
-            let Ok(line) = line else { break };
-            emit(&line);
+        let Ok(mut stream) = UnixStream::connect(&path) else {
+            let _ = tx.send(Msg::Unreachable);
+            return;
+        };
+        let _ = stream.set_read_timeout(Some(REQUEST_TIMEOUT));
+        if send_line(&mut stream, &line).is_err() {
+            let _ = tx.send(Msg::Unreachable);
+            return;
         }
-        let _ = tx.send(Msg::SocketClosed(generation));
+        let mut response = String::new();
+        if BufReader::new(&stream).read_line(&mut response).unwrap_or(0) > 0 {
+            emit(response.trim_end_matches(['\r', '\n']));
+        }
+        let _ = stream.shutdown(Shutdown::Both);
     });
 }
 
-/// Forwards stdin lines to herdr until the connection ends.
-fn relay(stream: &mut UnixStream, generation: u64, rx: &Receiver<Msg>) {
+fn open_subscription(path: &Path, line: &str, generation: u64, tx: Sender<Msg>) -> Option<UnixStream> {
+    let mut stream = UnixStream::connect(path).ok()?;
+    send_line(&mut stream, line).ok()?;
+    let reader = stream.try_clone().ok()?;
+    std::thread::spawn(move || {
+        for line in BufReader::new(reader).lines() {
+            let Ok(line) = line else { break };
+            emit(&line);
+        }
+        let _ = tx.send(Msg::SubscriptionClosed(generation));
+    });
+    Some(stream)
+}
+
+struct Status(Option<bool>);
+
+impl Status {
+    fn set(&mut self, connected: bool) {
+        if self.0 != Some(connected) {
+            self.0 = Some(connected);
+            emit(if connected { r#"{"bridge":"connected"}"# } else { r#"{"bridge":"disconnected"}"# });
+        }
+    }
+}
+
+/// Serves lines while herdr is reachable; returns when it stops being reachable.
+fn serve(path: &Path, rx: &Receiver<Msg>, tx: &Sender<Msg>, generation: &mut u64) {
+    let mut subscription: Option<UnixStream> = None;
+    let close = |s: Option<UnixStream>| {
+        if let Some(s) = s {
+            let _ = s.shutdown(Shutdown::Both);
+        }
+    };
     loop {
         match rx.recv() {
-            Ok(Msg::Line(line)) => {
-                let sent = stream
-                    .write_all(line.as_bytes())
-                    .and_then(|_| stream.write_all(b"\n"))
-                    .and_then(|_| stream.flush());
-                if sent.is_err() {
-                    return;
+            Ok(Msg::Line(line)) if is_subscribe(&line) => {
+                *generation += 1;
+                match open_subscription(path, &line, *generation, tx.clone()) {
+                    Some(new) => close(subscription.replace(new)),
+                    None => {
+                        close(subscription.take());
+                        return;
+                    }
                 }
             }
-            Ok(Msg::SocketClosed(g)) if g == generation => return,
-            Ok(Msg::SocketClosed(_)) => {}
+            Ok(Msg::Line(line)) => spawn_request(path.to_path_buf(), line, tx.clone()),
+            Ok(Msg::SubscriptionClosed(g)) if g == *generation && subscription.is_some() => {
+                close(subscription.take());
+                return;
+            }
+            Ok(Msg::SubscriptionClosed(_)) => {}
+            Ok(Msg::Unreachable) => {
+                close(subscription.take());
+                *generation += 1; // its reader's close notice is now stale
+                return;
+            }
             Ok(Msg::Eof) | Err(_) => std::process::exit(0),
         }
     }
 }
 
-/// Waits out the backoff, dropping stdin lines (herdr is not there to take them).
+/// Waits out the backoff, dropping lines (herdr is not there to take them).
 fn wait(backoff: Duration, rx: &Receiver<Msg>) {
     let deadline = Instant::now() + backoff;
     loop {
@@ -115,16 +173,13 @@ fn main() {
     let mut generation = 0u64;
 
     loop {
+        // An empty connection tells us whether herdr is listening.
         match UnixStream::connect(&path) {
-            Ok(mut stream) => {
-                generation += 1;
+            Ok(probe) => {
+                let _ = probe.shutdown(Shutdown::Both);
                 backoff = MIN_BACKOFF;
                 status.set(true);
-                if let Ok(reader) = stream.try_clone() {
-                    spawn_socket_reader(reader, generation, tx.clone());
-                    relay(&mut stream, generation, &rx);
-                }
-                let _ = stream.shutdown(std::net::Shutdown::Both);
+                serve(&path, &rx, &tx, &mut generation);
                 status.set(false);
             }
             Err(_) => status.set(false),
