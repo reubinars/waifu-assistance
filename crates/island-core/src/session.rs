@@ -2,12 +2,19 @@
 
 use crate::agents::AgentTable;
 use crate::herdr::{self, Incoming};
+use std::collections::{BTreeMap, BTreeSet};
 use std::time::Instant;
 
 #[derive(Default)]
 pub struct HerdrSession {
     pub agents: AgentTable,
     last_id: u64,
+    /// Panes in the most recently sent subscription.
+    sent: BTreeSet<String>,
+    /// Panes whose status subscription herdr has acknowledged.
+    acked: BTreeSet<String>,
+    /// Subscribe requests awaiting herdr's ack, by id.
+    pending: BTreeMap<String, BTreeSet<String>>,
 }
 
 impl HerdrSession {
@@ -19,16 +26,41 @@ impl HerdrSession {
     /// Subscription covering every known pane; replaces the previous one.
     fn subscribe_all(&mut self) -> String {
         let id = self.next_id();
-        let panes = self.agents.pane_ids();
-        let panes: Vec<&str> = panes.iter().map(String::as_str).collect();
-        herdr::req_subscribe(&id, &panes)
+        let panes: BTreeSet<String> = self.agents.pane_ids().into_iter().collect();
+        let refs: Vec<&str> = panes.iter().map(String::as_str).collect();
+        let req = herdr::req_subscribe(&id, &refs);
+        self.sent = panes.clone();
+        self.pending.insert(id, panes);
+        req
+    }
+
+    /// Once a subscription is live, re-fetch the panes it newly covers: their status may
+    /// have changed between the snapshot and the subscription taking effect.
+    fn subscription_started(&mut self, id: &str) -> Vec<String> {
+        let Some(panes) = self.pending.remove(id) else { return vec![] };
+        let fresh: Vec<String> = panes.difference(&self.acked).cloned().collect();
+        self.acked = panes;
+        fresh
+            .iter()
+            .map(|pane| {
+                let id = self.next_id();
+                herdr::req_agent_get(&id, pane)
+            })
+            .collect()
+    }
+
+    fn reset(&mut self) {
+        self.agents.clear();
+        self.sent.clear();
+        self.acked.clear();
+        self.pending.clear();
     }
 
     /// Applies one bridge line; returns the requests to write to the bridge, in order.
     pub fn handle(&mut self, msg: Incoming, now: Instant) -> Vec<String> {
         match msg {
             Incoming::Bridge { connected: true } => {
-                self.agents.clear();
+                self.reset();
                 let sub = self.subscribe_all();
                 let id = self.next_id();
                 vec![sub, herdr::req_agent_list(&id)]
@@ -46,8 +78,9 @@ impl HerdrSession {
                 vec![herdr::req_agent_get(&id, &pane_id)]
             }
             Incoming::AgentGet { agent, .. } => {
+                let new = !self.sent.contains(&agent.pane_id);
                 self.agents.upsert(agent, now);
-                vec![self.subscribe_all()]
+                if new { vec![self.subscribe_all()] } else { vec![] }
             }
             Incoming::StatusChanged { pane_id, status, title, .. } => {
                 self.agents.set_status(&pane_id, status, title, now);
@@ -58,12 +91,13 @@ impl HerdrSession {
                 self.agents.remove(&pane_id);
                 vec![]
             }
-            Incoming::Ok { .. } | Incoming::Error { .. } | Incoming::Other => vec![],
+            Incoming::Ok { id } => self.subscription_started(&id),
+            Incoming::Error { .. } | Incoming::Other => vec![],
         }
     }
 
     pub fn bridge_down(&mut self) {
-        self.agents.clear();
+        self.reset();
     }
 
     pub fn focus(&mut self, pane_id: &str) -> String {
@@ -149,6 +183,36 @@ mod tests {
         s.handle(Incoming::Bridge { connected: true }, now());
         s.handle(list(&["w1:p2"]), now());
         assert_eq!(s.agents.pane_ids(), vec!["w1:p2".to_string()]);
+    }
+
+    fn id_of(req: &str) -> String {
+        serde_json::from_str::<serde_json::Value>(req).unwrap()["id"].as_str().unwrap().to_owned()
+    }
+
+    #[test]
+    fn subscribe_ack_refetches_newly_covered_panes() {
+        // a status change between the snapshot and the subscription taking effect is caught up
+        let mut s = HerdrSession::default();
+        let sub = s.handle(list(&["w1:p1", "w1:p2"]), now()).remove(0);
+        let out = s.handle(Incoming::Ok { id: id_of(&sub) }, now());
+        assert_eq!(out.len(), 2);
+        assert!(out[0].contains("\"agent.get\"") && out[0].contains("w1:p1"));
+        assert!(out[1].contains("\"agent.get\"") && out[1].contains("w1:p2"));
+        assert!(s.handle(Incoming::Ok { id: id_of(&sub) }, now()).is_empty());
+        assert!(s.handle(Incoming::Ok { id: "island:99".into() }, now()).is_empty());
+    }
+
+    #[test]
+    fn agent_get_resubscribes_only_for_new_panes() {
+        let mut s = HerdrSession::default();
+        let sub = s.handle(list(&["w1:p1"]), now()).remove(0);
+        s.handle(Incoming::Ok { id: id_of(&sub) }, now());
+        // the refetch of a covered pane does not resubscribe
+        assert!(s.handle(Incoming::AgentGet { id: "x".into(), agent: info("w1:p1", Working) }, now()).is_empty());
+        let sub = s.handle(Incoming::AgentGet { id: "y".into(), agent: info("w1:p3", Working) }, now()).remove(0);
+        let out = s.handle(Incoming::Ok { id: id_of(&sub) }, now());
+        assert_eq!(out.len(), 1);
+        assert!(out[0].contains("w1:p3"));
     }
 
     #[test]
