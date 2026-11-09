@@ -177,6 +177,15 @@ pub fn fullscreen_jump_target(agents: &AgentTable) -> Option<String> {
 }
 
 /// Time in state for an agent row: `12s`, `4m`, `1h` (whole units, rounded down).
+/// The collapsed agent status: an icon `icon_w` wide, `gap`, then a label `text_w` wide, centred as one
+/// group in `pill`, at least `pad` in from each side. Returns (icon x, label x, label width); a label wider
+/// than the room left is cut to it (the caller trims the text to that width).
+pub fn centred_status(pill: Rect, pad: f32, icon_w: f32, gap: f32, text_w: f32) -> (f32, f32, f32) {
+    let label_w = text_w.min((pill.w - 2.0 * pad - icon_w - gap).max(0.0));
+    let icon_x = (pill.x + (pill.w - icon_w - gap - label_w) / 2.0).max(pill.x + pad);
+    (icon_x, icon_x + icon_w + gap, label_w)
+}
+
 pub fn time_in_state(d: std::time::Duration) -> String {
     let s = d.as_secs();
     match s {
@@ -452,5 +461,19 @@ mod tests {
         // hidden from the tray stays hidden, even for a blocked agent
         assert_eq!(shown(true, false, &blocked), Shown::Hidden);
         assert_eq!(shown(true, true, &blocked), Shown::Hidden);
+    }
+
+    #[test]
+    fn status_group_is_centred_in_the_pill() {
+        let pill = rect(100.0, 0.0, 160.0, 37.0);
+        // spinner 14 + gap 8 + label 50 = 72 wide, so it starts (160 - 72) / 2 = 44 in
+        assert_eq!(centred_status(pill, 10.0, 14.0, 8.0, 50.0), (144.0, 166.0, 50.0));
+    }
+
+    #[test]
+    fn status_label_too_wide_keeps_the_padding() {
+        let pill = rect(100.0, 0.0, 160.0, 37.0);
+        // room for the label is 160 - 2 * 10 - 14 - 8 = 118; the caller trims it to that
+        assert_eq!(centred_status(pill, 10.0, 14.0, 8.0, 300.0), (110.0, 132.0, 118.0));
     }
 }
