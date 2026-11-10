@@ -30,13 +30,16 @@ pub const PET: Size = Size { w: 64.0, h: 64.0 };
 /// Occupied part of the pet cell; its bottom four rows are transparent.
 pub const PET_BOX: Size = Size { w: 64.0, h: 60.0 };
 pub const PET_GAP: f32 = 4.0;
+/// How far the second pet's cell advances left of the first: the cells overlap by their
+/// transparent margins, so the two sprites stand close without ever touching.
+pub const PET_STEP: f32 = PET.w - 12.0;
 /// Room around the island inside its window for the shadow and glow to fade out in, so the
 /// window's edge never cuts them off. Where the island sits at a screen edge, this room hangs
 /// past that edge (off screen, or over the taskbar strip; the window is click-through).
 const SHADOW_ROOM: f32 = 50.0;
-/// The fixed transparent window (DIPs): the expanded island, pet column and shadow room.
+/// The fixed transparent window (DIPs): the expanded island, two pet cells and shadow room.
 pub const WINDOW: Size = Size {
-    w: EXPANDED.w + PET_BOX.w + PET_GAP + 2.0 * SHADOW_ROOM,
+    w: EXPANDED.w + PET_BOX.w + PET_GAP + PET_STEP + 2.0 * SHADOW_ROOM,
     h: EXPANDED.h + 2.0 * SHADOW_ROOM,
 };
 pub const COLLAPSED: Size = Size { w: 32.0, h: 32.0 };
@@ -107,14 +110,19 @@ fn margin(mode: DisplayMode) -> f32 {
     }
 }
 
-/// The island and optional pet move together as one block.
-pub fn block_size(size: Size, pet: bool) -> Size {
-    if pet { Size { w: size.w + PET_BOX.w + PET_GAP, h: size.h.max(PET_BOX.h) } } else { size }
+/// Width of the pet column left of the island for `pets` (0, 1 or 2) cells, gap included.
+fn pets_w(pets: u8) -> f32 {
+    if pets == 0 { 0.0 } else { PET_BOX.w + PET_GAP + PET_STEP * (pets - 1) as f32 }
+}
+
+/// The island and its pets (0, 1 or 2) move together as one block.
+pub fn block_size(size: Size, pets: u8) -> Size {
+    if pets > 0 { Size { w: size.w + pets_w(pets), h: size.h.max(PET_BOX.h) } } else { size }
 }
 
 /// The block's rect inside the window, in DIPs: anywhere inside the shadow room, by `spot`.
-pub fn block_rect(spot: Spot, size: Size, pet: bool) -> Rect {
-    let size = block_size(size, pet);
+pub fn block_rect(spot: Spot, size: Size, pets: u8) -> Rect {
+    let size = block_size(size, pets);
     let r = SHADOW_ROOM;
     let x = r + (WINDOW.w - 2.0 * r - size.w) * spot.x;
     let y = r + (WINDOW.h - 2.0 * r - size.h) * spot.y;
@@ -132,17 +140,22 @@ fn pet_rel(mode: DisplayMode, spot_y: f32, h: f32) -> f32 {
 }
 
 /// The island sits at the block's right edge, lowered when the pet extends above it.
-pub fn island_rect(mode: DisplayMode, spot: Spot, size: Size, pet: bool) -> Rect {
-    let b = block_rect(spot, size, pet);
-    let dy = if pet { (-pet_rel(mode, spot.y, size.h)).max(0.0) } else { 0.0 };
+pub fn island_rect(mode: DisplayMode, spot: Spot, size: Size, pets: u8) -> Rect {
+    let b = block_rect(spot, size, pets);
+    let dy = if pets > 0 { (-pet_rel(mode, spot.y, size.h)).max(0.0) } else { 0.0 };
     Rect { x: b.x + b.w - size.w, y: b.y + dy, w: size.w, h: size.h }
 }
 
-/// Top-left of the pet cell, aligning its occupied height with the island.
-pub fn pet_cell(mode: DisplayMode, spot: Spot, size: Size) -> Point {
-    let b = block_rect(spot, size, true);
-    let r = island_rect(mode, spot, size, true);
-    Point { x: b.x, y: r.y + pet_rel(mode, spot.y, size.h) }
+/// Top-left of the first pet's cell (next to the island), aligning its occupied height with the island.
+pub fn pet_cell(mode: DisplayMode, spot: Spot, size: Size, pets: u8) -> Point {
+    let r = island_rect(mode, spot, size, pets);
+    Point { x: r.x - PET_GAP - PET.w, y: r.y + pet_rel(mode, spot.y, size.h) }
+}
+
+/// Top-left of the second pet's cell: one step left of the first, same height.
+pub fn second_pet_cell(mode: DisplayMode, spot: Spot, size: Size) -> Point {
+    let c = pet_cell(mode, spot, size, 2);
+    Point { x: c.x - PET_STEP, y: c.y }
 }
 
 /// [top-left, top-right, bottom-right, bottom-left].
@@ -161,42 +174,42 @@ fn area(mode: DisplayMode, work_area: Rect, bounds: Rect) -> Rect {
     }
 }
 
-fn pet_shift(p: f32) -> f32 {
-    (PET.w + PET_GAP) / 2.0 * (1.0 - (2.0 * p - 1.0).abs())
+fn pet_shift(p: f32, pets: u8) -> f32 {
+    pets_w(pets) / 2.0 * (1.0 - (2.0 * p - 1.0).abs())
 }
 
 /// The window's top-left in physical pixels. It moves across the work area (pill) or the whole
 /// monitor (attached), grown by the shadow room less the margin, so that at an edge the island
 /// is `margin` from it and the room hangs past it. A monitor narrower or shorter than the window
 /// centres it on that axis.
-pub fn window_origin(mode: DisplayMode, work_area: Rect, bounds: Rect, scale: f32, spot: Spot, pet: bool) -> Point {
+pub fn window_origin(mode: DisplayMode, work_area: Rect, bounds: Rect, scale: f32, spot: Spot, pets: u8) -> Point {
     let a = area(mode, work_area, bounds);
     let hang = (SHADOW_ROOM - margin(mode)) * scale;
-    let along = |start: f32, len: f32, win: f32, p: f32, pet: bool| {
+    let along = |start: f32, len: f32, win: f32, p: f32, pets: u8| {
         let room = len + 2.0 * hang - win * scale;
         let p = if room > 0.0 { p } else { 0.5 };
-        let shift = if pet { pet_shift(p) * scale } else { 0.0 };
+        let shift = pet_shift(p, pets) * scale;
         start - hang + (room * p - shift).round()
     };
-    Point { x: along(a.x, a.w, WINDOW.w, spot.x, pet), y: along(a.y, a.h, WINDOW.h, spot.y, false) }
+    Point { x: along(a.x, a.w, WINDOW.w, spot.x, pets), y: along(a.y, a.h, WINDOW.h, spot.y, 0) }
 }
 
 /// The spot that puts a block of `size` (DIPs) with its top-left at `at` (physical
 /// pixels); past an edge it stays at that edge. The inverse of `window_origin` + `block_rect`.
-pub fn spot_at(mode: DisplayMode, work_area: Rect, bounds: Rect, scale: f32, size: Size, pet: bool, at: Point) -> Spot {
+pub fn spot_at(mode: DisplayMode, work_area: Rect, bounds: Rect, scale: f32, size: Size, pets: u8, at: Point) -> Spot {
     let a = area(mode, work_area, bounds);
     let m = margin(mode) * scale;
     // On x, invert the tent-shaped pet shift on either side of the centre.
-    let along = |start: f32, len: f32, size: f32, pos: f32, pet: bool| {
+    let along = |start: f32, len: f32, size: f32, pos: f32, pets: u8| {
         let span = len - 2.0 * m - size * scale;
-        let c = if pet { (PET.w + PET_GAP) * scale } else { 0.0 };
+        let c = pets_w(pets) * scale;
         if span - c <= 0.0 {
             return 0.5;
         }
         let s = (pos - start - m) / (span - c);
         if s > 0.5 { (pos - start - m + c) / (span + c) } else { s }
     };
-    Spot::new(mode, along(a.x, a.w, size.w, at.x, pet), along(a.y, a.h, size.h, at.y, false))
+    Spot::new(mode, along(a.x, a.w, size.w, at.x, pets), along(a.y, a.h, size.h, at.y, 0))
 }
 
 /// A press on the collapsed island becomes a drag once the pointer has moved this far.
@@ -458,8 +471,8 @@ mod tests {
                     if mode == DisplayMode::Attached && spot.y != 0.0 {
                         continue;
                     }
-                    let c = pet_cell(mode, spot, size);
-                    let r = island_rect(mode, spot, size, true);
+                    let c = pet_cell(mode, spot, size, 1);
+                    let r = island_rect(mode, spot, size, 1);
                     assert_eq!(c.x + PET.w + PET_GAP, r.x);
                     if mode == DisplayMode::Attached {
                         assert_eq!(c.y, r.y);
@@ -474,12 +487,37 @@ mod tests {
     }
 
     #[test]
+    fn suisei_sits_one_step_left_of_the_pet() {
+        for mode in [DisplayMode::Pill, DisplayMode::Attached] {
+            for size in PET_SIZES {
+                for spot in PET_SPOTS {
+                    if mode == DisplayMode::Attached && spot.y != 0.0 {
+                        continue;
+                    }
+                    let (one, two) = (pet_cell(mode, spot, size, 1), pet_cell(mode, spot, size, 2));
+                    let s = second_pet_cell(mode, spot, size);
+                    assert_eq!(s.x + PET_STEP, two.x);
+                    assert_eq!(s.y, two.y);
+                    // the first pet keeps its place relative to the island
+                    assert_eq!(two.x + PET.w + PET_GAP, island_rect(mode, spot, size, 2).x);
+                    assert_eq!(one.x + PET.w + PET_GAP, island_rect(mode, spot, size, 1).x);
+                    assert_eq!(one.y, two.y);
+                    let b = block_rect(spot, size, 2);
+                    assert_eq!(s.x, b.x);
+                    assert!(s.y >= b.y && s.y + PET_BOX.h <= b.y + b.h);
+                    assert_eq!(b.w, block_size(size, 1).w + PET_STEP);
+                }
+            }
+        }
+    }
+
+    #[test]
     fn at_the_top_the_pet_is_centred_on_the_pill() {
         let area = rect(100.0, 80.0, 1920.0, 1040.0);
         let size = Size { w: 160.0, h: 40.0 };
-        let o = window_origin(DisplayMode::Pill, area, area, 1.0, TOP, true);
-        let c = pet_cell(DisplayMode::Pill, TOP, size);
-        let p = island_on_screen(DisplayMode::Pill, area, area, 1.0, size, TOP, true);
+        let o = window_origin(DisplayMode::Pill, area, area, 1.0, TOP, 1);
+        let c = pet_cell(DisplayMode::Pill, TOP, size, 1);
+        let p = island_on_screen(DisplayMode::Pill, area, area, 1.0, size, TOP, 1);
         assert_eq!(o.y + c.y, area.y + 4.0);
         assert_eq!(p.y, area.y + 14.0);
         assert_eq!(p.y + size.h / 2.0, o.y + c.y + 30.0);
@@ -489,9 +527,9 @@ mod tests {
     fn attached_keeps_the_notch_on_the_edge() {
         let bounds = rect(100.0, 80.0, 1920.0, 1080.0);
         for size in [Size { w: 160.0, h: 40.0 }, EXPANDED] {
-            let o = window_origin(DisplayMode::Attached, bounds, bounds, 1.0, TOP, true);
-            let c = pet_cell(DisplayMode::Attached, TOP, size);
-            let p = island_on_screen(DisplayMode::Attached, bounds, bounds, 1.0, size, TOP, true);
+            let o = window_origin(DisplayMode::Attached, bounds, bounds, 1.0, TOP, 1);
+            let c = pet_cell(DisplayMode::Attached, TOP, size, 1);
+            let p = island_on_screen(DisplayMode::Attached, bounds, bounds, 1.0, size, TOP, 1);
             assert_eq!(p.y, bounds.y);
             assert_eq!(o.y + c.y, p.y);
         }
@@ -505,9 +543,9 @@ mod tests {
                     if mode == DisplayMode::Attached && spot.y != 0.0 {
                         continue;
                     }
-                    let b = block_rect(spot, size, true);
-                    let r = island_rect(mode, spot, size, true);
-                    let c = pet_cell(mode, spot, size);
+                    let b = block_rect(spot, size, 1);
+                    let r = island_rect(mode, spot, size, 1);
+                    let c = pet_cell(mode, spot, size, 1);
                     for r in [r, Rect { x: c.x, y: c.y, w: PET_BOX.w, h: PET_BOX.h }] {
                         assert!(r.x >= b.x && r.y >= b.y, "{mode:?}, {spot:?}: {r:?} outside {b:?}");
                         assert!(r.x + r.w <= b.x + b.w && r.y + r.h <= b.y + b.h);
@@ -519,10 +557,10 @@ mod tests {
 
     #[test]
     fn the_block_fits_the_shadow_room() {
-        assert_eq!(WINDOW, Size { w: 528.0, h: 300.0 });
+        assert_eq!(WINDOW, Size { w: 580.0, h: 300.0 });
         for size in PET_SIZES {
             for spot in PET_SPOTS {
-                for pet in [false, true] {
+                for pet in [0, 1, 2] {
                     let r = block_rect(spot, size, pet);
                     assert!(r.x >= 50.0 && r.y >= 50.0);
                     assert!(r.x + r.w <= WINDOW.w - 50.0 && r.y + r.h <= WINDOW.h - 50.0);
@@ -537,7 +575,7 @@ mod tests {
             let area = rect(100.0, 80.0, 1920.0 * scale, 1040.0 * scale);
             for mode in [DisplayMode::Pill, DisplayMode::Attached] {
                 for size in [Size { w: 40.0, h: 40.0 }, Size { w: 160.0, h: 40.0 }, EXPANDED] {
-                    let p = island_on_screen(mode, area, area, scale, size, TOP, true);
+                    let p = island_on_screen(mode, area, area, scale, size, TOP, 1);
                     let want = area.x + (area.w - size.w * scale) / 2.0;
                     assert!((p.x - want).abs() <= 1.0, "{mode:?}, {size:?}, {scale}: {} != {want}", p.x);
                 }
@@ -550,7 +588,7 @@ mod tests {
         for scale in [1.0, 1.5] {
             let area = rect(100.0, 80.0, 1920.0 * scale, 1040.0 * scale);
             let size = Size { w: 160.0, h: 40.0 };
-            let p = island_on_screen(DisplayMode::Pill, area, area, scale, size, Spot { x: 1.0, y: 0.0 }, true);
+            let p = island_on_screen(DisplayMode::Pill, area, area, scale, size, Spot { x: 1.0, y: 0.0 }, 1);
             assert_eq!(p.x + size.w * scale, area.x + area.w - 4.0 * scale);
         }
     }
@@ -562,7 +600,7 @@ mod tests {
         let mut previous = f32::NEG_INFINITY;
         for i in 0..=20 {
             let spot = Spot { x: i as f32 * 0.05, y: 0.0 };
-            let p = island_on_screen(DisplayMode::Pill, area, area, 1.0, size, spot, true);
+            let p = island_on_screen(DisplayMode::Pill, area, area, 1.0, size, spot, 1);
             assert!(p.x >= previous, "{spot:?}: {} < {previous}", p.x);
             previous = p.x;
         }
@@ -573,9 +611,9 @@ mod tests {
         let wa = rect(100.0, 80.0, 1920.0, 1040.0);
         let size = Size { w: 160.0, h: 40.0 };
         let spot = Spot { x: 0.0, y: 1.0 };
-        let o = window_origin(DisplayMode::Pill, wa, wa, 1.0, spot, true);
-        let c = pet_cell(DisplayMode::Pill, spot, size);
-        let p = island_on_screen(DisplayMode::Pill, wa, wa, 1.0, size, spot, true);
+        let o = window_origin(DisplayMode::Pill, wa, wa, 1.0, spot, 1);
+        let c = pet_cell(DisplayMode::Pill, spot, size, 1);
+        let p = island_on_screen(DisplayMode::Pill, wa, wa, 1.0, size, spot, 1);
         assert_eq!(o.x + c.x, wa.x + 4.0);
         assert_eq!(p.x, wa.x + 72.0);
         assert_eq!(p.y + size.h, wa.y + wa.h - 4.0);
@@ -586,7 +624,7 @@ mod tests {
     fn without_the_pet_the_island_is_alone() {
         for size in PET_SIZES {
             for spot in PET_SPOTS {
-                assert_eq!(block_rect(spot, size, false), island_rect(DisplayMode::Pill, spot, size, false));
+                assert_eq!(block_rect(spot, size, 0), island_rect(DisplayMode::Pill, spot, size, 0));
             }
         }
     }
@@ -596,25 +634,25 @@ mod tests {
         let pill = Size { w: 160.0, h: 40.0 };
         let wa = rect(0.0, 0.0, 1920.0, 1040.0);
         let b = rect(0.0, 0.0, 1920.0, 1080.0);
-        assert_eq!(island_on_screen(DisplayMode::Pill, wa, b, 1.0, pill, TOP, false), Point { x: 880.0, y: 4.0 });
+        assert_eq!(island_on_screen(DisplayMode::Pill, wa, b, 1.0, pill, TOP, 0), Point { x: 880.0, y: 4.0 });
         // attached hangs from the very top of the monitor
-        assert_eq!(island_on_screen(DisplayMode::Attached, wa, b, 1.0, EXPANDED, TOP, false), Point { x: 780.0, y: 0.0 });
+        assert_eq!(island_on_screen(DisplayMode::Attached, wa, b, 1.0, EXPANDED, TOP, 0), Point { x: 780.0, y: 0.0 });
         assert_eq!(corner_radii(DisplayMode::Attached, 20.0), [0.0, 0.0, 20.0, 20.0]);
         assert_eq!(corner_radii(DisplayMode::Pill, 20.0), [20.0; 4]);
         let wa15 = rect(0.0, 0.0, 2880.0, 1680.0);
-        assert_eq!(island_on_screen(DisplayMode::Pill, wa15, wa15, 1.5, pill, TOP, false), Point { x: 1320.0, y: 6.0 });
+        assert_eq!(island_on_screen(DisplayMode::Pill, wa15, wa15, 1.5, pill, TOP, 0), Point { x: 1320.0, y: 6.0 });
         let top_taskbar = rect(0.0, 48.0, 1920.0, 1032.0);
-        assert_eq!(island_on_screen(DisplayMode::Pill, top_taskbar, b, 1.0, pill, TOP, false).y, 52.0);
-        assert_eq!(island_on_screen(DisplayMode::Attached, top_taskbar, b, 1.0, pill, TOP, false).y, 0.0);
+        assert_eq!(island_on_screen(DisplayMode::Pill, top_taskbar, b, 1.0, pill, TOP, 0).y, 52.0);
+        assert_eq!(island_on_screen(DisplayMode::Attached, top_taskbar, b, 1.0, pill, TOP, 0).y, 0.0);
         // second monitor to the left of the primary
         let left = rect(-1920.0, 0.0, 1920.0, 1080.0);
-        assert_eq!(island_on_screen(DisplayMode::Pill, left, left, 1.0, pill, TOP, false).x, -1040.0);
+        assert_eq!(island_on_screen(DisplayMode::Pill, left, left, 1.0, pill, TOP, 0).x, -1040.0);
     }
 
     #[test]
     fn the_island_grows_away_from_the_edges_it_sits_at() {
         let wa = rect(0.0, 0.0, 1920.0, 1040.0);
-        let on_screen = |spot, size| island_on_screen(DisplayMode::Pill, wa, wa, 1.0, size, spot, false);
+        let on_screen = |spot, size| island_on_screen(DisplayMode::Pill, wa, wa, 1.0, size, spot, 0);
         let pill = Size { w: 40.0, h: 40.0 };
         // bottom-left: 4 in from the left, 4 above the bottom; expanded keeps that corner
         let bottom_left = Spot { x: 0.0, y: 1.0 };
@@ -633,8 +671,8 @@ mod tests {
         let ok = |r: Rect| r.x >= 50.0 && r.y >= 50.0 && r.x + r.w <= WINDOW.w - 50.0 && r.y + r.h <= WINDOW.h - 50.0;
         let pill = Size { w: 40.0, h: 40.0 };
         for spot in [TOP, Spot { x: 0.0, y: 1.0 }, Spot { x: 1.0, y: 0.0 }, Spot { x: 0.5, y: 0.5 }] {
-            assert!(ok(island_rect(DisplayMode::Pill, spot, pill, false)), "{spot:?}");
-            assert!(ok(island_rect(DisplayMode::Pill, spot, EXPANDED, false)), "{spot:?}");
+            assert!(ok(island_rect(DisplayMode::Pill, spot, pill, 0)), "{spot:?}");
+            assert!(ok(island_rect(DisplayMode::Pill, spot, EXPANDED, 0)), "{spot:?}");
         }
     }
 
@@ -780,7 +818,7 @@ mod tests {
     }
 
     /// The island's top-left on screen (physical pixels) at `spot`.
-    fn island_on_screen(mode: DisplayMode, wa: Rect, b: Rect, scale: f32, size: Size, spot: Spot, pet: bool) -> Point {
+    fn island_on_screen(mode: DisplayMode, wa: Rect, b: Rect, scale: f32, size: Size, spot: Spot, pet: u8) -> Point {
         let o = window_origin(mode, wa, b, scale, spot, pet);
         let r = island_rect(mode, spot, size, pet);
         Point { x: o.x + r.x * scale, y: o.y + r.y * scale }
@@ -802,7 +840,7 @@ mod tests {
                 (DisplayMode::Pill, Spot { x: 0.5, y: 0.5 }),
                 (DisplayMode::Attached, Spot { x: 0.5, y: 0.0 }),
             ] {
-                for pet in [false, true] {
+                for pet in [0, 1, 2] {
                     for scale in [1.0, 1.5] {
                         let o = window_origin(mode, wa, b, scale, spot, pet);
                         let r = block_rect(spot, size, pet);
@@ -816,7 +854,7 @@ mod tests {
         let left = rect(-2880.0, 0.0, 2880.0, 1620.0);
         let spot = Spot { x: 0.25, y: 0.5 };
         let size = Size { w: 160.0, h: 40.0 };
-        for pet in [false, true] {
+        for pet in [0, 1, 2] {
             let o = window_origin(DisplayMode::Pill, left, left, 1.5, spot, pet);
             let r = block_rect(spot, size, pet);
             let size = block_size(size, pet);
@@ -833,13 +871,13 @@ mod tests {
     fn dragged_past_an_edge_it_stays_at_that_edge() {
         let wa = rect(0.0, 0.0, 1920.0, 1040.0);
         let size = Size { w: 160.0, h: 40.0 };
-        assert_eq!(spot_at(DisplayMode::Pill, wa, wa, 1.0, size, false, Point { x: -500.0, y: 5000.0 }), Spot { x: 0.0, y: 1.0 });
-        assert_eq!(spot_at(DisplayMode::Pill, wa, wa, 1.0, size, false, Point { x: 5000.0, y: -500.0 }), Spot { x: 1.0, y: 0.0 });
+        assert_eq!(spot_at(DisplayMode::Pill, wa, wa, 1.0, size, 0, Point { x: -500.0, y: 5000.0 }), Spot { x: 0.0, y: 1.0 });
+        assert_eq!(spot_at(DisplayMode::Pill, wa, wa, 1.0, size, 0, Point { x: 5000.0, y: -500.0 }), Spot { x: 1.0, y: 0.0 });
         // attached ignores the vertical move
-        assert_eq!(spot_at(DisplayMode::Attached, wa, wa, 1.0, size, false, Point { x: 880.0, y: 700.0 }), Spot { x: 0.5, y: 0.0 });
+        assert_eq!(spot_at(DisplayMode::Attached, wa, wa, 1.0, size, 0, Point { x: 880.0, y: 700.0 }), Spot { x: 0.5, y: 0.0 });
         // a monitor narrower than the island: centred
         let tiny = rect(0.0, 0.0, 100.0, 600.0);
-        assert_eq!(spot_at(DisplayMode::Pill, tiny, tiny, 1.0, size, false, Point { x: 0.0, y: 0.0 }).x, 0.5);
+        assert_eq!(spot_at(DisplayMode::Pill, tiny, tiny, 1.0, size, 0, Point { x: 0.0, y: 0.0 }).x, 0.5);
     }
 
     #[test]

@@ -11,6 +11,7 @@ pub enum PetState {
     Blocked,
     Done,
     Sleep,
+    Sing,
 }
 
 pub fn pet_state(agents: &AgentTable) -> PetState {
@@ -29,6 +30,24 @@ pub fn pet_state(agents: &AgentTable) -> PetState {
     PetState::Idle
 }
 
+/// The second pet: reacts to two or more agents, sings while media plays and fewer than two work.
+pub fn second_pet_state(agents: &AgentTable, media_playing: bool) -> PetState {
+    let two = |s| agents.count(s) >= 2;
+    if two(AgentStatus::Blocked) {
+        PetState::Blocked
+    } else if two(AgentStatus::Done) {
+        PetState::Done
+    } else if media_playing && !two(AgentStatus::Working) {
+        PetState::Sing
+    } else if two(AgentStatus::Working) {
+        PetState::Working
+    } else if agents.is_empty() {
+        PetState::Sleep
+    } else {
+        PetState::Idle
+    }
+}
+
 pub struct Sheet {
     pub solo: Atlas,
     pub emblem: Atlas,
@@ -41,6 +60,8 @@ pub struct Atlas {
     pub rows: u32,
     pub anchor: (u32, u32),
     clips: [Clip; 5],
+    /// Optional; atlases without one sing as idle.
+    sing: Option<Clip>,
 }
 
 #[derive(Deserialize)]
@@ -94,26 +115,16 @@ impl Atlas {
     fn from_raw(mut raw: RawAtlas) -> Result<Self, String> {
         let mut clips = Vec::with_capacity(5);
         for name in ["idle", "working", "blocked", "done", "sleep"] {
-            let mut clip = raw
+            let clip = raw
                 .states
                 .remove(name)
                 .ok_or_else(|| format!("missing pet state: {name}"))?;
-            if clip.column >= raw.columns
-                || clip.resting_frame >= raw.rows
-                || clip.frames.iter().any(|&f| f >= raw.rows)
-                || clip.frames.is_empty()
-                || clip.frames.len() != clip.durations_ms.len()
-                || clip.durations_ms.contains(&0)
-            {
-                return Err(format!("invalid pet clip: {name}"));
-            }
-            clip.total_ms = clip
-                .durations_ms
-                .iter()
-                .try_fold(0u32, |sum, &ms| sum.checked_add(ms))
-                .ok_or_else(|| format!("pet clip duration overflows: {name}"))?;
-            clips.push(clip);
+            clips.push(clip.validated(name, &raw)?);
         }
+        let sing = match raw.states.remove("sing") {
+            Some(clip) => Some(clip.validated("sing", &raw)?),
+            None => None,
+        };
         Ok(Self {
             cell_w: raw.cell_width,
             cell_h: raw.cell_height,
@@ -122,11 +133,19 @@ impl Atlas {
             anchor: raw.anchor,
             // Exactly the five named states above, in PetState order.
             clips: clips.try_into().ok().unwrap(),
+            sing,
         })
     }
 
+    fn clip(&self, s: PetState) -> &Clip {
+        match s {
+            PetState::Sing => self.sing.as_ref().unwrap_or(&self.clips[PetState::Idle as usize]),
+            _ => &self.clips[s as usize],
+        }
+    }
+
     pub fn cell(&self, s: PetState, elapsed_ms: u32) -> (u32, u32) {
-        let clip = &self.clips[s as usize];
+        let clip = self.clip(s);
         let row = clip
             .frame(elapsed_ms)
             .map_or(clip.resting_frame, |(i, _)| clip.frames[i]);
@@ -135,7 +154,7 @@ impl Atlas {
 
     /// Milliseconds until the current frame ends; None once a one-shot rests.
     pub fn next_change(&self, s: PetState, elapsed_ms: u32) -> Option<u32> {
-        self.clips[s as usize]
+        self.clip(s)
             .frame(elapsed_ms)
             .map(|(_, remaining)| remaining)
     }
@@ -163,6 +182,24 @@ pub fn sprite_dest(at: Point, atlas: &Atlas, scale: f32) -> Rect {
 }
 
 impl Clip {
+    fn validated(mut self, name: &str, raw: &RawAtlas) -> Result<Self, String> {
+        if self.column >= raw.columns
+            || self.resting_frame >= raw.rows
+            || self.frames.iter().any(|&f| f >= raw.rows)
+            || self.frames.is_empty()
+            || self.frames.len() != self.durations_ms.len()
+            || self.durations_ms.contains(&0)
+        {
+            return Err(format!("invalid pet clip: {name}"));
+        }
+        self.total_ms = self
+            .durations_ms
+            .iter()
+            .try_fold(0u32, |sum, &ms| sum.checked_add(ms))
+            .ok_or_else(|| format!("pet clip duration overflows: {name}"))?;
+        Ok(self)
+    }
+
     fn frame(&self, elapsed_ms: u32) -> Option<(usize, u32)> {
         let mut elapsed = if self.looping {
             elapsed_ms % self.total_ms
@@ -363,5 +400,68 @@ mod tests {
         assert_eq!(clock.ms(f64::MAX), u32::MAX);
         clock.set(Working, 2.0);
         assert_eq!(clock.ms(2.0), 0);
+    }
+
+    const SUISEI: &str = include_str!("../../../apps/island/assets/pet/suisei.json");
+
+    fn table(statuses: &[AgentStatus]) -> AgentTable {
+        let mut agents = AgentTable::default();
+        let now = Instant::now();
+        for (i, &status) in statuses.iter().enumerate() {
+            agents.upsert(test_info(&format!("p{i}"), status), now);
+        }
+        agents
+    }
+
+    #[test]
+    fn suisei_follows_her_table() {
+        use AgentStatus::{Blocked as B, Done as D, Idle as I, Working as W};
+        for (statuses, media, want) in [
+            (vec![B, B], true, Blocked),
+            (vec![B, B, W, W], false, Blocked),
+            (vec![D, D], true, Done),
+            (vec![D, D, W, W], false, Done),
+            (vec![], true, Sing),
+            (vec![W], true, Sing),
+            (vec![I], true, Sing),
+            (vec![B, W], true, Sing),
+            (vec![W, W], true, Working),
+            (vec![W, W], false, Working),
+            (vec![W], false, Idle),
+            (vec![B, W], false, Idle),
+            (vec![B], false, Idle),
+            (vec![D], false, Idle),
+            (vec![I], false, Idle),
+            (vec![], false, Sleep),
+        ] {
+            assert_eq!(second_pet_state(&table(&statuses), media), want, "{statuses:?} media={media}");
+        }
+    }
+
+    #[test]
+    fn the_shipped_suisei_sheet_matches_its_atlases() {
+        let s = Sheet::parse(SUISEI).unwrap();
+        assert_eq!((s.solo.cell_w * s.solo.columns, s.solo.cell_h * s.solo.rows), (384, 256));
+        assert_eq!(s.solo.anchor, (32, 60));
+        assert_eq!(s.solo.cell(Sing, 0), (5, 0));
+        assert_eq!(s.solo.cell(Sing, 320), (5, 1));
+        assert_eq!(s.solo.next_change(Sing, 100), Some(220));
+    }
+
+    #[test]
+    fn a_sheet_without_sing_falls_back_to_idle() {
+        let s = sheet();
+        assert_eq!(s.solo.cell(Sing, 0), s.solo.cell(Idle, 0));
+        assert_eq!(s.solo.next_change(Sing, 100), s.solo.next_change(Idle, 100));
+    }
+
+    #[test]
+    fn a_bad_sing_clip_is_rejected() {
+        let mut bad: serde_json::Value = serde_json::from_str(SUISEI).unwrap();
+        bad["atlases"]["solo"]["states"]["sing"]["frames"] = serde_json::json!([]);
+        assert!(Sheet::parse(&bad.to_string()).is_err());
+        let mut bad: serde_json::Value = serde_json::from_str(SUISEI).unwrap();
+        bad["atlases"]["emblem"]["states"]["sing"]["column"] = 6.into();
+        assert!(Sheet::parse(&bad.to_string()).is_err());
     }
 }

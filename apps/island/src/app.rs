@@ -15,13 +15,13 @@ use crate::window::{self, Event, VK_ESCAPE, Windows};
 use island_core::anim::Fade;
 use island_core::config::Config;
 use island_core::media::MediaClock;
-use island_core::pet::{PetClock, PetState, Sheet, pet_state};
+use island_core::pet::{PetClock, PetState, Sheet, pet_state, second_pet_state};
 use island_core::session::HerdrSession;
 use island_core::view::layout::SEEK;
 use island_core::view::{
     COLLAPSED, Collapsed, Dot, DisplayMode, EXPANDED, ExpandedHit, Shown, Spot, Tab, block_rect, block_size, choose_collapsed, clock_label,
     corner_radii, fullscreen_jump_target, hit_expanded, is_drag, island_rect,
-    jump_target, max_scroll, pet_cell, scroll_by, shown, spot_at, time_in_state,
+    jump_target, max_scroll, pet_cell, scroll_by, second_pet_cell, shown, spot_at, time_in_state,
 };
 use island_core::{Point, Rect, Size};
 use std::time::{Duration, Instant};
@@ -94,6 +94,9 @@ pub struct App {
     pet_sheet: Option<(Sheet, PetImages)>,
     pet_bmps: Option<PetBitmaps>,
     pet: PetClock,
+    pet2_sheet: Option<(Sheet, PetImages)>,
+    pet2_bmps: Option<PetBitmaps>,
+    pet2: PetClock,
     collapsed: Collapsed,
     expanded: bool,
     expanded_at: Option<Instant>,
@@ -134,6 +137,8 @@ impl App {
     ) -> App {
         let collapsed = Collapsed { dot: Dot::Idle, media: false };
         let anim = Animator::new(COLLAPSED, COLLAPSED_RADIUS, Face::Dot { dot: collapsed.dot, media: collapsed.media });
+        let pet_sheet = pet::load();
+        let pet2_sheet = if pet_sheet.is_some() { pet::load_second() } else { None };
         let tray = Tray::add(win.tray).inspect_err(|e| log::error!("tray icon: {e}")).ok();
         let mut app = App {
             tray,
@@ -146,9 +151,13 @@ impl App {
             clock,
             art: None,
             art_bmp: None,
-            pet_sheet: pet::load(),
+            pet_sheet,
             pet_bmps: None,
             pet: PetClock::new(PetState::Sleep, 0.0),
+            // Suisei only shows beside the first pet.
+            pet2_sheet,
+            pet2_bmps: None,
+            pet2: PetClock::new(PetState::Sleep, 0.0),
             collapsed,
             expanded: false,
             expanded_at: None,
@@ -169,7 +178,7 @@ impl App {
             spinner_on: false,
             tick_on: false,
         };
-        app.win.place(app.mode(), app.spot(), app.has_pet());
+        app.win.place(app.mode(), app.spot(), app.pets());
         app
     }
 
@@ -190,13 +199,14 @@ impl App {
         self.config.spot()
     }
 
-    fn has_pet(&self) -> bool {
-        self.pet_sheet.is_some()
+    /// How many pets are shown: none without the first, else one plus Suisei if she loaded.
+    fn pets(&self) -> u8 {
+        if self.pet_sheet.is_none() { 0 } else { 1 + u8::from(self.pet2_sheet.is_some()) }
     }
 
     /// The island's rect in the window (DIPs) at `size`.
     fn rect_at(&self, size: Size) -> Rect {
-        island_rect(self.mode(), self.spot(), size, self.has_pet())
+        island_rect(self.mode(), self.spot(), size, self.pets())
     }
 
     pub fn on_source_event(&mut self, e: SourceEvent) {
@@ -445,7 +455,7 @@ impl App {
 
     /// Press on the collapsed island: wait to see whether it is a click or a drag.
     fn on_press(&mut self, x: i32, y: i32) {
-        let r = block_rect(self.spot(), self.anim.size(), self.has_pet());
+        let r = block_rect(self.spot(), self.anim.size(), self.pets());
         let (o, s) = (self.win.origin, self.win.scale);
         let block = Point { x: o.0 as f32 + r.x * s, y: o.1 as f32 + r.y * s };
         self.press = Some(Press { at: (x, y), block, dragging: false });
@@ -466,11 +476,11 @@ impl App {
         }
         let (work, bounds, scale) = window::primary_monitor();
         let (bx, by) = (press.block.x + dx as f32, press.block.y + dy as f32);
-        let size = block_size(self.anim.size(), self.has_pet());
-        let spot = spot_at(self.mode(), work, bounds, scale, size, self.has_pet(), Point { x: bx, y: by });
+        let size = block_size(self.anim.size(), self.pets());
+        let spot = spot_at(self.mode(), work, bounds, scale, size, self.pets(), Point { x: bx, y: by });
         self.config.set_spot(spot);
         // only the origin changes, so the device and its swap chain stay
-        self.win.place(self.mode(), self.spot(), self.has_pet());
+        self.win.place(self.mode(), self.spot(), self.pets());
         self.dirty = true;
     }
 
@@ -615,12 +625,13 @@ impl App {
 
     fn reposition(&mut self) {
         let old = (self.win.origin, self.win.scale);
-        self.win.place(self.mode(), self.spot(), self.has_pet());
+        self.win.place(self.mode(), self.spot(), self.pets());
         if (self.win.origin, self.win.scale) != old {
             // the swap chain and every device resource are sized for the old scale
             self.device = None;
             self.art_bmp = None;
             self.pet_bmps = None;
+            self.pet2_bmps = None;
         }
         self.dirty = true;
     }
@@ -636,6 +647,7 @@ impl App {
         let rows = self.session.agents.rows(usize::MAX).len();
         self.set_scroll(self.scroll.min(max_scroll(rows)), t);
         self.pet.set(pet_state(&self.session.agents), t);
+        self.pet2.set(second_pet_state(&self.session.agents, self.clock.is_playing()), t);
         let present = self.clock.is_present(now);
         let collapsed = choose_collapsed(&self.session.agents, present);
         if collapsed != self.collapsed {
@@ -685,13 +697,15 @@ impl App {
         self.device.as_ref().map(|d| d.gfx.waitable())
     }
 
-    /// Milliseconds until the visible pet's next frame; resting or hidden pets need no wake.
+    /// Milliseconds until the soonest visible pet's next frame; resting or hidden pets need no wake.
     fn pet_next(&self, t: f64) -> Option<u32> {
         if !self.win.visible() {
             return None;
         }
         let (sheet, _) = self.pet_sheet.as_ref()?;
-        sheet.solo.next_change(self.pet.state(), self.pet.ms(t))
+        let first = sheet.solo.next_change(self.pet.state(), self.pet.ms(t));
+        let second = self.pet2_sheet.as_ref().and_then(|(s, _)| s.solo.next_change(self.pet2.state(), self.pet2.ms(t)));
+        first.into_iter().chain(second).min()
     }
 
     /// Whether the content itself moves every frame (media arc, blocked pulse).
@@ -722,15 +736,16 @@ impl App {
                 }
             }
         }
-        let had_pet = self.has_pet();
+        let had_pets = self.pets();
         let rendered = self.render(now, t);
-        if self.has_pet() != had_pet {
+        if self.pets() != had_pets {
             self.reposition();
         }
         if let Err(e) = rendered {
             self.device = None;
             self.art_bmp = None;
             self.pet_bmps = None;
+            self.pet2_bmps = None;
             if device_lost(&e) {
                 log::warning!("graphics device lost, rebuilding: {e}");
                 self.dirty = true;
@@ -782,6 +797,18 @@ impl App {
                 Err(e) => {
                     log::warning!("pet bitmaps unusable: {e}");
                     self.pet_sheet = None;
+                }
+            }
+        }
+        if self.pet2_bmps.is_none()
+            && let Some((_, images)) = &self.pet2_sheet
+        {
+            match images.upload(&dev.painter) {
+                Ok(bmps) => self.pet2_bmps = Some(bmps),
+                Err(e) if device_lost(&e) => return Err(e),
+                Err(e) => {
+                    log::warning!("second pet bitmaps unusable: {e}");
+                    self.pet2_sheet = None;
                 }
             }
         }
@@ -846,12 +873,18 @@ impl App {
             cell: sheet.solo.cell(self.pet.state(), self.pet.ms(t)),
             scale: self.win.scale,
         });
-        let has_pet = self.has_pet();
+        let pet2 = self.pet2_sheet.as_ref().zip(self.pet2_bmps.as_ref()).filter(|_| pet.is_some()).map(|((sheet, _), bmps)| Sprite {
+            bmp: &bmps.solo,
+            atlas: &sheet.solo,
+            cell: sheet.solo.cell(self.pet2.state(), self.pet2.ms(t)),
+            scale: self.win.scale,
+        });
+        let pets = self.pets();
         let Some(dev) = self.device.as_mut() else { return Ok(()) };
         dev.gfx.begin();
         dev.painter.begin_frame();
         let drawn = draw_island(
-            dev, &self.anim, (self.config.display_mode, self.config.spot(), has_pet), t, &collapsed, &expanded, pet.as_ref(),
+            dev, &self.anim, (self.config.display_mode, self.config.spot(), pets), t, &collapsed, &expanded, [pet.as_ref(), pet2.as_ref()],
         );
         let presented = dev.gfx.end();
         drawn.and(presented)
@@ -865,15 +898,15 @@ fn outset(r: Rect, by: f32) -> Rect {
 fn draw_island(
     dev: &mut Device,
     anim: &Animator,
-    (mode, spot, has_pet): (DisplayMode, Spot, bool),
+    (mode, spot, pets): (DisplayMode, Spot, u8),
     t: f64,
     scene: &Scene,
     ex: &ui_expanded::Scene,
-    pet: Option<&Sprite>,
+    sprites: [Option<&Sprite>; 2],
 ) -> Result<()> {
     let size = anim.size();
     let size = Size { w: size.w.max(1.0), h: size.h.max(1.0) };
-    let rect = island_rect(mode, spot, size, has_pet);
+    let rect = island_rect(mode, spot, size, pets);
     let radii = corner_radii(mode, anim.r.value);
     let (glow, glow_color) = anim.glow(t);
     let key = Backdrop { rect, radii, glow, glow_color, mode };
@@ -905,8 +938,11 @@ fn draw_island(
     let drawn = drawn.and_then(|_| draw_face(p, &anim.face, other, (rect, spot), k_new, scene, ex));
     p.pop_layer();
     drawn?;
-    if let Some(pet) = pet {
-        pet.draw(p, pet_cell(mode, spot, size), 1.0);
+    if let Some(pet) = sprites[0] {
+        pet.draw(p, pet_cell(mode, spot, size, pets), 1.0);
+    }
+    if let Some(pet) = sprites[1] {
+        pet.draw(p, second_pet_cell(mode, spot, size), 1.0);
     }
     Ok(())
 }

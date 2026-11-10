@@ -1,0 +1,249 @@
+{
+  "schema_version": 3,
+  "columns": [
+    "idle",
+    "working",
+    "blocked",
+    "done",
+    "sleep",
+    "sing"
+  ],
+  "sampling": "nearest",
+  "scaling": "integer_physical_pixels",
+  "alpha": "binary",
+  "max_opaque_colors": 20,
+  "atlases": {
+    "solo": {
+      "file": "suisei-solo.png",
+      "cell_width": 64,
+      "cell_height": 64,
+      "columns": 6,
+      "rows": 4,
+      "anchor": [
+        32,
+        60
+      ],
+      "states": {
+        "idle": {
+          "column": 0,
+          "frames": [
+            0,
+            1,
+            2,
+            3
+          ],
+          "durations_ms": [
+            600,
+            600,
+            300,
+            600
+          ],
+          "loop": true,
+          "resting_frame": 0
+        },
+        "working": {
+          "column": 1,
+          "frames": [
+            0,
+            1
+          ],
+          "durations_ms": [
+            260,
+            260
+          ],
+          "loop": true,
+          "resting_frame": 0
+        },
+        "blocked": {
+          "column": 2,
+          "frames": [
+            0,
+            1
+          ],
+          "durations_ms": [
+            450,
+            450
+          ],
+          "loop": true,
+          "resting_frame": 0
+        },
+        "done": {
+          "column": 3,
+          "frames": [
+            0,
+            1,
+            2,
+            3
+          ],
+          "durations_ms": [
+            140,
+            140,
+            160,
+            900
+          ],
+          "loop": false,
+          "resting_frame": 3
+        },
+        "sleep": {
+          "column": 4,
+          "frames": [
+            0,
+            1,
+            2,
+            3
+          ],
+          "durations_ms": [
+            800,
+            800,
+            800,
+            800
+          ],
+          "loop": true,
+          "resting_frame": 0
+        },
+        "sing": {
+          "column": 5,
+          "frames": [
+            0,
+            1,
+            2,
+            3
+          ],
+          "durations_ms": [
+            320,
+            320,
+            320,
+            320
+          ],
+          "loop": true,
+          "resting_frame": 0
+        }
+      }
+    },
+    "emblem": {
+      "file": "suisei-emblem.png",
+      "cell_width": 32,
+      "cell_height": 32,
+      "columns": 6,
+      "rows": 2,
+      "anchor": [
+        16,
+        28
+      ],
+      "states": {
+        "idle": {
+          "column": 0,
+          "frames": [
+            0,
+            1,
+            0
+          ],
+          "durations_ms": [
+            160,
+            90,
+            160
+          ],
+          "loop": false,
+          "resting_frame": 0
+        },
+        "working": {
+          "column": 1,
+          "frames": [
+            0,
+            1,
+            0
+          ],
+          "durations_ms": [
+            160,
+            90,
+            160
+          ],
+          "loop": false,
+          "resting_frame": 0
+        },
+        "blocked": {
+          "column": 2,
+          "frames": [
+            0,
+            1,
+            0
+          ],
+          "durations_ms": [
+            160,
+            90,
+            160
+          ],
+          "loop": false,
+          "resting_frame": 0
+        },
+        "done": {
+          "column": 3,
+          "frames": [
+            0,
+            1,
+            0
+          ],
+          "durations_ms": [
+            160,
+            90,
+            160
+          ],
+          "loop": false,
+          "resting_frame": 0
+        },
+        "sleep": {
+          "column": 4,
+          "frames": [
+            0,
+            1,
+            0
+          ],
+          "durations_ms": [
+            160,
+            90,
+            160
+          ],
+          "loop": false,
+          "resting_frame": 0
+        },
+        "sing": {
+          "column": 5,
+          "frames": [
+            0,
+            1,
+            0
+          ],
+          "durations_ms": [
+            160,
+            90,
+            160
+          ],
+          "loop": false,
+          "resting_frame": 0
+        }
+      }
+    }
+  },
+  "presentation": {
+    "requires_reported_agents": false,
+    "no_agents_state": "sleep",
+    "agent_state_priority": [
+      "blocked",
+      "done",
+      "working",
+      "idle"
+    ],
+    "media_playing_state": "sing",
+    "media_playing_yields_to": [
+      "blocked",
+      "done"
+    ],
+    "solo_surface": "expanded_agents",
+    "emblem_surface": "collapsed_agent_state",
+    "show_on_media_tab": true,
+    "stop_when_hidden": true,
+    "emblem_play_on_state_change_only": true,
+    "periodic_blinks": false,
+    "retain_done_and_blocked_status_dots": true
+  }
+}

@@ -17,6 +17,8 @@ use windows::core::{Error, Result};
 
 const SOLO: &[u8] = include_bytes!("../assets/pet/pet-solo.png");
 const JSON: &str = include_str!("../assets/pet/pet.json");
+const SUISEI_SOLO: &[u8] = include_bytes!("../assets/pet/suisei-solo.png");
+const SUISEI_JSON: &str = include_str!("../assets/pet/suisei.json");
 
 struct Image {
     bgra: Vec<u8>,
@@ -64,21 +66,31 @@ impl Drop for Apartment {
     }
 }
 
+/// The first pet.
 pub fn load() -> Option<(Sheet, PetImages)> {
+    load_sheet("pet", JSON, SOLO)
+}
+
+/// Suisei, decoded independently of the first pet.
+pub fn load_second() -> Option<(Sheet, PetImages)> {
+    load_sheet("second pet", SUISEI_JSON, SUISEI_SOLO)
+}
+
+fn load_sheet(name: &str, json: &str, solo: &[u8]) -> Option<(Sheet, PetImages)> {
     let result = (|| -> Result<(Sheet, PetImages)> {
         let initialized = unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) };
         if initialized.is_err() && initialized != RPC_E_CHANGED_MODE {
             initialized.ok()?;
         }
         let _apartment = Apartment(initialized.is_ok());
-        let sheet = Sheet::parse(JSON).map_err(|e| Error::new(E_INVALIDARG, e))?;
-        let solo = decode(SOLO, &sheet.solo)?;
+        let sheet = Sheet::parse(json).map_err(|e| Error::new(E_INVALIDARG, e))?;
+        let solo = decode(solo, &sheet.solo)?;
         Ok((sheet, PetImages { solo }))
     })();
     match result {
         Ok(pet) => Some(pet),
         Err(e) => {
-            log::warning!("pet unavailable: {e}");
+            log::warning!("{name} unavailable: {e}");
             None
         }
     }
@@ -98,7 +110,7 @@ fn decode(bytes: &[u8], atlas: &Atlas) -> Result<Image> {
             || atlas.cell_w.checked_mul(atlas.columns) != Some(width)
             || atlas.cell_h.checked_mul(atlas.rows) != Some(height)
         {
-            return Err(Error::new(E_INVALIDARG, "pet atlas dimensions do not match pet.json"));
+            return Err(Error::new(E_INVALIDARG, "pet atlas dimensions do not match its json"));
         }
         let converter = factory.CreateFormatConverter()?;
         converter.Initialize(
