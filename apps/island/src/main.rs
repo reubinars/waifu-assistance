@@ -13,6 +13,8 @@ mod gfx;
 #[cfg(windows)]
 mod log;
 #[cfg(windows)]
+mod pet;
+#[cfg(windows)]
 mod sources;
 #[cfg(windows)]
 mod startup;

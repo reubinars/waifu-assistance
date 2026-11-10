@@ -5,6 +5,7 @@ use crate::draw::{Color, Painter};
 use crate::fullscreen;
 use crate::gfx::Gfx;
 use crate::log;
+use crate::pet::{self, PetBitmaps, PetImages, Sprite};
 use crate::sources::{AgentSource, ArtImage, DemoAction, MediaCommand, MediaSource, SourceEvent, UiSender};
 use crate::startup;
 use crate::tray::{self, Tray};
@@ -13,12 +14,13 @@ use crate::ui_expanded::{self, Hot, Hover};
 use crate::window::{self, Event, VK_ESCAPE, Windows};
 use island_core::config::Config;
 use island_core::media::MediaClock;
+use island_core::pet::{PetClock, PetState, Sheet, pet_state};
 use island_core::session::HerdrSession;
 use island_core::view::layout::{MAX_ROWS, SEEK};
 use island_core::view::{
-    Collapsed, DisplayMode, EXPANDED, ExpandedHit, Shown, Spot, Tab, choose_collapsed, clock_label,
+    Collapsed, DisplayMode, EXPANDED, ExpandedHit, Shown, Spot, Tab, block_rect, block_size, choose_collapsed, clock_label,
     collapsed_size, corner_radii, default_tab, fullscreen_jump_target, hit_expanded, hit_rounded, is_drag, island_rect,
-    jump_target, shown, spot_at, tabs_visible, time_in_state,
+    jump_target, pet_cell, shown, spot_at, tabs_visible, time_in_state,
 };
 use island_core::{Point, Rect, Size};
 use std::time::{Duration, Instant};
@@ -38,6 +40,8 @@ pub const TIMER_RETRY: usize = 3;
 pub const TIMER_LEAVE: usize = 4;
 /// Redraws the agents tab's time-in-state labels.
 pub const TIMER_TICK: usize = 5;
+/// One-shot wake for the next pet animation frame.
+pub const TIMER_PET: usize = 6;
 
 const LEAVE_COLLAPSE: Duration = Duration::from_secs(2);
 /// Deactivation right after expanding (the click that expanded) doesn't collapse.
@@ -46,9 +50,9 @@ const DEACTIVATE_ARM: Duration = Duration::from_millis(150);
 /// A press on the collapsed island: a click on release, or a drag around the screen once it moves.
 #[derive(Clone, Copy)]
 struct Press {
-    /// Where the press started and the island's top-left then, screen pixels.
+    /// Where the press started and the block's top-left then, screen pixels.
     at: (i32, i32),
-    island: Point,
+    block: Point,
     dragging: bool,
 }
 
@@ -84,6 +88,9 @@ pub struct App {
     clock: MediaClock,
     art: Option<ArtImage>,
     art_bmp: Option<ID2D1Bitmap1>,
+    pet_sheet: Option<(Sheet, PetImages)>,
+    pet_bmps: Option<PetBitmaps>,
+    pet: PetClock,
     collapsed: Collapsed,
     expanded: bool,
     expanded_at: Option<Instant>,
@@ -122,7 +129,7 @@ impl App {
         let collapsed = Collapsed::Idle;
         let anim = Animator::new(collapsed_size(&collapsed), COLLAPSED_RADIUS, Face::Idle);
         let tray = Tray::add(win.tray).inspect_err(|e| log::error!("tray icon: {e}")).ok();
-        App {
+        let mut app = App {
             tray,
             user_hidden: false,
             fullscreen: false,
@@ -133,6 +140,9 @@ impl App {
             clock,
             art: None,
             art_bmp: None,
+            pet_sheet: pet::load(),
+            pet_bmps: None,
+            pet: PetClock::new(PetState::Sleep, 0.0),
             collapsed,
             expanded: false,
             expanded_at: None,
@@ -149,7 +159,9 @@ impl App {
             animating: false,
             spinner_on: false,
             tick_on: false,
-        }
+        };
+        app.win.place(app.mode(), app.spot(), app.has_pet());
+        app
     }
 
     pub fn start_sources(&mut self, tx: UiSender) {
@@ -169,9 +181,13 @@ impl App {
         self.config.spot()
     }
 
+    fn has_pet(&self) -> bool {
+        self.pet_sheet.is_some()
+    }
+
     /// The island's rect in the window (DIPs) at `size`.
     fn rect_at(&self, size: Size) -> Rect {
-        island_rect(self.spot(), size)
+        island_rect(self.mode(), self.spot(), size, self.has_pet())
     }
 
     pub fn on_source_event(&mut self, e: SourceEvent) {
@@ -215,6 +231,10 @@ impl App {
                 self.collapse();
             }
             Event::Timer(TIMER_TICK) => self.dirty = true,
+            Event::Timer(TIMER_PET) => {
+                self.kill_timer(TIMER_PET);
+                self.dirty = true;
+            }
             Event::Timer(_) => {}
             Event::Reposition => {
                 self.reposition();
@@ -313,6 +333,10 @@ impl App {
             self.collapse();
         }
         let on = s != Shown::Hidden;
+        if !on {
+            // wants_frame stops while hidden, so frame cannot disarm the pet timer for us.
+            self.kill_timer(TIMER_PET);
+        }
         if on != self.win.visible() {
             if !on {
                 self.anim.pause();
@@ -378,10 +402,10 @@ impl App {
 
     /// Press on the collapsed island: wait to see whether it is a click or a drag.
     fn on_press(&mut self, x: i32, y: i32) {
-        let r = self.rect_at(self.anim.size());
+        let r = block_rect(self.spot(), self.anim.size(), self.has_pet());
         let (o, s) = (self.win.origin, self.win.scale);
-        let island = Point { x: o.0 as f32 + r.x * s, y: o.1 as f32 + r.y * s };
-        self.press = Some(Press { at: (x, y), island, dragging: false });
+        let block = Point { x: o.0 as f32 + r.x * s, y: o.1 as f32 + r.y * s };
+        self.press = Some(Press { at: (x, y), block, dragging: false });
         self.win.capture(true);
     }
 
@@ -399,11 +423,12 @@ impl App {
             self.anim.set_hover(false, self.secs(Instant::now()));
         }
         let (work, bounds, scale) = window::primary_monitor();
-        let (ix, iy) = (press.island.x + dx as f32, press.island.y + dy as f32);
-        let spot = spot_at(self.mode(), work, bounds, scale, self.anim.size(), ix, iy);
+        let (bx, by) = (press.block.x + dx as f32, press.block.y + dy as f32);
+        let size = block_size(self.anim.size(), self.has_pet());
+        let spot = spot_at(self.mode(), work, bounds, scale, size, self.has_pet(), Point { x: bx, y: by });
         self.config.set_spot(spot);
         // only the origin changes, so the device and its swap chain stay
-        self.win.place(self.mode(), self.spot());
+        self.win.place(self.mode(), self.spot(), self.has_pet());
         self.dirty = true;
     }
 
@@ -547,11 +572,12 @@ impl App {
 
     fn reposition(&mut self) {
         let old = (self.win.origin, self.win.scale);
-        self.win.place(self.mode(), self.spot());
+        self.win.place(self.mode(), self.spot(), self.has_pet());
         if (self.win.origin, self.win.scale) != old {
             // the swap chain and every device resource are sized for the old scale
             self.device = None;
             self.art_bmp = None;
+            self.pet_bmps = None;
         }
         self.dirty = true;
     }
@@ -564,6 +590,7 @@ impl App {
     /// Recomputes what the island should show and sets the animation targets.
     fn retarget(&mut self, now: Instant) {
         let t = self.secs(now);
+        self.pet.set(pet_state(&self.session.agents), t);
         let present = self.clock.is_present(now);
         let collapsed = choose_collapsed(&self.session.agents, present);
         if collapsed != self.collapsed {
@@ -625,6 +652,15 @@ impl App {
         self.device.as_ref().map(|d| d.gfx.waitable())
     }
 
+    /// Milliseconds until the visible pet's next frame; resting or hidden pets need no wake.
+    fn pet_next(&self, t: f64) -> Option<u32> {
+        if !self.win.visible() {
+            return None;
+        }
+        let (sheet, _) = self.pet_sheet.as_ref()?;
+        sheet.solo.next_change(self.pet.state(), self.pet.ms(t))
+    }
+
     /// Whether the content itself moves every frame (sound wave, blocked pulse).
     fn continuous(&self) -> bool {
         match self.anim.face {
@@ -653,9 +689,15 @@ impl App {
                 }
             }
         }
-        if let Err(e) = self.render(now, t) {
+        let had_pet = self.has_pet();
+        let rendered = self.render(now, t);
+        if self.has_pet() != had_pet {
+            self.reposition();
+        }
+        if let Err(e) = rendered {
             self.device = None;
             self.art_bmp = None;
+            self.pet_bmps = None;
             if device_lost(&e) {
                 log::warning!("graphics device lost, rebuilding: {e}");
                 self.dirty = true;
@@ -689,11 +731,27 @@ impl App {
         if !self.animating {
             self.anim.pause();
         }
+        match self.pet_next(t) {
+            Some(ms) => self.set_timer(TIMER_PET, Duration::from_millis(u64::from(ms) + 1)),
+            None => self.kill_timer(TIMER_PET),
+        }
         self.animating
     }
 
     fn render(&mut self, now: Instant, t: f64) -> Result<()> {
-        let Some(dev) = self.device.as_mut() else { return Ok(()) };
+        let Some(dev) = self.device.as_ref() else { return Ok(()) };
+        if self.pet_bmps.is_none()
+            && let Some((_, images)) = &self.pet_sheet
+        {
+            match images.upload(&dev.painter) {
+                Ok(bmps) => self.pet_bmps = Some(bmps),
+                Err(e) if device_lost(&e) => return Err(e),
+                Err(e) => {
+                    log::warning!("pet bitmaps unusable: {e}");
+                    self.pet_sheet = None;
+                }
+            }
+        }
         if self.art_bmp.is_none()
             && let Some(a) = &self.art
         {
@@ -758,9 +816,19 @@ impl App {
             accent: self.art.as_ref().and_then(|a| a.accent).map(|[r, g, b]| Color::rgba(r, g, b, 1.0)),
             hover: &self.hover,
         };
+        let pet = self.pet_sheet.as_ref().zip(self.pet_bmps.as_ref()).map(|((sheet, _), bmps)| Sprite {
+            bmp: &bmps.solo,
+            atlas: &sheet.solo,
+            cell: sheet.solo.cell(self.pet.state(), self.pet.ms(t)),
+            scale: self.win.scale,
+        });
+        let has_pet = self.has_pet();
+        let Some(dev) = self.device.as_mut() else { return Ok(()) };
         dev.gfx.begin();
         dev.painter.begin_frame();
-        let drawn = draw_island(dev, &self.anim, self.config.display_mode, self.config.spot(), t, &collapsed, &expanded);
+        let drawn = draw_island(
+            dev, &self.anim, (self.config.display_mode, self.config.spot(), has_pet), t, &collapsed, &expanded, pet.as_ref(),
+        );
         let presented = dev.gfx.end();
         drawn.and(presented)
     }
@@ -773,14 +841,15 @@ fn outset(r: Rect, by: f32) -> Rect {
 fn draw_island(
     dev: &mut Device,
     anim: &Animator,
-    mode: DisplayMode,
-    spot: Spot,
+    (mode, spot, has_pet): (DisplayMode, Spot, bool),
     t: f64,
     scene: &Scene,
     ex: &ui_expanded::Scene,
+    pet: Option<&Sprite>,
 ) -> Result<()> {
     let size = anim.size();
-    let rect = island_rect(spot, Size { w: size.w.max(1.0), h: size.h.max(1.0) });
+    let size = Size { w: size.w.max(1.0), h: size.h.max(1.0) };
+    let rect = island_rect(mode, spot, size, has_pet);
     let radii = corner_radii(mode, anim.r.value);
     let (glow, glow_color) = anim.glow(t);
     let key = Backdrop { rect, radii, glow, glow_color, mode };
@@ -811,7 +880,11 @@ fn draw_island(
     let other = anim.old.as_ref().unwrap_or(&anim.face);
     let drawn = drawn.and_then(|_| draw_face(p, &anim.face, other, (rect, spot), k_new, scene, ex));
     p.pop_layer();
-    drawn
+    drawn?;
+    if let Some(pet) = pet {
+        pet.draw(p, pet_cell(mode, spot, size), 1.0);
+    }
+    Ok(())
 }
 
 /// One face at opacity `k` in the island's `rect` at `spot`; `other` is the face it is fading against.

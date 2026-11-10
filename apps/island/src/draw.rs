@@ -465,6 +465,15 @@ impl Painter {
         }
     }
 
+    /// One atlas cell, sampled without smoothing.
+    pub fn sprite(&self, bmp: &ID2D1Bitmap1, src: Rect, dest: Rect, opacity: f32) {
+        unsafe {
+            self.dc.DrawBitmap(
+                bmp, Some(&rect_f(dest)), opacity, D2D1_INTERPOLATION_MODE_NEAREST_NEIGHBOR, Some(&rect_f(src)), None,
+            );
+        }
+    }
+
     fn image_brush(&self, bmp: &ID2D1Bitmap1, r: Rect, opacity: f32) -> Result<ID2D1BitmapBrush1> {
         unsafe {
             let brush = self.dc.CreateBitmapBrush(bmp, None, None)?;
