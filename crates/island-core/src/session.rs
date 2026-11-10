@@ -86,8 +86,9 @@ impl HerdrSession {
                 self.agents.set_status(&pane_id, status, title, now);
                 vec![]
             }
-            // A stale status subscription for a closed pane is harmless; no resubscribe.
-            Incoming::Closed { pane_id } => {
+            // A stale status subscription for a closed or released pane is harmless; no resubscribe.
+            // A released pane keeps its subscription, which still fits if an agent starts there again.
+            Incoming::Closed { pane_id } | Incoming::Released { pane_id } => {
                 self.agents.remove(&pane_id);
                 vec![]
             }
@@ -172,6 +173,15 @@ mod tests {
         assert!(s.handle(Incoming::Closed { pane_id: "w1:p1".into() }, now()).is_empty());
         assert!(s.agents.is_empty());
         assert!(s.handle(Incoming::Error { id: "island:9".into(), message: "x".into() }, now()).is_empty());
+    }
+
+    #[test]
+    fn released_agent_is_dropped_while_its_pane_stays() {
+        let mut s = HerdrSession::default();
+        s.handle(list(&["w1:p1", "w1:p2"]), now());
+        // no agent.get: herdr answers agent_not_found for a released pane
+        assert!(s.handle(Incoming::Released { pane_id: "w1:p1".into() }, now()).is_empty());
+        assert_eq!(s.agents.pane_ids(), vec!["w1:p2".to_string()]);
     }
 
     #[test]

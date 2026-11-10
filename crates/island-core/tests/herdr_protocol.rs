@@ -55,6 +55,8 @@ fn parses_events() {
         }
     );
     assert_eq!(parse_line(&fx("event_agent_detected.json")).unwrap(), Incoming::Detected { pane_id: "w3:p7".into() });
+    // An agent exiting while its pane stays open: herdr reuses the detected event with `released`.
+    assert_eq!(parse_line(&fx("event_agent_released.json")).unwrap(), Incoming::Released { pane_id: "w3:pC".into() });
     assert_eq!(parse_line(&fx("event_pane_closed.json")).unwrap(), Incoming::Closed { pane_id: "w3:p8".into() });
     assert_eq!(parse_line(&fx("subscribe_ack.json")).unwrap(), Incoming::Ok { id: "p:1".into() });
     match parse_line(&fx("error_response.json")).unwrap() {
