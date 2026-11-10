@@ -18,8 +18,8 @@ use island_core::pet::{PetClock, PetState, Sheet, pet_state};
 use island_core::session::HerdrSession;
 use island_core::view::layout::{MAX_ROWS, SEEK};
 use island_core::view::{
-    Collapsed, DisplayMode, EXPANDED, ExpandedHit, Shown, Spot, Tab, block_rect, block_size, choose_collapsed, clock_label,
-    collapsed_size, corner_radii, default_tab, fullscreen_jump_target, hit_expanded, hit_rounded, is_drag, island_rect,
+    COLLAPSED, Collapsed, Dot, DisplayMode, EXPANDED, ExpandedHit, Shown, Spot, Tab, block_rect, block_size, choose_collapsed, clock_label,
+    corner_radii, default_tab, fullscreen_jump_target, hit_expanded, is_drag, island_rect,
     jump_target, pet_cell, shown, spot_at, tabs_visible, time_in_state,
 };
 use island_core::{Point, Rect, Size};
@@ -126,8 +126,8 @@ impl App {
         media: Box<dyn MediaSource>,
         agent_src: Box<dyn AgentSource>,
     ) -> App {
-        let collapsed = Collapsed::Idle;
-        let anim = Animator::new(collapsed_size(&collapsed), COLLAPSED_RADIUS, Face::Idle);
+        let collapsed = Collapsed { dot: Dot::Idle, media: false };
+        let anim = Animator::new(COLLAPSED, COLLAPSED_RADIUS, Face::Dot { dot: collapsed.dot, media: collapsed.media });
         let tray = Tray::add(win.tray).inspect_err(|e| log::error!("tray icon: {e}")).ok();
         let mut app = App {
             tray,
@@ -207,7 +207,7 @@ impl App {
             SourceEvent::Demo(a) => match a {
                 DemoAction::Expand(tab) => self.expand(tab, false, now),
                 DemoAction::Collapse => self.collapse(),
-                DemoAction::Mode(m) => self.set_mode(m, now),
+                DemoAction::Mode(m) => self.set_mode(m),
             },
         }
         self.retarget(now);
@@ -286,7 +286,7 @@ impl App {
                 self.apply_visibility();
             }
             Some(tray::Command::Mode(m)) if m != self.mode() => {
-                self.set_mode(m, now);
+                self.set_mode(m);
                 self.retarget(now);
                 self.save_config();
             }
@@ -312,9 +312,8 @@ impl App {
         }
     }
 
-    fn set_mode(&mut self, m: DisplayMode, now: Instant) {
+    fn set_mode(&mut self, m: DisplayMode) {
         self.config.display_mode = m;
-        self.anim.set_hover(false, self.secs(now));
         self.reposition();
     }
 
@@ -378,12 +377,6 @@ impl App {
                 self.hover.set_hot(hot, t);
                 self.dirty = true;
             }
-        } else {
-            // the input region is a rectangle-ish GDI region; only the drawn shape counts
-            let radii = corner_radii(self.mode(), self.anim.r.value);
-            let inside = hit_rounded(self.rect_at(self.anim.size()), radii, p);
-            self.anim.set_hover(inside && self.collapsed == Collapsed::Media, t);
-            self.dirty = true;
         }
     }
 
@@ -393,7 +386,6 @@ impl App {
         }
         let t = self.secs(Instant::now());
         self.hover.set_hot(None, t);
-        self.anim.set_hover(false, t);
         if self.expanded {
             self.set_timer(TIMER_LEAVE, LEAVE_COLLAPSE);
         }
@@ -420,7 +412,6 @@ impl App {
             }
             press.dragging = true;
             self.press = Some(press);
-            self.anim.set_hover(false, self.secs(Instant::now()));
         }
         let (work, bounds, scale) = window::primary_monitor();
         let (bx, by) = (press.block.x + dx as f32, press.block.y + dy as f32);
@@ -446,7 +437,7 @@ impl App {
 
     /// Click on the collapsed island: jump to an agent that needs you, else expand.
     fn on_collapsed_click(&mut self, now: Instant) {
-        let attention = matches!(self.collapsed, Collapsed::Blocked { .. } | Collapsed::Done { .. });
+        let attention = matches!(self.collapsed.dot, Dot::Blocked | Dot::Done);
         let agents = &self.session.agents;
         let target = if self.fullscreen { fullscreen_jump_target(agents) } else { jump_target(agents) };
         match target.filter(|_| attention) {
@@ -547,7 +538,6 @@ impl App {
         self.expanded_at = Some(now);
         self.tab = tab;
         self.hover.reset();
-        self.anim.set_hover(false, self.secs(now));
         if activate {
             self.win.activate();
         }
@@ -564,7 +554,6 @@ impl App {
             self.win.capture(false);
         }
         self.hover.reset();
-        self.anim.set_hover(false, self.secs(Instant::now()));
         self.kill_timer(TIMER_LEAVE);
         self.win.deactivate();
         self.retarget(Instant::now());
@@ -607,23 +596,15 @@ impl App {
         let (size, radius, face) = if self.expanded {
             (EXPANDED, EXPANDED_RADIUS, Face::Expanded(self.tab))
         } else {
-            let face = match &self.collapsed {
-                Collapsed::Idle => Face::Idle,
-                Collapsed::Media => Face::Media,
-                Collapsed::Working { count } => Face::Working { count: *count },
-                Collapsed::Done { label, .. } => Face::Done { label: label.clone() },
-                Collapsed::Blocked { label, .. } => Face::Blocked { label: label.clone() },
-            };
-            (collapsed_size(&self.collapsed), COLLAPSED_RADIUS, face)
+            (COLLAPSED, COLLAPSED_RADIUS, Face::Dot { dot: self.collapsed.dot, media: self.collapsed.media })
         };
         self.anim.set_target(size, radius);
         self.anim.set_face(face, t);
         let accent = self.accent();
         let white = Color::white(1.0);
         let playing = present && self.clock.is_playing();
-        let glow_on = playing && accent.is_some_and(|c| c != white);
+        let glow_on = self.expanded && self.tab == Tab::Media && playing && accent.is_some_and(|c| c != white);
         self.anim.set_glow(glow_on, accent.unwrap_or(white), t);
-        self.anim.set_wave_color(accent.unwrap_or(white), t);
         match self.clock.linger_left(now) {
             Some(left) => self.set_timer(TIMER_LINGER, left + Duration::from_millis(1)),
             None => self.kill_timer(TIMER_LINGER),
@@ -661,11 +642,11 @@ impl App {
         sheet.solo.next_change(self.pet.state(), self.pet.ms(t))
     }
 
-    /// Whether the content itself moves every frame (sound wave, blocked pulse).
+    /// Whether the content itself moves every frame (media arc, blocked pulse).
     fn continuous(&self) -> bool {
         match self.anim.face {
-            Face::Media | Face::Expanded(Tab::Media) => self.clock.is_playing(),
-            Face::Blocked { .. } => true,
+            Face::Dot { dot: Dot::Blocked, .. } => true,
+            Face::Dot { media: true, .. } | Face::Expanded(Tab::Media) => self.clock.is_playing(),
             _ => false,
         }
     }
@@ -719,7 +700,7 @@ impl App {
                 self.kill_timer(TIMER_TICK);
             }
         }
-        let spin = !self.animating && matches!(self.anim.face, Face::Working { .. });
+        let spin = !self.animating && matches!(self.anim.face, Face::Dot { dot: Dot::Working, .. });
         if spin != self.spinner_on {
             self.spinner_on = spin;
             if spin {
@@ -796,17 +777,7 @@ impl App {
                 since: time_in_state(now.saturating_duration_since(a.since)),
             })
             .collect();
-        let (title, artist) = media.as_ref().map_or(("", ""), |m| (m.title.as_str(), m.artist.as_str()));
-        let (title, artist) = (title.to_string(), artist.to_string());
-        let collapsed = Scene {
-            t,
-            art: self.art_bmp.as_ref(),
-            playing: self.clock.is_playing(),
-            wave: self.anim.wave_color(t),
-            hover: self.anim.hover(t),
-            title: &title,
-            artist: &artist,
-        };
+        let collapsed = Scene { t, playing: self.clock.is_playing() };
         let expanded = ui_expanded::Scene {
             t,
             tabs: tabs_visible(&self.session.agents, present),

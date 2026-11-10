@@ -1,6 +1,6 @@
 //! What the island shows, where it sits, and what a click hit.
 
-use crate::agents::{Agent, AgentTable};
+use crate::agents::AgentTable;
 use crate::herdr::AgentStatus;
 use crate::{Point, Rect, Size};
 use serde::{Deserialize, Serialize};
@@ -13,14 +13,11 @@ pub enum DisplayMode {
     Attached,
 }
 
-#[derive(Clone, Debug, PartialEq)]
-pub enum Collapsed {
-    Idle,
-    Media,
-    Working { count: usize },
-    Done { label: String, pane_id: String },
-    Blocked { label: String, pane_id: String },
-}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Dot { Idle, Working, Done, Blocked }
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Collapsed { pub dot: Dot, pub media: bool }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Tab {
@@ -42,38 +39,22 @@ pub const WINDOW: Size = Size {
     w: EXPANDED.w + PET_BOX.w + PET_GAP + 2.0 * SHADOW_ROOM,
     h: EXPANDED.h + 2.0 * SHADOW_ROOM,
 };
-const COLLAPSED_H: f32 = 40.0;
+pub const COLLAPSED: Size = Size { w: 40.0, h: 40.0 };
 /// How far the pill keeps off the edges of the screen (the work area).
 const PILL_MARGIN: f32 = 4.0;
 
-fn label(a: &Agent, verb: &str, others: usize) -> String {
-    let mut s = format!("{} {verb}", a.display_name());
-    if !a.folder().is_empty() {
-        s.push_str(" · ");
-        s.push_str(a.folder());
-    }
-    if others > 0 {
-        s.push_str(&format!(" +{others}"));
-    }
-    s
-}
-
-/// Priority: blocked > done > media > working > idle.
+/// Priority: blocked > done > working > idle; media is independent.
 pub fn choose_collapsed(agents: &AgentTable, media_present: bool) -> Collapsed {
-    let others = (agents.count(AgentStatus::Blocked) + agents.count(AgentStatus::Done)).saturating_sub(1);
-    if let Some(a) = agents.first(AgentStatus::Blocked) {
-        return Collapsed::Blocked { label: label(a, "needs you", others), pane_id: a.info.pane_id.clone() };
-    }
-    if let Some(a) = agents.first(AgentStatus::Done) {
-        return Collapsed::Done { label: label(a, "done", others), pane_id: a.info.pane_id.clone() };
-    }
-    if media_present {
-        return Collapsed::Media;
-    }
-    match agents.count(AgentStatus::Working) {
-        0 => Collapsed::Idle,
-        count => Collapsed::Working { count },
-    }
+    let dot = if agents.count(AgentStatus::Blocked) > 0 {
+        Dot::Blocked
+    } else if agents.count(AgentStatus::Done) > 0 {
+        Dot::Done
+    } else if agents.count(AgentStatus::Working) > 0 {
+        Dot::Working
+    } else {
+        Dot::Idle
+    };
+    Collapsed { dot, media: media_present }
 }
 
 /// How much of the island is on screen.
@@ -87,28 +68,18 @@ pub enum Shown {
 
 /// §7: hidden from the tray, or over a fullscreen window unless an agent is blocked.
 pub fn shown(user_hidden: bool, fullscreen: bool, c: &Collapsed) -> Shown {
-    match (user_hidden, fullscreen, c) {
+    match (user_hidden, fullscreen, c.dot) {
         (true, _, _) => Shown::Hidden,
         (false, false, _) => Shown::All,
-        (false, true, Collapsed::Blocked { .. }) => Shown::CollapsedOnly,
+        (false, true, Dot::Blocked) => Shown::CollapsedOnly,
         (false, true, _) => Shown::Hidden,
     }
 }
 
-pub fn collapsed_size(c: &Collapsed) -> Size {
-    let w = match c {
-        Collapsed::Idle => 40.0,
-        Collapsed::Media | Collapsed::Working { .. } => 160.0,
-        Collapsed::Done { .. } => 240.0,
-        Collapsed::Blocked { .. } => 260.0,
-    };
-    Size { w, h: COLLAPSED_H }
-}
-
 pub fn default_tab(c: &Collapsed) -> Tab {
-    match c {
-        Collapsed::Working { .. } | Collapsed::Done { .. } | Collapsed::Blocked { .. } => Tab::Agents,
-        Collapsed::Idle | Collapsed::Media => Tab::Media,
+    match c.dot {
+        Dot::Working | Dot::Done | Dot::Blocked => Tab::Agents,
+        Dot::Idle => Tab::Media,
     }
 }
 
@@ -293,15 +264,6 @@ pub fn fullscreen_jump_target(agents: &AgentTable) -> Option<String> {
 }
 
 /// Time in state for an agent row: `12s`, `4m`, `1h` (whole units, rounded down).
-/// The collapsed agent status: an icon `icon_w` wide, `gap`, then a label `text_w` wide, centred as one
-/// group in `pill`, at least `pad` in from each side. Returns (icon x, label x, label width); a label wider
-/// than the room left is cut to it (the caller trims the text to that width).
-pub fn centred_status(pill: Rect, pad: f32, icon_w: f32, gap: f32, text_w: f32) -> (f32, f32, f32) {
-    let label_w = text_w.min((pill.w - 2.0 * pad - icon_w - gap).max(0.0));
-    let icon_x = (pill.x + (pill.w - icon_w - gap - label_w) / 2.0).max(pill.x + pad);
-    (icon_x, icon_x + icon_w + gap, label_w)
-}
-
 pub fn time_in_state(d: std::time::Duration) -> String {
     let s = d.as_secs();
     match s {
@@ -411,55 +373,37 @@ mod tests {
     }
 
     #[test]
-    fn priority_order() {
+    fn priority_ignores_media() {
         let t0 = Instant::now();
-        let mut t = AgentTable::default();
-        assert_eq!(choose_collapsed(&t, false), Collapsed::Idle);
-        t.upsert(test_info("w1:p1", Working), t0);
-        assert_eq!(choose_collapsed(&t, false), Collapsed::Working { count: 1 });
-        assert_eq!(choose_collapsed(&t, true), Collapsed::Media);
-        t.upsert(test_info("w1:p2", Done), t0);
-        assert!(matches!(choose_collapsed(&t, true), Collapsed::Done { pane_id, .. } if pane_id == "w1:p2"));
-        t.upsert(test_info("w1:p3", Blocked), t0);
-        assert!(matches!(choose_collapsed(&t, true), Collapsed::Blocked { pane_id, .. } if pane_id == "w1:p3"));
-        t.upsert(test_info("w1:p1", Idle), t0);
-        t.remove("w1:p2");
-        t.remove("w1:p3");
-        assert_eq!(choose_collapsed(&t, false), Collapsed::Idle);
-        assert_eq!(default_tab(&Collapsed::Working { count: 1 }), Tab::Agents);
-        assert_eq!(default_tab(&Collapsed::Idle), Tab::Media);
-        assert_eq!(default_tab(&Collapsed::Media), Tab::Media);
+        for media in [false, true] {
+            let mut t = AgentTable::default();
+            assert_eq!(choose_collapsed(&t, media), Collapsed { dot: Dot::Idle, media });
+            t.upsert(test_info("w1:p1", Working), t0);
+            assert_eq!(choose_collapsed(&t, media), Collapsed { dot: Dot::Working, media });
+            t.upsert(test_info("w1:p2", Done), t0);
+            assert_eq!(choose_collapsed(&t, media), Collapsed { dot: Dot::Done, media });
+            t.upsert(test_info("w1:p3", Blocked), t0);
+            assert_eq!(choose_collapsed(&t, media), Collapsed { dot: Dot::Blocked, media });
+            t.upsert(test_info("w1:p1", Idle), t0);
+            t.remove("w1:p2");
+            t.remove("w1:p3");
+            assert_eq!(choose_collapsed(&t, media), Collapsed { dot: Dot::Idle, media });
+        }
     }
 
     #[test]
-    fn labels() {
-        let t0 = Instant::now();
-        let mut t = AgentTable::default();
-        t.upsert(test_info("w1:p1", Blocked), t0);
-        let mut codex = test_info("w1:p2", Done);
-        codex.agent = Some("codex".into());
-        codex.cwd = None;
-        t.upsert(codex.clone(), t0);
-        assert_eq!(
-            choose_collapsed(&t, false),
-            Collapsed::Blocked { label: "claude needs you · learn-anything +1".into(), pane_id: "w1:p1".into() }
-        );
-        let mut only = AgentTable::default();
-        only.upsert(codex, t0);
-        assert_eq!(choose_collapsed(&only, false), Collapsed::Done { label: "codex done".into(), pane_id: "w1:p2".into() });
-        // the oldest blocked agent is the one shown
-        t.upsert(test_info("w1:p0", Blocked), t0 + Duration::from_secs(1));
-        assert!(matches!(choose_collapsed(&t, false), Collapsed::Blocked { label, pane_id }
-            if pane_id == "w1:p1" && label.ends_with(" +2")));
+    fn default_tabs() {
+        for media in [false, true] {
+            for dot in [Dot::Working, Dot::Done, Dot::Blocked] {
+                assert_eq!(default_tab(&Collapsed { dot, media }), Tab::Agents);
+            }
+            assert_eq!(default_tab(&Collapsed { dot: Dot::Idle, media }), Tab::Media);
+        }
     }
 
     #[test]
     fn sizes() {
-        assert_eq!(collapsed_size(&Collapsed::Idle), Size { w: 40.0, h: 40.0 });
-        assert_eq!(collapsed_size(&Collapsed::Media).w, 160.0);
-        assert_eq!(collapsed_size(&Collapsed::Working { count: 3 }).w, 160.0);
-        assert_eq!(collapsed_size(&Collapsed::Done { label: String::new(), pane_id: String::new() }).w, 240.0);
-        assert_eq!(collapsed_size(&Collapsed::Blocked { label: String::new(), pane_id: String::new() }).w, 260.0);
+        assert_eq!(COLLAPSED, Size { w: 40.0, h: 40.0 });
         let mut t = AgentTable::default();
         assert!(!tabs_visible(&t, true));
         t.upsert(test_info("w1:p1", Idle), Instant::now());
@@ -767,32 +711,16 @@ mod tests {
     }
 
     #[test]
-    fn fullscreen_shows_only_the_blocked_pill() {
-        let blocked = Collapsed::Blocked { label: "a needs you".into(), pane_id: "w1:p1".into() };
-        let done = Collapsed::Done { label: "a done".into(), pane_id: "w1:p1".into() };
-        assert_eq!(shown(false, false, &Collapsed::Idle), Shown::All);
-        assert_eq!(shown(false, false, &blocked), Shown::All);
-        assert_eq!(shown(false, true, &blocked), Shown::CollapsedOnly);
-        for c in [Collapsed::Idle, Collapsed::Media, Collapsed::Working { count: 2 }, done] {
-            assert_eq!(shown(false, true, &c), Shown::Hidden, "{c:?}");
+    fn fullscreen_shows_only_the_blocked_dot() {
+        for media in [false, true] {
+            for dot in [Dot::Idle, Dot::Working, Dot::Done, Dot::Blocked] {
+                let c = Collapsed { dot, media };
+                assert_eq!(shown(false, false, &c), Shown::All);
+                assert_eq!(shown(false, true, &c), if dot == Dot::Blocked { Shown::CollapsedOnly } else { Shown::Hidden });
+                assert_eq!(shown(true, false, &c), Shown::Hidden);
+                assert_eq!(shown(true, true, &c), Shown::Hidden);
+            }
         }
-        // hidden from the tray stays hidden, even for a blocked agent
-        assert_eq!(shown(true, false, &blocked), Shown::Hidden);
-        assert_eq!(shown(true, true, &blocked), Shown::Hidden);
-    }
-
-    #[test]
-    fn status_group_is_centred_in_the_pill() {
-        let pill = rect(100.0, 0.0, 160.0, 37.0);
-        // spinner 14 + gap 8 + label 50 = 72 wide, so it starts (160 - 72) / 2 = 44 in
-        assert_eq!(centred_status(pill, 10.0, 14.0, 8.0, 50.0), (144.0, 166.0, 50.0));
-    }
-
-    #[test]
-    fn status_label_too_wide_keeps_the_padding() {
-        let pill = rect(100.0, 0.0, 160.0, 37.0);
-        // room for the label is 160 - 2 * 10 - 14 - 8 = 118; the caller trims it to that
-        assert_eq!(centred_status(pill, 10.0, 14.0, 8.0, 300.0), (110.0, 132.0, 118.0));
     }
 
     /// The island's top-left on screen (physical pixels) at `spot`.
