@@ -829,7 +829,7 @@ impl App {
                 since: time_in_state(now.saturating_duration_since(a.since)),
             })
             .collect();
-        let collapsed = Scene { t, playing: self.clock.is_playing() };
+        let collapsed = Scene { t, playing: self.clock.is_playing(), accent: self.accent().unwrap_or(Color::white(1.0)) };
         let expanded = ui_expanded::Scene {
             t,
             scroll: self.scroll_fade.value_at(t).min(max_scroll(rows.len()) as f32),

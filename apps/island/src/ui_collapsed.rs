@@ -18,6 +18,8 @@ pub struct Scene {
     /// Seconds on the app clock.
     pub t: f64,
     pub playing: bool,
+    /// The album-art tint for the orbiting arc (white when there is none).
+    pub accent: Color,
 }
 
 /// Draws `face` inside `r` at opacity `k` (the caller clips to the island shape).
@@ -28,7 +30,7 @@ pub fn draw(p: &mut Painter, face: &Face, r: Rect, k: f32, s: &Scene) -> Result<
         p.circle_outline(cx, cy, 28.0, Color::white(0.16).fade(k), 1.5);
         if s.playing {
             let angle = (s.t % 2.0) as f32 * std::f32::consts::PI;
-            p.arc(cx, cy, 14.0, angle, std::f32::consts::FRAC_PI_2, Color::white(0.9).fade(k), 1.5)?;
+            p.arc(cx, cy, 14.0, angle, std::f32::consts::FRAC_PI_2, s.accent.fade(0.9 * k), 1.5)?;
         }
     }
     match dot {
