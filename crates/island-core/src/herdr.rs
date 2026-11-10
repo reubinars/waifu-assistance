@@ -37,6 +37,8 @@ pub enum Incoming {
     Ok { id: String },
     Error { id: String, message: String },
     Detected { pane_id: String },
+    /// The agent exited but its pane stays open (a shell prompt).
+    Released { pane_id: String },
     StatusChanged { pane_id: String, status: AgentStatus, agent: Option<String>, title: Option<String> },
     Closed { pane_id: String },
     /// Valid JSON we don't use.
@@ -70,6 +72,10 @@ fn event(kind: &str, data: &Value) -> Incoming {
     let kind = kind.replace('.', "_");
     let Some(pane_id) = text(data, "pane_id") else { return Incoming::Other };
     match kind.as_str() {
+        // herdr reports an agent leaving a pane as a detected event with `released: true`.
+        "pane_agent_detected" if data.get("released").and_then(Value::as_bool) == Some(true) => {
+            Incoming::Released { pane_id }
+        }
         "pane_agent_detected" => Incoming::Detected { pane_id },
         "pane_closed" => Incoming::Closed { pane_id },
         "pane_agent_status_changed" => Incoming::StatusChanged {
