@@ -136,9 +136,56 @@ pub fn is_fullscreen(fg: Rect, monitor: Rect, class: &str, is_own: bool, app_max
     fg.x <= monitor.x && fg.y <= monitor.y && fg.x + fg.w >= monitor.x + monitor.w && fg.y + fg.h >= monitor.y + monitor.h
 }
 
+/// A screen edge, in `ABE_*` order.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Edge {
+    Left,
+    Top,
+    Right,
+    Bottom,
+}
+
+impl Edge {
+    pub fn from_abe(abe: u32) -> Option<Edge> {
+        [Edge::Left, Edge::Top, Edge::Right, Edge::Bottom].get(abe as usize).copied()
+    }
+}
+
+/// The work area minus the strip an auto-hiding taskbar pops up over. Windows counts that strip
+/// as work area, so without this the island could sit under (and over) the taskbar.
+/// `thickness` is the taskbar's height (or width, on a side), physical pixels.
+pub fn clear_of_taskbar(work: Rect, bounds: Rect, edge: Edge, thickness: f32) -> Rect {
+    let (mut l, mut t, mut r, mut b) = (work.x, work.y, work.x + work.w, work.y + work.h);
+    match edge {
+        Edge::Left => l = l.max(bounds.x + thickness),
+        Edge::Top => t = t.max(bounds.y + thickness),
+        Edge::Right => r = r.min(bounds.x + bounds.w - thickness),
+        Edge::Bottom => b = b.min(bounds.y + bounds.h - thickness),
+    }
+    Rect { x: l, y: t, w: (r - l).max(0.0), h: (b - t).max(0.0) }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_auto_hiding_taskbar_keeps_its_strip() {
+        let screen = Rect { x: 0.0, y: 0.0, w: 1920.0, h: 1080.0 };
+        let r = |x, y, w, h| Rect { x, y, w, h };
+        assert_eq!(clear_of_taskbar(screen, screen, Edge::Bottom, 48.0), r(0.0, 0.0, 1920.0, 1032.0));
+        assert_eq!(clear_of_taskbar(screen, screen, Edge::Top, 48.0), r(0.0, 48.0, 1920.0, 1032.0));
+        assert_eq!(clear_of_taskbar(screen, screen, Edge::Left, 60.0), r(60.0, 0.0, 1860.0, 1080.0));
+        assert_eq!(clear_of_taskbar(screen, screen, Edge::Right, 60.0), r(0.0, 0.0, 1860.0, 1080.0));
+        // a work area that already leaves the strip out is unchanged
+        let work = r(0.0, 0.0, 1920.0, 1032.0);
+        assert_eq!(clear_of_taskbar(work, screen, Edge::Bottom, 48.0), work);
+        // a monitor to the left of the primary
+        let left = r(-1920.0, 0.0, 1920.0, 1080.0);
+        assert_eq!(clear_of_taskbar(left, left, Edge::Right, 60.0), r(-1920.0, 0.0, 1860.0, 1080.0));
+        assert_eq!(Edge::from_abe(3), Some(Edge::Bottom));
+        assert_eq!(Edge::from_abe(4), None);
+    }
 
     #[test]
     fn terminal_process_matches_only_the_image_filename_case_insensitively() {

@@ -16,9 +16,9 @@ use island_core::media::MediaClock;
 use island_core::session::HerdrSession;
 use island_core::view::layout::{MAX_ROWS, SEEK};
 use island_core::view::{
-    Collapsed, DisplayMode, EXPANDED, ExpandedHit, Shown, Tab, WINDOW, choose_collapsed, clock_label, collapsed_size,
-    corner_radii, default_tab, fullscreen_jump_target, hit_expanded, hit_rounded, is_drag, island_rect, jump_target,
-    shown, tabs_visible, time_in_state, window_position,
+    Collapsed, DisplayMode, EXPANDED, ExpandedHit, Shown, Spot, Tab, choose_collapsed, clock_label,
+    collapsed_size, corner_radii, default_tab, fullscreen_jump_target, hit_expanded, hit_rounded, is_drag, island_rect,
+    jump_target, shown, spot_at, tabs_visible, time_in_state,
 };
 use island_core::{Point, Rect, Size};
 use std::time::{Duration, Instant};
@@ -43,12 +43,12 @@ const LEAVE_COLLAPSE: Duration = Duration::from_secs(2);
 /// Deactivation right after expanding (the click that expanded) doesn't collapse.
 const DEACTIVATE_ARM: Duration = Duration::from_millis(150);
 
-/// A press on the collapsed island: a click on release, or a drag along the top edge once it moves.
+/// A press on the collapsed island: a click on release, or a drag around the screen once it moves.
 #[derive(Clone, Copy)]
 struct Press {
-    /// Where the press started and where the window was then, screen pixels.
-    x: i32,
-    window_x: i32,
+    /// Where the press started and the island's top-left then, screen pixels.
+    at: (i32, i32),
+    island: Point,
     dragging: bool,
 }
 
@@ -165,6 +165,15 @@ impl App {
         self.config.display_mode
     }
 
+    fn spot(&self) -> Spot {
+        self.config.spot()
+    }
+
+    /// The island's rect in the window (DIPs) at `size`.
+    fn rect_at(&self, size: Size) -> Rect {
+        island_rect(self.spot(), size)
+    }
+
     pub fn on_source_event(&mut self, e: SourceEvent) {
         let now = Instant::now();
         match e {
@@ -211,10 +220,10 @@ impl App {
                 self.reposition();
                 fullscreen::check(self.win.visual);
             }
-            Event::MouseMove(x, _) if self.press.is_some() => self.on_press_move(x),
+            Event::MouseMove(x, y) if self.press.is_some() => self.on_press_move(x, y),
             Event::MouseMove(x, y) => self.on_mouse_move(self.win.to_dip(x, y)),
             Event::MouseLeave => self.on_mouse_leave(),
-            Event::MouseDown(x, _) if !self.expanded => self.on_press(x),
+            Event::MouseDown(x, y) if !self.expanded => self.on_press(x, y),
             Event::MouseDown(x, y) => self.on_mouse_down(self.win.to_dip(x, y)),
             Event::MouseUp(..) if self.press.is_some() => self.on_release(),
             Event::MouseUp(x, y) => self.on_click(self.win.to_dip(x, y)),
@@ -262,7 +271,8 @@ impl App {
                 self.save_config();
             }
             Some(tray::Command::ResetPosition) => {
-                self.config.position = 0.5;
+                self.config.position_x = Spot::TOP_CENTRE.x;
+                self.config.position_y = Spot::TOP_CENTRE.y;
                 self.reposition();
                 self.save_config();
             }
@@ -314,7 +324,7 @@ impl App {
 
     /// The expanded island's top-left once settled (DIPs); what clicks are tested against.
     fn expanded_origin(&self) -> Point {
-        let r = island_rect(self.mode(), EXPANDED);
+        let r = self.rect_at(EXPANDED);
         Point { x: r.x, y: r.y }
     }
 
@@ -346,8 +356,8 @@ impl App {
             }
         } else {
             // the input region is a rectangle-ish GDI region; only the drawn shape counts
-            let mode = self.mode();
-            let inside = hit_rounded(island_rect(mode, self.anim.size()), corner_radii(mode, self.anim.r.value), p);
+            let radii = corner_radii(self.mode(), self.anim.r.value);
+            let inside = hit_rounded(self.rect_at(self.anim.size()), radii, p);
             self.anim.set_hover(inside && self.collapsed == Collapsed::Media, t);
             self.dirty = true;
         }
@@ -367,17 +377,21 @@ impl App {
     }
 
     /// Press on the collapsed island: wait to see whether it is a click or a drag.
-    fn on_press(&mut self, x: i32) {
-        self.press = Some(Press { x, window_x: self.win.origin.0, dragging: false });
+    fn on_press(&mut self, x: i32, y: i32) {
+        let r = self.rect_at(self.anim.size());
+        let (o, s) = (self.win.origin, self.win.scale);
+        let island = Point { x: o.0 as f32 + r.x * s, y: o.1 as f32 + r.y * s };
+        self.press = Some(Press { at: (x, y), island, dragging: false });
         self.win.capture(true);
     }
 
-    /// Past the drag threshold the island follows the pointer along the top edge.
-    fn on_press_move(&mut self, x: i32) {
+    /// Past the drag threshold the island follows the pointer around the screen (attached: along
+    /// the top edge).
+    fn on_press_move(&mut self, x: i32, y: i32) {
         let Some(mut press) = self.press else { return };
-        let dx = x - press.x;
+        let (dx, dy) = (x - press.at.0, y - press.at.1);
         if !press.dragging {
-            if !is_drag(dx, self.win.scale) {
+            if !is_drag(dx, dy, self.win.scale) {
                 return;
             }
             press.dragging = true;
@@ -385,9 +399,11 @@ impl App {
             self.anim.set_hover(false, self.secs(Instant::now()));
         }
         let (work, bounds, scale) = window::primary_monitor();
-        self.config.position = window_position(self.mode(), work, bounds, scale, (press.window_x + dx) as f32);
+        let (ix, iy) = (press.island.x + dx as f32, press.island.y + dy as f32);
+        let spot = spot_at(self.mode(), work, bounds, scale, self.anim.size(), ix, iy);
+        self.config.set_spot(spot);
         // only the origin changes, so the device and its swap chain stay
-        self.win.place(self.mode(), self.config.position);
+        self.win.place(self.mode(), self.spot());
         self.dirty = true;
     }
 
@@ -396,7 +412,7 @@ impl App {
         let Some(press) = self.press.take() else { return };
         self.win.capture(false);
         if press.dragging {
-            log::info!("moved to position {}", self.config.position);
+            log::info!("moved to {:?}", self.spot());
             self.save_config();
         } else {
             self.on_collapsed_click(Instant::now());
@@ -531,7 +547,7 @@ impl App {
 
     fn reposition(&mut self) {
         let old = (self.win.origin, self.win.scale);
-        self.win.place(self.mode(), self.config.position);
+        self.win.place(self.mode(), self.spot());
         if (self.win.origin, self.win.scale) != old {
             // the swap chain and every device resource are sized for the old scale
             self.device = None;
@@ -623,7 +639,7 @@ impl App {
         let t = self.secs(now);
         self.anim.step(t);
         let mode = self.mode();
-        let rect = island_rect(mode, self.anim.size());
+        let rect = self.rect_at(self.anim.size());
         self.win.shape_input(rect, self.anim.r.value, mode);
         self.dirty = false;
         if self.device.is_none() {
@@ -744,7 +760,7 @@ impl App {
         };
         dev.gfx.begin();
         dev.painter.begin_frame();
-        let drawn = draw_island(dev, &self.anim, self.config.display_mode, t, &collapsed, &expanded);
+        let drawn = draw_island(dev, &self.anim, self.config.display_mode, self.config.spot(), t, &collapsed, &expanded);
         let presented = dev.gfx.end();
         drawn.and(presented)
     }
@@ -758,12 +774,13 @@ fn draw_island(
     dev: &mut Device,
     anim: &Animator,
     mode: DisplayMode,
+    spot: Spot,
     t: f64,
     scene: &Scene,
     ex: &ui_expanded::Scene,
 ) -> Result<()> {
     let size = anim.size();
-    let rect = island_rect(mode, Size { w: size.w.max(1.0), h: size.h.max(1.0) });
+    let rect = island_rect(spot, Size { w: size.w.max(1.0), h: size.h.max(1.0) });
     let radii = corner_radii(mode, anim.r.value);
     let (glow, glow_color) = anim.glow(t);
     let key = Backdrop { rect, radii, glow, glow_color, mode };
@@ -789,27 +806,28 @@ fn draw_island(
     let (k_new, k_old) = anim.face_opacity(t);
     let mut drawn = Ok(());
     if let Some(old) = &anim.old {
-        drawn = draw_face(p, old, &anim.face, rect, k_old, scene, ex);
+        drawn = draw_face(p, old, &anim.face, (rect, spot), k_old, scene, ex);
     }
     let other = anim.old.as_ref().unwrap_or(&anim.face);
-    let drawn = drawn.and_then(|_| draw_face(p, &anim.face, other, rect, k_new, scene, ex));
+    let drawn = drawn.and_then(|_| draw_face(p, &anim.face, other, (rect, spot), k_new, scene, ex));
     p.pop_layer();
     drawn
 }
 
-/// One face at opacity `k`; `other` is the face it is fading against.
+/// One face at opacity `k` in the island's `rect` at `spot`; `other` is the face it is fading against.
 fn draw_face(
     p: &mut Painter,
     face: &Face,
     other: &Face,
-    rect: Rect,
+    (rect, spot): (Rect, Spot),
     k: f32,
     scene: &Scene,
     ex: &ui_expanded::Scene,
 ) -> Result<()> {
     let Face::Expanded(tab) = face else { return ui_collapsed::draw(p, face, rect, k, scene) };
-    // centred on the island as it grows, top-aligned
-    let (ox, oy) = (rect.x + rect.w / 2.0 - EXPANDED.w / 2.0, rect.y);
+    // pinned to the island's edges the way the island is pinned to the screen's, so the content
+    // stays put while the island grows away from those edges
+    let (ox, oy) = (rect.x + (rect.w - EXPANDED.w) * spot.x, rect.y + (rect.h - EXPANDED.h) * spot.y);
     // entering from (or leaving to) the collapsed island: scale 0.92→1; switching tabs: no scale
     let scale = if matches!(other, Face::Expanded(_)) { 1.0 } else { 0.92 + 0.08 * k };
     let restore = p.scale_about(scale, ox + EXPANDED.w / 2.0, oy + EXPANDED.h / 2.0);
@@ -822,22 +840,21 @@ fn draw_face(
 fn draw_backdrop(p: &mut Painter, b: &Backdrop) -> Result<()> {
     let (rect, radii) = (b.rect, b.radii);
     let shape = p.shape(rect, radii)?;
-    // the glow shows only outside the shape grown by 2 px
+    // the glow runs right up to the island, which covers the rest of it: a gap at the edge
+    // reads as an outline
     if b.glow > 0.001 {
         let grown_radii = radii.map(|r| if r > 0.0 { r + 2.0 } else { 0.0 });
         let grown = p.shape(outset(rect, 2.0), grown_radii)?;
-        let window = p.rect_geometry(Rect { x: -100.0, y: -100.0, w: WINDOW.w + 200.0, h: WINDOW.h + 200.0 })?;
-        let mask = p.exclude(&window, &grown)?;
         match b.mode {
             DisplayMode::Pill => {
-                p.push_layer(Some(&mask), 0.4 * b.glow);
+                p.push_layer(None, 0.4 * b.glow);
                 p.shadow(&grown, 0.0, 0.0, 15.0, b.glow_color)?;
                 p.shadow(&grown, 0.0, 0.0, 40.0, b.glow_color)?;
             }
             DisplayMode::Attached => {
                 let bottom = rect.y + rect.h + 2.0;
                 let band = p.rect_geometry(Rect { x: rect.x - 2.0, y: bottom - 12.0, w: rect.w + 4.0, h: 12.0 })?;
-                p.push_layer(Some(&mask), 0.5 * b.glow);
+                p.push_layer(None, 0.5 * b.glow);
                 p.shadow(&band, 0.0, 4.0, 15.0, b.glow_color)?;
                 p.shadow(&band, 0.0, 8.0, 40.0, b.glow_color)?;
             }

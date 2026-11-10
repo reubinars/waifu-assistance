@@ -11,7 +11,7 @@ use windows::Win32::Graphics::Direct2D::Common::{
 };
 use windows::Win32::Graphics::Direct2D::{
     CLSID_D2D1Shadow, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE, D2D1_ARC_SEGMENT, D2D1_ARC_SIZE_SMALL, D2D1_BITMAP_OPTIONS_NONE, D2D1_BITMAP_OPTIONS_TARGET, D2D1_INTERPOLATION_MODE_NEAREST_NEIGHBOR,
-    D2D1_BITMAP_PROPERTIES1, D2D1_COMBINE_MODE_EXCLUDE, D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT, D2D1_ELLIPSE,
+    D2D1_BITMAP_PROPERTIES1, D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT, D2D1_ELLIPSE,
     D2D1_INTERPOLATION_MODE_LINEAR, D2D1_LAYER_OPTIONS1_NONE, D2D1_LAYER_PARAMETERS1, D2D1_PROPERTY_TYPE_FLOAT,
     D2D1_PROPERTY_TYPE_VECTOR4, D2D1_ROUNDED_RECT, D2D1_SHADOW_PROP_BLUR_STANDARD_DEVIATION, D2D1_SHADOW_PROP_COLOR,
     D2D1_SWEEP_DIRECTION_CLOCKWISE, D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE, ID2D1Bitmap1, ID2D1BitmapBrush1,
@@ -191,17 +191,6 @@ impl Painter {
                 sink.AddArc(&arc(l + tl, t, tl));
             }
             sink.EndFigure(D2D1_FIGURE_END_CLOSED);
-            sink.Close()?;
-            path.cast()
-        }
-    }
-
-    /// `outer` minus `inner`.
-    pub fn exclude(&self, outer: &ID2D1Geometry, inner: &ID2D1Geometry) -> Result<ID2D1Geometry> {
-        unsafe {
-            let path: ID2D1PathGeometry1 = self.factory.CreatePathGeometry()?;
-            let sink = path.Open()?;
-            outer.CombineWithGeometry(inner, D2D1_COMBINE_MODE_EXCLUDE, None, 0.25, &sink)?;
             sink.Close()?;
             path.cast()
         }
