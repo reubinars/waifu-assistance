@@ -5,6 +5,7 @@ use crate::draw::{Color, Painter};
 use crate::fullscreen;
 use crate::gfx::Gfx;
 use crate::log;
+use crate::pet::{self, PetBitmaps, PetImages, Sprite};
 use crate::sources::{AgentSource, ArtImage, DemoAction, MediaCommand, MediaSource, SourceEvent, UiSender};
 use crate::startup;
 use crate::tray::{self, Tray};
@@ -13,6 +14,7 @@ use crate::ui_expanded::{self, Hot, Hover};
 use crate::window::{self, Event, VK_ESCAPE, Windows};
 use island_core::config::Config;
 use island_core::media::MediaClock;
+use island_core::pet::{PetClock, PetState, Sheet, pet_state};
 use island_core::session::HerdrSession;
 use island_core::view::layout::{MAX_ROWS, SEEK};
 use island_core::view::{
@@ -84,6 +86,9 @@ pub struct App {
     clock: MediaClock,
     art: Option<ArtImage>,
     art_bmp: Option<ID2D1Bitmap1>,
+    pet_sheet: Option<(Sheet, PetImages)>,
+    pet_bmps: Option<PetBitmaps>,
+    pet: PetClock,
     collapsed: Collapsed,
     expanded: bool,
     expanded_at: Option<Instant>,
@@ -133,6 +138,9 @@ impl App {
             clock,
             art: None,
             art_bmp: None,
+            pet_sheet: pet::load(),
+            pet_bmps: None,
+            pet: PetClock::new(PetState::Sleep, 0.0),
             collapsed,
             expanded: false,
             expanded_at: None,
@@ -518,6 +526,9 @@ impl App {
     }
 
     fn expand(&mut self, tab: Tab, activate: bool, now: Instant) {
+        if !self.expanded {
+            self.pet.open(self.secs(now));
+        }
         self.expanded = true;
         self.expanded_at = Some(now);
         self.tab = tab;
@@ -552,6 +563,7 @@ impl App {
             // the swap chain and every device resource are sized for the old scale
             self.device = None;
             self.art_bmp = None;
+            self.pet_bmps = None;
         }
         self.dirty = true;
     }
@@ -564,6 +576,7 @@ impl App {
     /// Recomputes what the island should show and sets the animation targets.
     fn retarget(&mut self, now: Instant) {
         let t = self.secs(now);
+        self.pet.set(pet_state(&self.session.agents), t);
         let present = self.clock.is_present(now);
         let collapsed = choose_collapsed(&self.session.agents, present);
         if collapsed != self.collapsed {
@@ -656,6 +669,7 @@ impl App {
         if let Err(e) = self.render(now, t) {
             self.device = None;
             self.art_bmp = None;
+            self.pet_bmps = None;
             if device_lost(&e) {
                 log::warning!("graphics device lost, rebuilding: {e}");
                 self.dirty = true;
@@ -694,6 +708,17 @@ impl App {
 
     fn render(&mut self, now: Instant, t: f64) -> Result<()> {
         let Some(dev) = self.device.as_mut() else { return Ok(()) };
+        if self.pet_bmps.is_none()
+            && let Some((_, images)) = &self.pet_sheet
+        {
+            match images.upload(&dev.painter) {
+                Ok(bmps) => self.pet_bmps = Some(bmps),
+                Err(e) => {
+                    log::warning!("pet bitmaps unusable: {e}");
+                    self.pet_sheet = None;
+                }
+            }
+        }
         if self.art_bmp.is_none()
             && let Some(a) = &self.art
         {
@@ -742,6 +767,12 @@ impl App {
         let (title, artist) = (title.to_string(), artist.to_string());
         let collapsed = Scene {
             t,
+            pet: self.pet_sheet.as_ref().zip(self.pet_bmps.as_ref()).map(|((sheet, _), bmps)| Sprite {
+                bmp: &bmps.emblem,
+                atlas: &sheet.emblem,
+                cell: sheet.emblem.cell(self.pet.state(), self.pet.emblem_ms(t)),
+                scale: self.win.scale,
+            }),
             art: self.art_bmp.as_ref(),
             playing: self.clock.is_playing(),
             wave: self.anim.wave_color(t),
@@ -751,6 +782,12 @@ impl App {
         };
         let expanded = ui_expanded::Scene {
             t,
+            pet: self.pet_sheet.as_ref().zip(self.pet_bmps.as_ref()).map(|((sheet, _), bmps)| Sprite {
+                bmp: &bmps.solo,
+                atlas: &sheet.solo,
+                cell: sheet.solo.cell(self.pet.state(), self.pet.solo_ms(t)),
+                scale: self.win.scale,
+            }),
             tabs: tabs_visible(&self.session.agents, present),
             rows,
             media,
