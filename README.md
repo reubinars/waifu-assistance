@@ -2,6 +2,8 @@
 
 A Dynamic Island for Windows, for working with coding agents in WSL. A small pill at the top of the main monitor tells you when an agent in herdr needs you, and one click takes you to its pane. It also shows what's playing (art, title, seekbar, controls). Native Rust (Win32, Direct2D, DirectComposition). It uses no CPU while idle and stays under 20 MB.
 
+A pixel-art pet appears as a 32×32 emblem in the idle and media pills and a 64×64 pet on both expanded tabs. Her pose follows the agents' status in priority order: blocked > done > working > idle. She sleeps when no agents are reported.
+
 ## Install
 
 From WSL, with Rust and [`cargo-xwin`](https://github.com/rust-cross/cargo-xwin):
