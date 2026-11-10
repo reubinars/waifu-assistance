@@ -694,7 +694,7 @@ impl App {
         sheet.solo.next_change(self.pet.state(), self.pet.ms(t))
     }
 
-    /// Whether the content itself moves every frame (media spectrum, blocked pulse).
+    /// Whether the content itself moves every frame (media arc, blocked pulse).
     fn continuous(&self) -> bool {
         match self.anim.face {
             Face::Dot { dot: Dot::Blocked, .. } => true,

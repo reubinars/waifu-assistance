@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use std::mem::ManuallyDrop;
 use windows::Win32::Graphics::Direct2D::Common::{
     D2D_RECT_F, D2D_SIZE_F, D2D_SIZE_U, D2D1_ALPHA_MODE_PREMULTIPLIED, D2D1_COLOR_F, D2D1_COMPOSITE_MODE_SOURCE_OVER,
-    D2D1_FIGURE_BEGIN_FILLED, D2D1_FIGURE_END_CLOSED, D2D1_PIXEL_FORMAT,
+    D2D1_FIGURE_BEGIN_FILLED, D2D1_FIGURE_BEGIN_HOLLOW, D2D1_FIGURE_END_CLOSED, D2D1_FIGURE_END_OPEN, D2D1_PIXEL_FORMAT,
 };
 use windows::Win32::Graphics::Direct2D::{
     CLSID_D2D1Shadow, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE, D2D1_ARC_SEGMENT, D2D1_ARC_SIZE_SMALL, D2D1_BITMAP_OPTIONS_NONE, D2D1_BITMAP_OPTIONS_TARGET, D2D1_INTERPOLATION_MODE_NEAREST_NEIGHBOR,
@@ -302,6 +302,27 @@ impl Painter {
         unsafe { self.dc.DrawEllipse(&e, self.brush(c), width, None) }
     }
 
+    /// A clockwise stroked arc; angles are radians from the right.
+    pub fn arc(&self, cx: f32, cy: f32, radius: f32, start_angle: f32, sweep: f32, c: Color, width: f32) -> Result<()> {
+        unsafe {
+            let path: ID2D1PathGeometry1 = self.factory.CreatePathGeometry()?;
+            let sink = path.Open()?;
+            sink.BeginFigure(v2(cx + radius * start_angle.cos(), cy + radius * start_angle.sin()), D2D1_FIGURE_BEGIN_HOLLOW);
+            let end = start_angle + sweep;
+            sink.AddArc(&D2D1_ARC_SEGMENT {
+                point: v2(cx + radius * end.cos(), cy + radius * end.sin()),
+                size: D2D_SIZE_F { width: radius, height: radius },
+                rotationAngle: 0.0,
+                sweepDirection: D2D1_SWEEP_DIRECTION_CLOCKWISE,
+                arcSize: D2D1_ARC_SIZE_SMALL,
+            });
+            sink.EndFigure(D2D1_FIGURE_END_OPEN);
+            sink.Close()?;
+            self.dc.DrawGeometry(&path, self.brush(c), width, &self.round_caps);
+        }
+        Ok(())
+    }
+
     /// A filled polygon through `pts`.
     pub fn polygon(&self, pts: &[(f32, f32)], c: Color) -> Result<()> {
         let Some((&(x0, y0), rest)) = pts.split_first() else { return Ok(()) };
@@ -326,10 +347,6 @@ impl Painter {
 
     pub fn line(&self, x0: f32, y0: f32, x1: f32, y1: f32, c: Color, width: f32) {
         unsafe { self.dc.DrawLine(v2(x0, y0), v2(x1, y1), self.brush(c), width, None) }
-    }
-
-    pub fn line_round(&self, x0: f32, y0: f32, x1: f32, y1: f32, c: Color, width: f32) {
-        unsafe { self.dc.DrawLine(v2(x0, y0), v2(x1, y1), self.brush(c), width, &self.round_caps) }
     }
 
     fn format(&mut self, size: f32, weight: u16) -> Result<IDWriteTextFormat> {

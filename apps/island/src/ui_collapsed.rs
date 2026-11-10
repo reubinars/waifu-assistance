@@ -3,7 +3,7 @@
 use crate::animator::Face;
 use crate::draw::{Color, Painter, TEXT_PRIMARY};
 use island_core::Rect;
-use island_core::anim::{BLOCKED_PULSE_PERIOD, pulse, sound_bar_scale};
+use island_core::anim::{BLOCKED_PULSE_PERIOD, pulse};
 use island_core::view::Dot;
 use windows::core::Result;
 
@@ -27,13 +27,8 @@ pub fn draw(p: &mut Painter, face: &Face, r: Rect, k: f32, s: &Scene) -> Result<
     if *media {
         p.circle_outline(cx, cy, 28.0, Color::white(0.16).fade(k), 1.5);
         if s.playing {
-            for i in 0..24 {
-                let angle = i as f32 * std::f32::consts::TAU / 24.0 - std::f32::consts::FRAC_PI_2;
-                let level = sound_bar_scale(i % 5, s.t + i as f64 * 0.07);
-                let (r0, r1) = (15.5, 15.5 + 1.0 + 3.0 * level);
-                let (sx, sy) = (angle.cos(), angle.sin());
-                p.line_round(cx + sx * r0, cy + sy * r0, cx + sx * r1, cy + sy * r1, Color::white(0.85).fade(k), 1.5);
-            }
+            let angle = (s.t % 2.0) as f32 * std::f32::consts::PI;
+            p.arc(cx, cy, 14.0, angle, std::f32::consts::FRAC_PI_2, Color::white(0.9).fade(k), 1.5)?;
         }
     }
     match dot {
