@@ -741,6 +741,7 @@ impl App {
         {
             match images.upload(&dev.painter) {
                 Ok(bmps) => self.pet_bmps = Some(bmps),
+                Err(e) if device_lost(&e) => return Err(e),
                 Err(e) => {
                     log::warning!("pet bitmaps unusable: {e}");
                     self.pet_sheet = None;
