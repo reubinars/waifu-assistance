@@ -1,4 +1,4 @@
-//! Embedded pet sheets, decoded once on the UI thread and uploaded per graphics device.
+//! Embedded solo pet sheet, decoded once on the UI thread and uploaded per graphics device.
 
 use crate::draw::Painter;
 use crate::log;
@@ -16,7 +16,6 @@ use windows::Win32::System::Com::{
 use windows::core::{Error, Result};
 
 const SOLO: &[u8] = include_bytes!("../assets/pet/pet-solo.png");
-const EMBLEM: &[u8] = include_bytes!("../assets/pet/pet-emblem.png");
 const JSON: &str = include_str!("../assets/pet/pet.json");
 
 struct Image {
@@ -27,12 +26,10 @@ struct Image {
 
 pub struct PetImages {
     solo: Image,
-    emblem: Image,
 }
 
 pub struct PetBitmaps {
     pub solo: ID2D1Bitmap1,
-    pub emblem: ID2D1Bitmap1,
 }
 
 pub struct Sprite<'a> {
@@ -52,7 +49,6 @@ impl PetImages {
     pub fn upload(&self, p: &Painter) -> Result<PetBitmaps> {
         Ok(PetBitmaps {
             solo: p.bitmap(&self.solo.bgra, self.solo.width, self.solo.height)?,
-            emblem: p.bitmap(&self.emblem.bgra, self.emblem.width, self.emblem.height)?,
         })
     }
 }
@@ -77,8 +73,7 @@ pub fn load() -> Option<(Sheet, PetImages)> {
         let _apartment = Apartment(initialized.is_ok());
         let sheet = Sheet::parse(JSON).map_err(|e| Error::new(E_INVALIDARG, e))?;
         let solo = decode(SOLO, &sheet.solo)?;
-        let emblem = decode(EMBLEM, &sheet.emblem)?;
-        Ok((sheet, PetImages { solo, emblem }))
+        Ok((sheet, PetImages { solo }))
     })();
     match result {
         Ok(pet) => Some(pet),

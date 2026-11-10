@@ -3,8 +3,7 @@
 //! top-left.
 
 use crate::draw::{Align, Color, Painter, TEXT_PRIMARY, TEXT_SECONDARY, TEXT_TERTIARY};
-use crate::pet::Sprite;
-use island_core::{Point, Rect};
+use island_core::Rect;
 use island_core::anim::{Fade, breathe};
 use island_core::herdr::AgentStatus;
 use island_core::view::layout::{self, MAX_ROWS};
@@ -138,7 +137,6 @@ pub struct Scene<'a> {
     pub rows: Vec<Row>,
     pub media: Option<Media>,
     pub art: Option<&'a ID2D1Bitmap1>,
-    pub pet: Option<Sprite<'a>>,
     pub accent: Option<Color>,
     pub hover: &'a Hover,
 }
@@ -185,9 +183,6 @@ fn draw_rows(p: &mut Painter, ox: f32, oy: f32, k: f32, s: &Scene) -> Result<()>
     const TIME_W: f32 = 26.0;
     const SPACE: f32 = 8.0;
     const RIGHT: f32 = 10.0;
-    if let Some(pet) = &s.pet {
-        pet.draw(p, Point { x: ox + layout::PET_AGENTS.x, y: oy + layout::PET_AGENTS.y }, k);
-    }
     for (i, row) in s.rows.iter().take(MAX_ROWS).enumerate() {
         let r = off(layout::row(i), ox, oy);
         let h = s.hover.hover(Hot::Row(i), s.t);
@@ -228,9 +223,6 @@ fn draw_rows(p: &mut Painter, ox: f32, oy: f32, k: f32, s: &Scene) -> Result<()>
 }
 
 fn draw_media(p: &mut Painter, ox: f32, oy: f32, k: f32, s: &Scene) -> Result<()> {
-    if let Some(pet) = &s.pet {
-        pet.draw(p, Point { x: ox + layout::PET_MEDIA.x, y: oy + layout::PET_MEDIA.y }, k);
-    }
     let art = off(layout::ART, ox, oy);
     let (acx, acy) = (art.x + art.w / 2.0, art.y + art.h / 2.0);
     let playing = s.media.as_ref().is_some_and(|m| m.playing);

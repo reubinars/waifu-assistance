@@ -182,16 +182,11 @@ impl Clip {
 pub struct PetClock {
     state: PetState,
     changed_at: f64,
-    opened_at: f64,
 }
 
 impl PetClock {
     pub fn new(s: PetState, t: f64) -> Self {
-        Self {
-            state: s,
-            changed_at: t,
-            opened_at: t,
-        }
+        Self { state: s, changed_at: t }
     }
 
     pub fn state(&self) -> PetState {
@@ -205,16 +200,8 @@ impl PetClock {
         }
     }
 
-    pub fn open(&mut self, t: f64) {
-        self.opened_at = t;
-    }
-
-    pub fn emblem_ms(&self, t: f64) -> u32 {
+    pub fn ms(&self, t: f64) -> u32 {
         elapsed_ms(t, self.changed_at)
-    }
-
-    pub fn solo_ms(&self, t: f64) -> u32 {
-        elapsed_ms(t, self.changed_at.max(self.opened_at))
     }
 }
 
@@ -368,25 +355,13 @@ mod tests {
         let mut clock = PetClock::new(Working, 0.0);
         clock.set(Working, 1.0);
         assert_eq!(clock.state(), Working);
-        assert_eq!(clock.emblem_ms(1.0), 1000);
+        assert_eq!(clock.ms(1.0), 1000);
         clock.set(Idle, 1.0);
         assert_eq!(clock.state(), Idle);
-        assert_eq!(clock.emblem_ms(1.2), 200);
-        assert_eq!(clock.emblem_ms(0.5), 0);
-        assert_eq!(clock.emblem_ms(f64::MAX), u32::MAX);
+        assert_eq!(clock.ms(1.2), 200);
+        assert_eq!(clock.ms(0.5), 0);
+        assert_eq!(clock.ms(f64::MAX), u32::MAX);
         clock.set(Working, 2.0);
-        assert_eq!(clock.emblem_ms(2.0), 0);
-    }
-
-    #[test]
-    fn solo_clip_starts_at_the_later_of_change_and_open() {
-        let mut clock = PetClock::new(Done, 0.0);
-        clock.open(5.0);
-        assert_eq!(clock.solo_ms(5.1), 100);
-        assert_eq!(clock.emblem_ms(5.1), 5100);
-        clock.set(Blocked, 6.0);
-        assert_eq!(clock.solo_ms(6.05), 50);
-        assert_eq!(clock.solo_ms(5.0), 0);
-        assert_eq!(clock.solo_ms(f64::MAX), u32::MAX);
+        assert_eq!(clock.ms(2.0), 0);
     }
 }

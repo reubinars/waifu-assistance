@@ -29,12 +29,19 @@ pub enum Tab {
 }
 
 pub const EXPANDED: Size = Size { w: 360.0, h: 200.0 };
+pub const PET: Size = Size { w: 64.0, h: 64.0 };
+/// Occupied part of the pet cell; its bottom four rows are transparent.
+pub const PET_BOX: Size = Size { w: 64.0, h: 60.0 };
+pub const PET_GAP: f32 = 4.0;
 /// Room around the island inside its window for the shadow and glow to fade out in, so the
 /// window's edge never cuts them off. Where the island sits at a screen edge, this room hangs
 /// past that edge (off screen, or over the taskbar strip; the window is click-through).
 const SHADOW_ROOM: f32 = 50.0;
-/// The fixed transparent window the island is drawn in (DIPs): the expanded island plus that room.
-pub const WINDOW: Size = Size { w: EXPANDED.w + 2.0 * SHADOW_ROOM, h: EXPANDED.h + 2.0 * SHADOW_ROOM };
+/// The fixed transparent window (DIPs): the expanded island, pet column and shadow room.
+pub const WINDOW: Size = Size {
+    w: EXPANDED.w + PET_BOX.w + PET_GAP + 2.0 * SHADOW_ROOM,
+    h: EXPANDED.h + 2.0 * SHADOW_ROOM,
+};
 const COLLAPSED_H: f32 = 40.0;
 /// How far the pill keeps off the edges of the screen (the work area).
 const PILL_MARGIN: f32 = 4.0;
@@ -141,12 +148,30 @@ fn margin(mode: DisplayMode) -> f32 {
     }
 }
 
-/// The island's rect inside the window, in DIPs: anywhere inside the shadow room, by `spot`.
-pub fn island_rect(spot: Spot, size: Size) -> Rect {
+/// The island and optional pet move together as one block.
+pub fn block_size(size: Size, pet: bool) -> Size {
+    if pet { Size { w: size.w + PET_BOX.w + PET_GAP, h: size.h.max(PET_BOX.h) } } else { size }
+}
+
+/// The block's rect inside the window, in DIPs: anywhere inside the shadow room, by `spot`.
+pub fn block_rect(spot: Spot, size: Size, pet: bool) -> Rect {
+    let size = block_size(size, pet);
     let r = SHADOW_ROOM;
     let x = r + (WINDOW.w - 2.0 * r - size.w) * spot.x;
     let y = r + (WINDOW.h - 2.0 * r - size.h) * spot.y;
     Rect { x, y, w: size.w, h: size.h }
+}
+
+/// The island sits at the block's right edge, aligned vertically in the same proportion as `spot`.
+pub fn island_rect(spot: Spot, size: Size, pet: bool) -> Rect {
+    let b = block_rect(spot, size, pet);
+    Rect { x: b.x + b.w - size.w, y: b.y + (b.h - size.h) * spot.y, w: size.w, h: size.h }
+}
+
+/// Top-left of the pet cell, aligning its occupied height with the island.
+pub fn pet_cell(spot: Spot, size: Size) -> Point {
+    let b = block_rect(spot, size, true);
+    Point { x: b.x, y: b.y + (b.h - PET_BOX.h) * spot.y }
 }
 
 /// [top-left, top-right, bottom-right, bottom-left].
@@ -179,12 +204,12 @@ pub fn window_origin(mode: DisplayMode, work_area: Rect, bounds: Rect, scale: f3
     Point { x: along(a.x, a.w, WINDOW.w, spot.x), y: along(a.y, a.h, WINDOW.h, spot.y) }
 }
 
-/// The spot that puts an island of `size` (DIPs) with its top-left at `(x, y)` (physical
-/// pixels); past an edge it stays at that edge. The inverse of `window_origin` + `island_rect`.
+/// The spot that puts a block of `size` (DIPs) with its top-left at `(x, y)` (physical
+/// pixels); past an edge it stays at that edge. The inverse of `window_origin` + `block_rect`.
 pub fn spot_at(mode: DisplayMode, work_area: Rect, bounds: Rect, scale: f32, size: Size, x: f32, y: f32) -> Spot {
     let a = area(mode, work_area, bounds);
     let m = margin(mode) * scale;
-    // the island's left edge runs from `start + m` to `start + len - m - size`
+    // the block's left edge runs from `start + m` to `start + len - m - size`
     let along = |start: f32, len: f32, size: f32, pos: f32| {
         let span = len - 2.0 * m - size * scale;
         if span > 0.0 { (pos - start - m) / span } else { 0.5 }
@@ -272,21 +297,19 @@ pub fn clock_label(secs: f64) -> String {
 
 /// Expanded-island layout, relative to the expanded island's top-left (DIPs).
 pub mod layout {
-    use crate::{Point, Rect};
+    use crate::Rect;
 
     pub const PAD_Y: f32 = 14.0;
     pub const PAD_X: f32 = 16.0;
     pub const TAB_AGENTS: Rect = Rect { x: 232.0, y: 10.0, w: 60.0, h: 24.0 };
     pub const TAB_MEDIA: Rect = Rect { x: 296.0, y: 10.0, w: 54.0, h: 24.0 };
     pub const MAX_ROWS: usize = 4;
-    pub const ROW_X: f32 = 88.0;
+    pub const ROW_X: f32 = 8.0;
     pub const ROW_Y: f32 = 44.0;
     pub const ROW_STEP: f32 = 34.0;
-    pub const ROW_W: f32 = 264.0;
+    pub const ROW_W: f32 = 344.0;
     pub const ROW_H: f32 = 32.0;
     pub const ROW_RADIUS: f32 = 10.0;
-    pub const PET_AGENTS: Point = Point { x: 16.0, y: 79.0 };
-    pub const PET_MEDIA: Point = Point { x: 276.0, y: 130.0 };
     pub const ART: Rect = Rect { x: 16.0, y: 16.0, w: 70.0, h: 70.0 };
     pub const TITLE: Rect = Rect { x: 98.0, y: 34.0, w: 200.0, h: 18.0 };
     pub const ARTIST: Rect = Rect { x: 98.0, y: 54.0, w: 246.0, h: 16.0 };
@@ -423,30 +446,99 @@ mod tests {
 
     const TOP: Spot = Spot::TOP_CENTRE;
 
+    const PET_SIZES: [Size; 4] = [
+        Size { w: 40.0, h: 40.0 },
+        Size { w: 160.0, h: 40.0 },
+        Size { w: 260.0, h: 40.0 },
+        EXPANDED,
+    ];
+    const PET_SPOTS: [Spot; 5] = [
+        Spot { x: 0.0, y: 0.0 },
+        Spot { x: 1.0, y: 0.0 },
+        Spot { x: 0.0, y: 1.0 },
+        Spot { x: 1.0, y: 1.0 },
+        Spot { x: 0.5, y: 0.5 },
+    ];
+
+    #[test]
+    fn the_pet_sits_left_of_the_island() {
+        for size in PET_SIZES {
+            for spot in PET_SPOTS {
+                let c = pet_cell(spot, size);
+                let r = island_rect(spot, size, true);
+                assert_eq!(c.x + PET.w + PET_GAP, r.x);
+                if spot.y == 1.0 {
+                    assert_eq!(c.y + PET_BOX.h, r.y + r.h);
+                } else if spot.y == 0.0 {
+                    assert_eq!(c.y, r.y);
+                } else {
+                    assert_eq!(c.y + PET_BOX.h / 2.0, r.y + r.h / 2.0);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn the_block_fits_the_shadow_room() {
+        assert_eq!(WINDOW, Size { w: 528.0, h: 300.0 });
+        for size in PET_SIZES {
+            for spot in PET_SPOTS {
+                for pet in [false, true] {
+                    let r = block_rect(spot, size, pet);
+                    assert!(r.x >= 50.0 && r.y >= 50.0);
+                    assert!(r.x + r.w <= WINDOW.w - 50.0 && r.y + r.h <= WINDOW.h - 50.0);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn bottom_left_puts_the_pet_in_the_corner() {
+        let wa = rect(100.0, 80.0, 1920.0, 1040.0);
+        let size = Size { w: 160.0, h: 40.0 };
+        let spot = Spot { x: 0.0, y: 1.0 };
+        let o = window_origin(DisplayMode::Pill, wa, wa, 1.0, spot);
+        let c = pet_cell(spot, size);
+        let p = island_on_screen(DisplayMode::Pill, wa, wa, 1.0, size, spot, true);
+        assert_eq!(o.x + c.x, wa.x + 4.0);
+        assert_eq!(p.x, wa.x + 72.0);
+        assert_eq!(p.y + size.h, wa.y + wa.h - 4.0);
+        assert_eq!(o.y + c.y, p.y + size.h - 60.0);
+    }
+
+    #[test]
+    fn without_the_pet_the_island_is_alone() {
+        for size in PET_SIZES {
+            for spot in PET_SPOTS {
+                assert_eq!(block_rect(spot, size, false), island_rect(spot, size, false));
+            }
+        }
+    }
+
     #[test]
     fn placement() {
         let pill = Size { w: 160.0, h: 40.0 };
         let wa = rect(0.0, 0.0, 1920.0, 1040.0);
         let b = rect(0.0, 0.0, 1920.0, 1080.0);
-        assert_eq!(island_on_screen(DisplayMode::Pill, wa, b, 1.0, pill, TOP), Point { x: 880.0, y: 4.0 });
+        assert_eq!(island_on_screen(DisplayMode::Pill, wa, b, 1.0, pill, TOP, false), Point { x: 880.0, y: 4.0 });
         // attached hangs from the very top of the monitor
-        assert_eq!(island_on_screen(DisplayMode::Attached, wa, b, 1.0, EXPANDED, TOP), Point { x: 780.0, y: 0.0 });
+        assert_eq!(island_on_screen(DisplayMode::Attached, wa, b, 1.0, EXPANDED, TOP, false), Point { x: 780.0, y: 0.0 });
         assert_eq!(corner_radii(DisplayMode::Attached, 20.0), [0.0, 0.0, 20.0, 20.0]);
         assert_eq!(corner_radii(DisplayMode::Pill, 20.0), [20.0; 4]);
         let wa15 = rect(0.0, 0.0, 2880.0, 1680.0);
-        assert_eq!(island_on_screen(DisplayMode::Pill, wa15, wa15, 1.5, pill, TOP), Point { x: 1320.0, y: 6.0 });
+        assert_eq!(island_on_screen(DisplayMode::Pill, wa15, wa15, 1.5, pill, TOP, false), Point { x: 1320.0, y: 6.0 });
         let top_taskbar = rect(0.0, 48.0, 1920.0, 1032.0);
-        assert_eq!(island_on_screen(DisplayMode::Pill, top_taskbar, b, 1.0, pill, TOP).y, 52.0);
-        assert_eq!(island_on_screen(DisplayMode::Attached, top_taskbar, b, 1.0, pill, TOP).y, 0.0);
+        assert_eq!(island_on_screen(DisplayMode::Pill, top_taskbar, b, 1.0, pill, TOP, false).y, 52.0);
+        assert_eq!(island_on_screen(DisplayMode::Attached, top_taskbar, b, 1.0, pill, TOP, false).y, 0.0);
         // second monitor to the left of the primary
         let left = rect(-1920.0, 0.0, 1920.0, 1080.0);
-        assert_eq!(island_on_screen(DisplayMode::Pill, left, left, 1.0, pill, TOP).x, -1040.0);
+        assert_eq!(island_on_screen(DisplayMode::Pill, left, left, 1.0, pill, TOP, false).x, -1040.0);
     }
 
     #[test]
     fn the_island_grows_away_from_the_edges_it_sits_at() {
         let wa = rect(0.0, 0.0, 1920.0, 1040.0);
-        let on_screen = |spot, size| island_on_screen(DisplayMode::Pill, wa, wa, 1.0, size, spot);
+        let on_screen = |spot, size| island_on_screen(DisplayMode::Pill, wa, wa, 1.0, size, spot, false);
         let pill = Size { w: 40.0, h: 40.0 };
         // bottom-left: 4 in from the left, 4 above the bottom; expanded keeps that corner
         let bottom_left = Spot { x: 0.0, y: 1.0 };
@@ -465,8 +557,8 @@ mod tests {
         let ok = |r: Rect| r.x >= 50.0 && r.y >= 50.0 && r.x + r.w <= WINDOW.w - 50.0 && r.y + r.h <= WINDOW.h - 50.0;
         let pill = Size { w: 40.0, h: 40.0 };
         for spot in [TOP, Spot { x: 0.0, y: 1.0 }, Spot { x: 1.0, y: 0.0 }, Spot { x: 0.5, y: 0.5 }] {
-            assert!(ok(island_rect(spot, pill)), "{spot:?}");
-            assert!(ok(island_rect(spot, EXPANDED)), "{spot:?}");
+            assert!(ok(island_rect(spot, pill, false)), "{spot:?}");
+            assert!(ok(island_rect(spot, EXPANDED, false)), "{spot:?}");
         }
     }
 
@@ -490,23 +582,12 @@ mod tests {
     }
 
     #[test]
-    fn rows_clear_the_pet_column() {
-        let pet_right = layout::PET_AGENTS.x + 64.0;
+    fn rows_span_the_panel() {
         for i in 0..layout::MAX_ROWS {
             let r = layout::row(i);
-            assert!(r.x >= pet_right + 8.0);
-            assert!(r.x + r.w <= EXPANDED.w - 8.0);
+            assert_eq!(r.x, 8.0);
+            assert_eq!(r.x + r.w, EXPANDED.w - 8.0);
         }
-        assert!(layout::PET_AGENTS.y >= layout::ROW_Y);
-        assert!(layout::PET_AGENTS.y + 64.0 <= layout::row(layout::MAX_ROWS - 1).y + layout::ROW_H);
-    }
-
-    #[test]
-    fn the_media_pet_clears_the_buttons_and_fits() {
-        let (nx, _, nr) = layout::NEXT;
-        assert!(layout::PET_MEDIA.x >= nx + nr);
-        assert!(layout::PET_MEDIA.y >= layout::TIMES.y + layout::TIMES.h);
-        assert!(layout::PET_MEDIA.x + 64.0 <= EXPANDED.w && layout::PET_MEDIA.y + 64.0 <= EXPANDED.h);
     }
 
     #[test]
@@ -606,9 +687,9 @@ mod tests {
     }
 
     /// The island's top-left on screen (physical pixels) at `spot`.
-    fn island_on_screen(mode: DisplayMode, wa: Rect, b: Rect, scale: f32, size: Size, spot: Spot) -> Point {
+    fn island_on_screen(mode: DisplayMode, wa: Rect, b: Rect, scale: f32, size: Size, spot: Spot, pet: bool) -> Point {
         let o = window_origin(mode, wa, b, scale, spot);
-        let r = island_rect(spot, size);
+        let r = island_rect(spot, size, pet);
         Point { x: o.x + r.x * scale, y: o.y + r.y * scale }
     }
 
@@ -616,21 +697,36 @@ mod tests {
     fn spot_at_inverts_the_placement() {
         let wa = rect(0.0, 0.0, 1920.0, 1040.0);
         let b = rect(0.0, 0.0, 1920.0, 1080.0);
-        let size = Size { w: 160.0, h: 40.0 };
-        for (mode, spot) in [
-            (DisplayMode::Pill, Spot { x: 0.2, y: 0.75 }),
-            (DisplayMode::Pill, Spot { x: 0.0, y: 1.0 }),
-            (DisplayMode::Pill, Spot { x: 1.0, y: 0.0 }),
-            (DisplayMode::Attached, Spot { x: 0.5, y: 0.0 }),
-        ] {
-            let p = island_on_screen(mode, wa, b, 1.0, size, spot);
-            assert_near(spot_at(mode, wa, b, 1.0, size, p.x, p.y), spot);
+        for size in PET_SIZES {
+            for (mode, spot) in [
+                (DisplayMode::Pill, Spot { x: 0.2, y: 0.75 }),
+                (DisplayMode::Pill, Spot { x: 0.0, y: 0.0 }),
+                (DisplayMode::Pill, Spot { x: 0.0, y: 1.0 }),
+                (DisplayMode::Pill, Spot { x: 1.0, y: 0.0 }),
+                (DisplayMode::Pill, Spot { x: 1.0, y: 1.0 }),
+                (DisplayMode::Pill, Spot { x: 0.5, y: 0.5 }),
+                (DisplayMode::Attached, Spot { x: 0.5, y: 0.0 }),
+            ] {
+                for pet in [false, true] {
+                    for scale in [1.0, 1.5] {
+                        let o = window_origin(mode, wa, b, scale, spot);
+                        let r = block_rect(spot, size, pet);
+                        let (x, y) = (o.x + r.x * scale, o.y + r.y * scale);
+                        assert_near(spot_at(mode, wa, b, scale, block_size(size, pet), x, y), spot);
+                    }
+                }
+            }
         }
         // at 150 % on a second monitor to the left
         let left = rect(-2880.0, 0.0, 2880.0, 1620.0);
         let spot = Spot { x: 0.25, y: 0.5 };
-        let p = island_on_screen(DisplayMode::Pill, left, left, 1.5, size, spot);
-        assert_near(spot_at(DisplayMode::Pill, left, left, 1.5, size, p.x, p.y), spot);
+        let size = Size { w: 160.0, h: 40.0 };
+        for pet in [false, true] {
+            let o = window_origin(DisplayMode::Pill, left, left, 1.5, spot);
+            let r = block_rect(spot, size, pet);
+            let size = block_size(size, pet);
+            assert_near(spot_at(DisplayMode::Pill, left, left, 1.5, size, o.x + r.x * 1.5, o.y + r.y * 1.5), spot);
+        }
     }
 
     /// Equal up to the window snapping to whole pixels (under 1 px of ~1800).

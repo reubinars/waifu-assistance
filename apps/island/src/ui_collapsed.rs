@@ -2,8 +2,7 @@
 
 use crate::animator::Face;
 use crate::draw::{Align, Color, Painter, TEXT_PRIMARY, TEXT_SECONDARY};
-use crate::pet::Sprite;
-use island_core::{Point, Rect};
+use island_core::Rect;
 use island_core::anim::{BLOCKED_PULSE_PERIOD, SOUND_BAR_BASE, pulse, sound_bar_scale};
 use island_core::view::centred_status;
 use windows::Win32::Graphics::Direct2D::ID2D1Bitmap1;
@@ -27,7 +26,6 @@ pub struct Scene<'a> {
     /// Seconds on the app clock.
     pub t: f64,
     pub art: Option<&'a ID2D1Bitmap1>,
-    pub pet: Option<Sprite<'a>>,
     pub playing: bool,
     pub wave: Color,
     /// Hover on the media pill, 0..=1: the wave gives way to title and artist.
@@ -44,13 +42,8 @@ pub fn draw(p: &mut Painter, face: &Face, r: Rect, k: f32, s: &Scene) -> Result<
     let cy = r.y + r.h / 2.0;
     match face {
         Face::Idle => {
-            match &s.pet {
-                Some(pet) => pet.draw(p, Point { x: r.x + r.w / 2.0 - 16.0, y: cy - 16.0 }, k),
-                None => {
-                    let scale = 0.8 + 0.2 * k;
-                    p.circle(r.x + r.w / 2.0, cy, 9.0 * scale, IDLE_DOT.fade(k));
-                }
-            }
+            let scale = 0.8 + 0.2 * k;
+            p.circle(r.x + r.w / 2.0, cy, 9.0 * scale, IDLE_DOT.fade(k));
         }
         Face::Media => {
             let (ax, ay) = (r.x + PAD, cy - ART_D / 2.0);
@@ -66,10 +59,6 @@ pub fn draw(p: &mut Painter, face: &Face, r: Rect, k: f32, s: &Scene) -> Result<
             // the wave slides out to x−8 as the text slides in from x+8
             let kw = k * (1.0 - h);
             if kw > 0.001 {
-                if let Some(pet) = &s.pet {
-                    let cx = r.x + (PAD + ART_D + wx - r.x) / 2.0;
-                    pet.draw(p, Point { x: cx - 16.0, y: cy - 16.0 }, kw);
-                }
                 let restore = p.translate(-SLIDE * h, 0.0);
                 if s.playing {
                     for (i, base) in SOUND_BAR_BASE.iter().enumerate() {

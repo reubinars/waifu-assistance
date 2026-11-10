@@ -18,9 +18,9 @@ use island_core::pet::{PetClock, PetState, Sheet, pet_state};
 use island_core::session::HerdrSession;
 use island_core::view::layout::{MAX_ROWS, SEEK};
 use island_core::view::{
-    Collapsed, DisplayMode, EXPANDED, ExpandedHit, Shown, Spot, Tab, choose_collapsed, clock_label,
+    Collapsed, DisplayMode, EXPANDED, ExpandedHit, Shown, Spot, Tab, block_rect, block_size, choose_collapsed, clock_label,
     collapsed_size, corner_radii, default_tab, fullscreen_jump_target, hit_expanded, hit_rounded, is_drag, island_rect,
-    jump_target, shown, spot_at, tabs_visible, time_in_state,
+    jump_target, pet_cell, shown, spot_at, tabs_visible, time_in_state,
 };
 use island_core::{Point, Rect, Size};
 use std::time::{Duration, Instant};
@@ -50,9 +50,9 @@ const DEACTIVATE_ARM: Duration = Duration::from_millis(150);
 /// A press on the collapsed island: a click on release, or a drag around the screen once it moves.
 #[derive(Clone, Copy)]
 struct Press {
-    /// Where the press started and the island's top-left then, screen pixels.
+    /// Where the press started and the block's top-left then, screen pixels.
     at: (i32, i32),
-    island: Point,
+    block: Point,
     dragging: bool,
 }
 
@@ -179,9 +179,13 @@ impl App {
         self.config.spot()
     }
 
+    fn has_pet(&self) -> bool {
+        self.pet_sheet.is_some()
+    }
+
     /// The island's rect in the window (DIPs) at `size`.
     fn rect_at(&self, size: Size) -> Rect {
-        island_rect(self.spot(), size)
+        island_rect(self.spot(), size, self.has_pet())
     }
 
     pub fn on_source_event(&mut self, e: SourceEvent) {
@@ -396,10 +400,10 @@ impl App {
 
     /// Press on the collapsed island: wait to see whether it is a click or a drag.
     fn on_press(&mut self, x: i32, y: i32) {
-        let r = self.rect_at(self.anim.size());
+        let r = block_rect(self.spot(), self.anim.size(), self.has_pet());
         let (o, s) = (self.win.origin, self.win.scale);
-        let island = Point { x: o.0 as f32 + r.x * s, y: o.1 as f32 + r.y * s };
-        self.press = Some(Press { at: (x, y), island, dragging: false });
+        let block = Point { x: o.0 as f32 + r.x * s, y: o.1 as f32 + r.y * s };
+        self.press = Some(Press { at: (x, y), block, dragging: false });
         self.win.capture(true);
     }
 
@@ -417,8 +421,9 @@ impl App {
             self.anim.set_hover(false, self.secs(Instant::now()));
         }
         let (work, bounds, scale) = window::primary_monitor();
-        let (ix, iy) = (press.island.x + dx as f32, press.island.y + dy as f32);
-        let spot = spot_at(self.mode(), work, bounds, scale, self.anim.size(), ix, iy);
+        let (bx, by) = (press.block.x + dx as f32, press.block.y + dy as f32);
+        let size = block_size(self.anim.size(), self.has_pet());
+        let spot = spot_at(self.mode(), work, bounds, scale, size, bx, by);
         self.config.set_spot(spot);
         // only the origin changes, so the device and its swap chain stay
         self.win.place(self.mode(), self.spot());
@@ -536,9 +541,6 @@ impl App {
     }
 
     fn expand(&mut self, tab: Tab, activate: bool, now: Instant) {
-        if !self.expanded {
-            self.pet.open(self.secs(now));
-        }
         self.expanded = true;
         self.expanded_at = Some(now);
         self.tab = tab;
@@ -654,12 +656,7 @@ impl App {
             return None;
         }
         let (sheet, _) = self.pet_sheet.as_ref()?;
-        let state = self.pet.state();
-        match self.anim.face {
-            Face::Idle | Face::Media => sheet.emblem.next_change(state, self.pet.emblem_ms(t)),
-            Face::Expanded(_) => sheet.solo.next_change(state, self.pet.solo_ms(t)),
-            _ => None,
-        }
+        sheet.solo.next_change(self.pet.state(), self.pet.ms(t))
     }
 
     /// Whether the content itself moves every frame (sound wave, blocked pulse).
@@ -735,7 +732,7 @@ impl App {
     }
 
     fn render(&mut self, now: Instant, t: f64) -> Result<()> {
-        let Some(dev) = self.device.as_mut() else { return Ok(()) };
+        let Some(dev) = self.device.as_ref() else { return Ok(()) };
         if self.pet_bmps.is_none()
             && let Some((_, images)) = &self.pet_sheet
         {
@@ -796,12 +793,6 @@ impl App {
         let (title, artist) = (title.to_string(), artist.to_string());
         let collapsed = Scene {
             t,
-            pet: self.pet_sheet.as_ref().zip(self.pet_bmps.as_ref()).map(|((sheet, _), bmps)| Sprite {
-                bmp: &bmps.emblem,
-                atlas: &sheet.emblem,
-                cell: sheet.emblem.cell(self.pet.state(), self.pet.emblem_ms(t)),
-                scale: self.win.scale,
-            }),
             art: self.art_bmp.as_ref(),
             playing: self.clock.is_playing(),
             wave: self.anim.wave_color(t),
@@ -811,12 +802,6 @@ impl App {
         };
         let expanded = ui_expanded::Scene {
             t,
-            pet: self.pet_sheet.as_ref().zip(self.pet_bmps.as_ref()).map(|((sheet, _), bmps)| Sprite {
-                bmp: &bmps.solo,
-                atlas: &sheet.solo,
-                cell: sheet.solo.cell(self.pet.state(), self.pet.solo_ms(t)),
-                scale: self.win.scale,
-            }),
             tabs: tabs_visible(&self.session.agents, present),
             rows,
             media,
@@ -824,9 +809,19 @@ impl App {
             accent: self.art.as_ref().and_then(|a| a.accent).map(|[r, g, b]| Color::rgba(r, g, b, 1.0)),
             hover: &self.hover,
         };
+        let pet = self.pet_sheet.as_ref().zip(self.pet_bmps.as_ref()).map(|((sheet, _), bmps)| Sprite {
+            bmp: &bmps.solo,
+            atlas: &sheet.solo,
+            cell: sheet.solo.cell(self.pet.state(), self.pet.ms(t)),
+            scale: self.win.scale,
+        });
+        let has_pet = self.has_pet();
+        let Some(dev) = self.device.as_mut() else { return Ok(()) };
         dev.gfx.begin();
         dev.painter.begin_frame();
-        let drawn = draw_island(dev, &self.anim, self.config.display_mode, self.config.spot(), t, &collapsed, &expanded);
+        let drawn = draw_island(
+            dev, &self.anim, (self.config.display_mode, self.config.spot(), has_pet), t, &collapsed, &expanded, pet.as_ref(),
+        );
         let presented = dev.gfx.end();
         drawn.and(presented)
     }
@@ -839,14 +834,15 @@ fn outset(r: Rect, by: f32) -> Rect {
 fn draw_island(
     dev: &mut Device,
     anim: &Animator,
-    mode: DisplayMode,
-    spot: Spot,
+    (mode, spot, has_pet): (DisplayMode, Spot, bool),
     t: f64,
     scene: &Scene,
     ex: &ui_expanded::Scene,
+    pet: Option<&Sprite>,
 ) -> Result<()> {
     let size = anim.size();
-    let rect = island_rect(spot, Size { w: size.w.max(1.0), h: size.h.max(1.0) });
+    let size = Size { w: size.w.max(1.0), h: size.h.max(1.0) };
+    let rect = island_rect(spot, size, has_pet);
     let radii = corner_radii(mode, anim.r.value);
     let (glow, glow_color) = anim.glow(t);
     let key = Backdrop { rect, radii, glow, glow_color, mode };
@@ -877,7 +873,11 @@ fn draw_island(
     let other = anim.old.as_ref().unwrap_or(&anim.face);
     let drawn = drawn.and_then(|_| draw_face(p, &anim.face, other, (rect, spot), k_new, scene, ex));
     p.pop_layer();
-    drawn
+    drawn?;
+    if let Some(pet) = pet {
+        pet.draw(p, pet_cell(spot, size), 1.0);
+    }
+    Ok(())
 }
 
 /// One face at opacity `k` in the island's `rect` at `spot`; `other` is the face it is fading against.
