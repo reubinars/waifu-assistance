@@ -40,6 +40,8 @@ pub const TIMER_RETRY: usize = 3;
 pub const TIMER_LEAVE: usize = 4;
 /// Redraws the agents tab's time-in-state labels.
 pub const TIMER_TICK: usize = 5;
+/// One-shot wake for the next pet animation frame.
+pub const TIMER_PET: usize = 6;
 
 const LEAVE_COLLAPSE: Duration = Duration::from_secs(2);
 /// Deactivation right after expanding (the click that expanded) doesn't collapse.
@@ -223,6 +225,10 @@ impl App {
                 self.collapse();
             }
             Event::Timer(TIMER_TICK) => self.dirty = true,
+            Event::Timer(TIMER_PET) => {
+                self.kill_timer(TIMER_PET);
+                self.dirty = true;
+            }
             Event::Timer(_) => {}
             Event::Reposition => {
                 self.reposition();
@@ -321,6 +327,10 @@ impl App {
             self.collapse();
         }
         let on = s != Shown::Hidden;
+        if !on {
+            // wants_frame stops while hidden, so frame cannot disarm the pet timer for us.
+            self.kill_timer(TIMER_PET);
+        }
         if on != self.win.visible() {
             if !on {
                 self.anim.pause();
@@ -638,6 +648,20 @@ impl App {
         self.device.as_ref().map(|d| d.gfx.waitable())
     }
 
+    /// Milliseconds until the visible pet's next frame; resting or hidden pets need no wake.
+    fn pet_next(&self, t: f64) -> Option<u32> {
+        if !self.win.visible() {
+            return None;
+        }
+        let (sheet, _) = self.pet_sheet.as_ref()?;
+        let state = self.pet.state();
+        match self.anim.face {
+            Face::Idle | Face::Media => sheet.emblem.next_change(state, self.pet.emblem_ms(t)),
+            Face::Expanded(_) => sheet.solo.next_change(state, self.pet.solo_ms(t)),
+            _ => None,
+        }
+    }
+
     /// Whether the content itself moves every frame (sound wave, blocked pulse).
     fn continuous(&self) -> bool {
         match self.anim.face {
@@ -702,6 +726,10 @@ impl App {
         }
         if !self.animating {
             self.anim.pause();
+        }
+        match self.pet_next(t) {
+            Some(ms) => self.set_timer(TIMER_PET, Duration::from_millis(u64::from(ms) + 1)),
+            None => self.kill_timer(TIMER_PET),
         }
         self.animating
     }
