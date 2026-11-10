@@ -187,7 +187,7 @@ impl App {
 
     /// The island's rect in the window (DIPs) at `size`.
     fn rect_at(&self, size: Size) -> Rect {
-        island_rect(self.spot(), size, self.has_pet())
+        island_rect(self.mode(), self.spot(), size, self.has_pet())
     }
 
     pub fn on_source_event(&mut self, e: SourceEvent) {
@@ -849,7 +849,7 @@ fn draw_island(
 ) -> Result<()> {
     let size = anim.size();
     let size = Size { w: size.w.max(1.0), h: size.h.max(1.0) };
-    let rect = island_rect(spot, size, has_pet);
+    let rect = island_rect(mode, spot, size, has_pet);
     let radii = corner_radii(mode, anim.r.value);
     let (glow, glow_color) = anim.glow(t);
     let key = Backdrop { rect, radii, glow, glow_color, mode };
@@ -882,7 +882,7 @@ fn draw_island(
     p.pop_layer();
     drawn?;
     if let Some(pet) = pet {
-        pet.draw(p, pet_cell(spot, size), 1.0);
+        pet.draw(p, pet_cell(mode, spot, size), 1.0);
     }
     Ok(())
 }
