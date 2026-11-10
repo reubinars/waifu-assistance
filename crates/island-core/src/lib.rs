@@ -27,6 +27,7 @@ pub mod config;
 pub mod herdr;
 pub mod media;
 pub mod platform;
+pub mod pet;
 pub mod session;
 pub mod smtc;
 pub mod view;
