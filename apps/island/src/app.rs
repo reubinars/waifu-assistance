@@ -12,26 +12,29 @@ use crate::tray::{self, Tray};
 use crate::ui_collapsed::{self, SPINNER_TICK_MS, Scene};
 use crate::ui_expanded::{self, Hot, Hover};
 use crate::window::{self, Event, VK_ESCAPE, Windows};
+use island_core::anim::Fade;
 use island_core::config::Config;
 use island_core::media::MediaClock;
 use island_core::pet::{PetClock, PetState, Sheet, pet_state};
 use island_core::session::HerdrSession;
-use island_core::view::layout::{MAX_ROWS, SEEK};
+use island_core::view::layout::SEEK;
 use island_core::view::{
-    Collapsed, DisplayMode, EXPANDED, ExpandedHit, Shown, Spot, Tab, block_rect, block_size, choose_collapsed, clock_label,
-    collapsed_size, corner_radii, default_tab, fullscreen_jump_target, hit_expanded, hit_rounded, is_drag, island_rect,
-    jump_target, pet_cell, shown, spot_at, tabs_visible, time_in_state,
+    COLLAPSED, Collapsed, Dot, DisplayMode, EXPANDED, ExpandedHit, Shown, Spot, Tab, block_rect, block_size, choose_collapsed, clock_label,
+    corner_radii, fullscreen_jump_target, hit_expanded, is_drag, island_rect,
+    jump_target, max_scroll, pet_cell, scroll_by, shown, spot_at, time_in_state,
 };
 use island_core::{Point, Rect, Size};
 use std::time::{Duration, Instant};
-use windows::Win32::Foundation::{D2DERR_RECREATE_TARGET, HANDLE};
+use windows::Win32::Foundation::{D2DERR_RECREATE_TARGET, HANDLE, POINT};
 use windows::Win32::Graphics::Dxgi::{DXGI_ERROR_DEVICE_HUNG, DXGI_ERROR_DEVICE_REMOVED, DXGI_ERROR_DEVICE_RESET};
 use windows::Win32::Graphics::Direct2D::ID2D1Bitmap1;
-use windows::Win32::UI::WindowsAndMessaging::{KillTimer, PostQuitMessage, SetTimer};
+use windows::Win32::UI::WindowsAndMessaging::{GetCursorPos, KillTimer, PostQuitMessage, SetTimer};
 use windows::core::{Error, Result};
 
-const COLLAPSED_RADIUS: f32 = 20.0;
+const COLLAPSED_RADIUS: f32 = 16.0;
 const EXPANDED_RADIUS: f32 = 32.0;
+const SCROLL_FADE: f32 = 0.12;
+const WHEEL_DELTA: i32 = 120;
 
 pub const TIMER_LINGER: usize = 1;
 pub const TIMER_SPINNER: usize = 2;
@@ -96,6 +99,9 @@ pub struct App {
     expanded_at: Option<Instant>,
     tab: Tab,
     hover: Hover,
+    scroll: usize,
+    wheel_acc: i32,
+    scroll_fade: Fade,
     /// Seekbar position (0..=1) while it is dragged.
     drag: Option<f32>,
     press: Option<Press>,
@@ -126,8 +132,8 @@ impl App {
         media: Box<dyn MediaSource>,
         agent_src: Box<dyn AgentSource>,
     ) -> App {
-        let collapsed = Collapsed::Idle;
-        let anim = Animator::new(collapsed_size(&collapsed), COLLAPSED_RADIUS, Face::Idle);
+        let collapsed = Collapsed { dot: Dot::Idle, media: false };
+        let anim = Animator::new(COLLAPSED, COLLAPSED_RADIUS, Face::Dot { dot: collapsed.dot, media: collapsed.media });
         let tray = Tray::add(win.tray).inspect_err(|e| log::error!("tray icon: {e}")).ok();
         let mut app = App {
             tray,
@@ -146,8 +152,11 @@ impl App {
             collapsed,
             expanded: false,
             expanded_at: None,
-            tab: Tab::Media,
+            tab: Tab::Agents,
             hover: Hover::default(),
+            scroll: 0,
+            wheel_acc: 0,
+            scroll_fade: Fade { from: 0.0, to: 0.0, start: 0.0, duration: 0.0 },
             drag: None,
             press: None,
             anim,
@@ -205,9 +214,14 @@ impl App {
             }
             SourceEvent::BridgeDown => self.session.bridge_down(),
             SourceEvent::Demo(a) => match a {
-                DemoAction::Expand(tab) => self.expand(tab, false, now),
+                DemoAction::Expand(tab) => {
+                    if !self.expanded {
+                        self.expand(false, now);
+                    }
+                    self.tab = tab;
+                }
                 DemoAction::Collapse => self.collapse(),
-                DemoAction::Mode(m) => self.set_mode(m, now),
+                DemoAction::Mode(m) => self.set_mode(m),
             },
         }
         self.retarget(now);
@@ -243,6 +257,7 @@ impl App {
             Event::MouseMove(x, y) if self.press.is_some() => self.on_press_move(x, y),
             Event::MouseMove(x, y) => self.on_mouse_move(self.win.to_dip(x, y)),
             Event::MouseLeave => self.on_mouse_leave(),
+            Event::Wheel(delta) => self.on_wheel(delta, now),
             Event::MouseDown(x, y) if !self.expanded => self.on_press(x, y),
             Event::MouseDown(x, y) => self.on_mouse_down(self.win.to_dip(x, y)),
             Event::MouseUp(..) if self.press.is_some() => self.on_release(),
@@ -286,7 +301,7 @@ impl App {
                 self.apply_visibility();
             }
             Some(tray::Command::Mode(m)) if m != self.mode() => {
-                self.set_mode(m, now);
+                self.set_mode(m);
                 self.retarget(now);
                 self.save_config();
             }
@@ -312,9 +327,8 @@ impl App {
         }
     }
 
-    fn set_mode(&mut self, m: DisplayMode, now: Instant) {
+    fn set_mode(&mut self, m: DisplayMode) {
         self.config.display_mode = m;
-        self.anim.set_hover(false, self.secs(now));
         self.reposition();
     }
 
@@ -355,10 +369,46 @@ impl App {
     fn expanded_hit(&mut self, p: Point) -> Option<ExpandedHit> {
         let o = self.expanded_origin();
         let present = self.clock.is_present(Instant::now());
-        let tabs = tabs_visible(&self.session.agents, present);
-        let rows = self.session.agents.rows(MAX_ROWS).len();
+        let rows = self.session.agents.rows(usize::MAX).len();
         let seekable = present && self.clock.seekable();
-        hit_expanded(self.tab, tabs, rows, seekable, Point { x: p.x - o.x, y: p.y - o.y })
+        hit_expanded(self.tab, present, rows, self.scroll, seekable, Point { x: p.x - o.x, y: p.y - o.y })
+    }
+
+    fn cursor(&self) -> Option<Point> {
+        let mut p = POINT::default();
+        unsafe { GetCursorPos(&mut p).ok()? };
+        Some(self.win.to_dip(p.x, p.y))
+    }
+
+    fn refresh_hover(&mut self, t: f64) {
+        let hot = self.cursor().and_then(|p| self.expanded_hit(p)).map(Hot::of);
+        self.hover.set_hot(hot, t);
+    }
+
+    fn set_scroll(&mut self, scroll: usize, t: f64) {
+        if scroll == self.scroll {
+            return;
+        }
+        self.scroll = scroll;
+        self.scroll_fade = Fade { from: self.scroll_fade.value_at(t), to: scroll as f32, start: t, duration: SCROLL_FADE };
+        self.refresh_hover(t);
+        self.dirty = true;
+    }
+
+    fn on_wheel(&mut self, delta: i32, now: Instant) {
+        if !self.expanded || self.tab != Tab::Agents {
+            return;
+        }
+        let Some(p) = self.cursor() else { return };
+        let o = self.expanded_origin();
+        if p.x < o.x || p.x > o.x + EXPANDED.w || p.y < o.y || p.y > o.y + EXPANDED.h {
+            return;
+        }
+        self.wheel_acc += delta;
+        let notches = self.wheel_acc / WHEEL_DELTA;
+        self.wheel_acc %= WHEEL_DELTA;
+        let rows = self.session.agents.rows(usize::MAX).len();
+        self.set_scroll(scroll_by(self.scroll, notches, rows), self.secs(now));
     }
 
     fn seek_fraction(&self, p: Point) -> f32 {
@@ -378,12 +428,6 @@ impl App {
                 self.hover.set_hot(hot, t);
                 self.dirty = true;
             }
-        } else {
-            // the input region is a rectangle-ish GDI region; only the drawn shape counts
-            let radii = corner_radii(self.mode(), self.anim.r.value);
-            let inside = hit_rounded(self.rect_at(self.anim.size()), radii, p);
-            self.anim.set_hover(inside && self.collapsed == Collapsed::Media, t);
-            self.dirty = true;
         }
     }
 
@@ -393,7 +437,6 @@ impl App {
         }
         let t = self.secs(Instant::now());
         self.hover.set_hot(None, t);
-        self.anim.set_hover(false, t);
         if self.expanded {
             self.set_timer(TIMER_LEAVE, LEAVE_COLLAPSE);
         }
@@ -420,7 +463,6 @@ impl App {
             }
             press.dragging = true;
             self.press = Some(press);
-            self.anim.set_hover(false, self.secs(Instant::now()));
         }
         let (work, bounds, scale) = window::primary_monitor();
         let (bx, by) = (press.block.x + dx as f32, press.block.y + dy as f32);
@@ -446,13 +488,13 @@ impl App {
 
     /// Click on the collapsed island: jump to an agent that needs you, else expand.
     fn on_collapsed_click(&mut self, now: Instant) {
-        let attention = matches!(self.collapsed, Collapsed::Blocked { .. } | Collapsed::Done { .. });
+        let attention = matches!(self.collapsed.dot, Dot::Blocked | Dot::Done);
         let agents = &self.session.agents;
         let target = if self.fullscreen { fullscreen_jump_target(agents) } else { jump_target(agents) };
         match target.filter(|_| attention) {
             Some(pane) => self.jump(&pane),
             None if self.fullscreen => {}
-            None => self.expand(default_tab(&self.collapsed), true, now),
+            None => self.expand(true, now),
         }
     }
 
@@ -490,7 +532,7 @@ impl App {
                 self.retarget(Instant::now());
             }
             ExpandedHit::Row(i) => {
-                let pane = self.session.agents.rows(MAX_ROWS).get(i).map(|a| a.info.pane_id.clone());
+                let pane = self.session.agents.rows(usize::MAX).get(i).map(|a| a.info.pane_id.clone());
                 if let Some(pane) = pane {
                     self.jump(&pane);
                 }
@@ -542,12 +584,11 @@ impl App {
         self.collapse();
     }
 
-    fn expand(&mut self, tab: Tab, activate: bool, now: Instant) {
+    fn expand(&mut self, activate: bool, now: Instant) {
         self.expanded = true;
         self.expanded_at = Some(now);
-        self.tab = tab;
+        self.tab = Tab::Agents;
         self.hover.reset();
-        self.anim.set_hover(false, self.secs(now));
         if activate {
             self.win.activate();
         }
@@ -560,11 +601,13 @@ impl App {
         }
         self.expanded = false;
         self.expanded_at = None;
+        self.scroll = 0;
+        self.wheel_acc = 0;
+        self.scroll_fade = Fade { from: 0.0, to: 0.0, start: 0.0, duration: 0.0 };
         if self.drag.take().is_some() {
             self.win.capture(false);
         }
         self.hover.reset();
-        self.anim.set_hover(false, self.secs(Instant::now()));
         self.kill_timer(TIMER_LEAVE);
         self.win.deactivate();
         self.retarget(Instant::now());
@@ -590,6 +633,8 @@ impl App {
     /// Recomputes what the island should show and sets the animation targets.
     fn retarget(&mut self, now: Instant) {
         let t = self.secs(now);
+        let rows = self.session.agents.rows(usize::MAX).len();
+        self.set_scroll(self.scroll.min(max_scroll(rows)), t);
         self.pet.set(pet_state(&self.session.agents), t);
         let present = self.clock.is_present(now);
         let collapsed = choose_collapsed(&self.session.agents, present);
@@ -597,33 +642,21 @@ impl App {
             log::debug!("collapsed {collapsed:?}");
             self.collapsed = collapsed;
         }
-        if self.expanded && !tabs_visible(&self.session.agents, present) {
-            if !self.session.agents.is_empty() {
-                self.tab = Tab::Agents;
-            } else if present {
-                self.tab = Tab::Media;
-            }
+        if self.tab == Tab::Media && !present {
+            self.tab = Tab::Agents;
         }
         let (size, radius, face) = if self.expanded {
             (EXPANDED, EXPANDED_RADIUS, Face::Expanded(self.tab))
         } else {
-            let face = match &self.collapsed {
-                Collapsed::Idle => Face::Idle,
-                Collapsed::Media => Face::Media,
-                Collapsed::Working { count } => Face::Working { count: *count },
-                Collapsed::Done { label, .. } => Face::Done { label: label.clone() },
-                Collapsed::Blocked { label, .. } => Face::Blocked { label: label.clone() },
-            };
-            (collapsed_size(&self.collapsed), COLLAPSED_RADIUS, face)
+            (COLLAPSED, COLLAPSED_RADIUS, Face::Dot { dot: self.collapsed.dot, media: self.collapsed.media })
         };
         self.anim.set_target(size, radius);
         self.anim.set_face(face, t);
         let accent = self.accent();
         let white = Color::white(1.0);
         let playing = present && self.clock.is_playing();
-        let glow_on = playing && accent.is_some_and(|c| c != white);
+        let glow_on = self.expanded && self.tab == Tab::Media && playing && accent.is_some_and(|c| c != white);
         self.anim.set_glow(glow_on, accent.unwrap_or(white), t);
-        self.anim.set_wave_color(accent.unwrap_or(white), t);
         match self.clock.linger_left(now) {
             Some(left) => self.set_timer(TIMER_LINGER, left + Duration::from_millis(1)),
             None => self.kill_timer(TIMER_LINGER),
@@ -661,11 +694,11 @@ impl App {
         sheet.solo.next_change(self.pet.state(), self.pet.ms(t))
     }
 
-    /// Whether the content itself moves every frame (sound wave, blocked pulse).
+    /// Whether the content itself moves every frame (media arc, blocked pulse).
     fn continuous(&self) -> bool {
         match self.anim.face {
-            Face::Media | Face::Expanded(Tab::Media) => self.clock.is_playing(),
-            Face::Blocked { .. } => true,
+            Face::Dot { dot: Dot::Blocked, .. } => true,
+            Face::Dot { media: true, .. } | Face::Expanded(Tab::Media) => self.clock.is_playing(),
             _ => false,
         }
     }
@@ -709,7 +742,7 @@ impl App {
             self.animating = false;
             return false;
         }
-        self.animating = self.anim.busy(t) || self.hover.busy(t) || self.continuous();
+        self.animating = self.anim.busy(t) || self.hover.busy(t) || !self.scroll_fade.done_at(t) || self.continuous();
         let tick = !self.animating && self.anim.face == Face::Expanded(Tab::Agents);
         if tick != self.tick_on {
             self.tick_on = tick;
@@ -719,7 +752,7 @@ impl App {
                 self.kill_timer(TIMER_TICK);
             }
         }
-        let spin = !self.animating && matches!(self.anim.face, Face::Working { .. });
+        let spin = !self.animating && matches!(self.anim.face, Face::Dot { dot: Dot::Working, .. });
         if spin != self.spinner_on {
             self.spinner_on = spin;
             if spin {
@@ -783,10 +816,10 @@ impl App {
                 })
             }
         };
-        let rows = self
+        let rows: Vec<_> = self
             .session
             .agents
-            .rows(MAX_ROWS)
+            .rows(usize::MAX)
             .into_iter()
             .map(|a| ui_expanded::Row {
                 status: a.info.status,
@@ -796,20 +829,11 @@ impl App {
                 since: time_in_state(now.saturating_duration_since(a.since)),
             })
             .collect();
-        let (title, artist) = media.as_ref().map_or(("", ""), |m| (m.title.as_str(), m.artist.as_str()));
-        let (title, artist) = (title.to_string(), artist.to_string());
-        let collapsed = Scene {
-            t,
-            art: self.art_bmp.as_ref(),
-            playing: self.clock.is_playing(),
-            wave: self.anim.wave_color(t),
-            hover: self.anim.hover(t),
-            title: &title,
-            artist: &artist,
-        };
+        let collapsed = Scene { t, playing: self.clock.is_playing(), accent: arc_accent(self.art.as_ref().and_then(|a| a.accent)) };
         let expanded = ui_expanded::Scene {
             t,
-            tabs: tabs_visible(&self.session.agents, present),
+            scroll: self.scroll_fade.value_at(t).min(max_scroll(rows.len()) as f32),
+            media_present: present,
             rows,
             media,
             art: self.art_bmp.as_ref(),
@@ -944,6 +968,14 @@ fn draw_backdrop(p: &mut Painter, b: &Backdrop) -> Result<()> {
     }
     p.fill(&shape, Color::BLACK);
     Ok(())
+}
+
+/// The collapsed arc's colour: the album-art tint brightened for the black dot, else white.
+fn arc_accent(accent: Option<[u8; 3]>) -> Color {
+    accent.map_or(Color::white(1.0), |c| {
+        let [r, g, b] = island_core::color::brighten(c);
+        Color::rgba(r, g, b, 1.0)
+    })
 }
 
 /// The errors after which the device must be rebuilt (and rebuilding helps).

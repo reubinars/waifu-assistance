@@ -44,6 +44,7 @@ pub enum Event {
     MouseLeave,
     MouseDown(i32, i32),
     MouseUp(i32, i32),
+    Wheel(i32),
     Key(u32),
     /// The input window gained (true) or lost (false) activation.
     Activate(bool),
@@ -62,6 +63,7 @@ pub enum Event {
 
 /// Win32_UI_Controls, not worth a feature.
 const WM_MOUSELEAVE: u32 = 0x02A3;
+const WM_MOUSEWHEEL: u32 = 0x020A;
 /// NIN_SELECT | NINF_KEY; not in the windows crate.
 const NIN_KEYSELECT: u32 = NIN_SELECT | 1;
 
@@ -133,6 +135,10 @@ extern "system" fn tray_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LR
 
 extern "system" fn input_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
     match msg {
+        WM_MOUSEWHEEL => {
+            push(Event::Wheel((wp.0 >> 16) as u16 as i16 as i32));
+            LRESULT(0)
+        }
         WM_MOUSEMOVE => {
             let mut t = TRACKMOUSEEVENT {
                 cbSize: size_of::<TRACKMOUSEEVENT>() as u32,

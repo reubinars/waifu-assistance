@@ -3,23 +3,18 @@
 use crate::draw::Color;
 use island_core::Size;
 use island_core::anim::{Fade, ISLAND_SPRING, Spring, ease};
-use island_core::view::Tab;
+use island_core::view::{Dot, Tab};
 
 /// What the island's content shows; a change cross-fades.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Face {
-    Idle,
-    Media,
-    Working { count: usize },
-    Done { label: String },
-    Blocked { label: String },
+    Dot { dot: Dot, media: bool },
     Expanded(Tab),
 }
 
 const CROSS_FADE: f32 = 0.2;
 const GLOW_FADE: f32 = 0.8;
-const WAVE_FADE: f32 = 0.6;
-const HOVER_FADE: f32 = 0.2;
+const GLOW_OUT: f32 = 0.2;
 
 #[derive(Clone, Copy)]
 struct ColorFade {
@@ -62,9 +57,6 @@ pub struct Animator {
     swap_at: f64,
     glow: Fade,
     glow_color: ColorFade,
-    wave_color: ColorFade,
-    /// Hover on the collapsed media pill.
-    hover: Fade,
     last: Option<f64>,
 }
 
@@ -79,8 +71,6 @@ impl Animator {
             swap_at: -1.0,
             glow: Fade { from: 0.0, to: 0.0, start: 0.0, duration: 0.0 },
             glow_color: ColorFade::still(Color::white(1.0)),
-            wave_color: ColorFade::still(Color::white(1.0)),
-            hover: Fade { from: 0.0, to: 0.0, start: 0.0, duration: 0.0 },
             last: None,
         }
     }
@@ -102,24 +92,10 @@ impl Animator {
     pub fn set_glow(&mut self, on: bool, color: Color, t: f64) {
         let to = if on { 1.0 } else { 0.0 };
         if to != self.glow.to {
-            self.glow = Fade { from: self.glow.value_at(t), to, start: t, duration: GLOW_FADE };
+            let duration = if on { GLOW_FADE } else { GLOW_OUT };
+            self.glow = Fade { from: self.glow.value_at(t), to, start: t, duration };
         }
         self.glow_color.retarget(color, t, GLOW_FADE);
-    }
-
-    pub fn set_wave_color(&mut self, color: Color, t: f64) {
-        self.wave_color.retarget(color, t, WAVE_FADE);
-    }
-
-    pub fn set_hover(&mut self, on: bool, t: f64) {
-        let to = if on { 1.0 } else { 0.0 };
-        if to != self.hover.to {
-            self.hover = Fade { from: self.hover.value_at(t), to, start: t, duration: HOVER_FADE };
-        }
-    }
-
-    pub fn hover(&self, t: f64) -> f32 {
-        self.hover.value_at(t)
     }
 
     /// Advances the springs to `t`.
@@ -148,10 +124,6 @@ impl Animator {
         (self.glow.value_at(t), self.glow_color.value_at(t))
     }
 
-    pub fn wave_color(&self, t: f64) -> Color {
-        self.wave_color.value_at(t)
-    }
-
     /// Whether anything is still in motion at `t`.
     pub fn busy(&self, t: f64) -> bool {
         !(self.w.is_settled() && self.h.is_settled() && self.r.is_settled())
@@ -162,8 +134,6 @@ impl Animator {
             || ((t - self.swap_at) as f32) < CROSS_FADE
             || !self.glow.done_at(t)
             || !self.glow_color.done_at(t)
-            || !self.wave_color.done_at(t)
-            || !self.hover.done_at(t)
     }
 
     /// Forgets the last frame time, so the next step doesn't jump after an idle stretch.

@@ -1,6 +1,6 @@
 //! What the island shows, where it sits, and what a click hit.
 
-use crate::agents::{Agent, AgentTable};
+use crate::agents::AgentTable;
 use crate::herdr::AgentStatus;
 use crate::{Point, Rect, Size};
 use serde::{Deserialize, Serialize};
@@ -13,14 +13,11 @@ pub enum DisplayMode {
     Attached,
 }
 
-#[derive(Clone, Debug, PartialEq)]
-pub enum Collapsed {
-    Idle,
-    Media,
-    Working { count: usize },
-    Done { label: String, pane_id: String },
-    Blocked { label: String, pane_id: String },
-}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Dot { Idle, Working, Done, Blocked }
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Collapsed { pub dot: Dot, pub media: bool }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Tab {
@@ -42,38 +39,22 @@ pub const WINDOW: Size = Size {
     w: EXPANDED.w + PET_BOX.w + PET_GAP + 2.0 * SHADOW_ROOM,
     h: EXPANDED.h + 2.0 * SHADOW_ROOM,
 };
-const COLLAPSED_H: f32 = 40.0;
+pub const COLLAPSED: Size = Size { w: 32.0, h: 32.0 };
 /// How far the pill keeps off the edges of the screen (the work area).
 const PILL_MARGIN: f32 = 4.0;
 
-fn label(a: &Agent, verb: &str, others: usize) -> String {
-    let mut s = format!("{} {verb}", a.display_name());
-    if !a.folder().is_empty() {
-        s.push_str(" · ");
-        s.push_str(a.folder());
-    }
-    if others > 0 {
-        s.push_str(&format!(" +{others}"));
-    }
-    s
-}
-
-/// Priority: blocked > done > media > working > idle.
+/// Priority: blocked > done > working > idle; media is independent.
 pub fn choose_collapsed(agents: &AgentTable, media_present: bool) -> Collapsed {
-    let others = (agents.count(AgentStatus::Blocked) + agents.count(AgentStatus::Done)).saturating_sub(1);
-    if let Some(a) = agents.first(AgentStatus::Blocked) {
-        return Collapsed::Blocked { label: label(a, "needs you", others), pane_id: a.info.pane_id.clone() };
-    }
-    if let Some(a) = agents.first(AgentStatus::Done) {
-        return Collapsed::Done { label: label(a, "done", others), pane_id: a.info.pane_id.clone() };
-    }
-    if media_present {
-        return Collapsed::Media;
-    }
-    match agents.count(AgentStatus::Working) {
-        0 => Collapsed::Idle,
-        count => Collapsed::Working { count },
-    }
+    let dot = if agents.count(AgentStatus::Blocked) > 0 {
+        Dot::Blocked
+    } else if agents.count(AgentStatus::Done) > 0 {
+        Dot::Done
+    } else if agents.count(AgentStatus::Working) > 0 {
+        Dot::Working
+    } else {
+        Dot::Idle
+    };
+    Collapsed { dot, media: media_present }
 }
 
 /// How much of the island is on screen.
@@ -87,34 +68,12 @@ pub enum Shown {
 
 /// §7: hidden from the tray, or over a fullscreen window unless an agent is blocked.
 pub fn shown(user_hidden: bool, fullscreen: bool, c: &Collapsed) -> Shown {
-    match (user_hidden, fullscreen, c) {
+    match (user_hidden, fullscreen, c.dot) {
         (true, _, _) => Shown::Hidden,
         (false, false, _) => Shown::All,
-        (false, true, Collapsed::Blocked { .. }) => Shown::CollapsedOnly,
+        (false, true, Dot::Blocked) => Shown::CollapsedOnly,
         (false, true, _) => Shown::Hidden,
     }
-}
-
-pub fn collapsed_size(c: &Collapsed) -> Size {
-    let w = match c {
-        Collapsed::Idle => 40.0,
-        Collapsed::Media | Collapsed::Working { .. } => 160.0,
-        Collapsed::Done { .. } => 240.0,
-        Collapsed::Blocked { .. } => 260.0,
-    };
-    Size { w, h: COLLAPSED_H }
-}
-
-pub fn default_tab(c: &Collapsed) -> Tab {
-    match c {
-        Collapsed::Working { .. } | Collapsed::Done { .. } | Collapsed::Blocked { .. } => Tab::Agents,
-        Collapsed::Idle | Collapsed::Media => Tab::Media,
-    }
-}
-
-/// Tabs appear only when both agents and media have something to show.
-pub fn tabs_visible(agents: &AgentTable, media_present: bool) -> bool {
-    !agents.is_empty() && media_present
 }
 
 /// Where the island sits on the main monitor. Each axis runs from 0 (left / top edge) through 0.5
@@ -293,15 +252,6 @@ pub fn fullscreen_jump_target(agents: &AgentTable) -> Option<String> {
 }
 
 /// Time in state for an agent row: `12s`, `4m`, `1h` (whole units, rounded down).
-/// The collapsed agent status: an icon `icon_w` wide, `gap`, then a label `text_w` wide, centred as one
-/// group in `pill`, at least `pad` in from each side. Returns (icon x, label x, label width); a label wider
-/// than the room left is cut to it (the caller trims the text to that width).
-pub fn centred_status(pill: Rect, pad: f32, icon_w: f32, gap: f32, text_w: f32) -> (f32, f32, f32) {
-    let label_w = text_w.min((pill.w - 2.0 * pad - icon_w - gap).max(0.0));
-    let icon_x = (pill.x + (pill.w - icon_w - gap - label_w) / 2.0).max(pill.x + pad);
-    (icon_x, icon_x + icon_w + gap, label_w)
-}
-
 pub fn time_in_state(d: std::time::Duration) -> String {
     let s = d.as_secs();
     match s {
@@ -321,11 +271,19 @@ pub fn clock_label(secs: f64) -> String {
 /// Expanded-island layout, relative to the expanded island's top-left (DIPs).
 pub mod layout {
     use crate::Rect;
+    use super::Tab;
 
     pub const PAD_Y: f32 = 14.0;
     pub const PAD_X: f32 = 16.0;
     pub const TAB_AGENTS: Rect = Rect { x: 232.0, y: 10.0, w: 60.0, h: 24.0 };
     pub const TAB_MEDIA: Rect = Rect { x: 296.0, y: 10.0, w: 54.0, h: 24.0 };
+
+    /// Agents is always shown; alone it aligns with the pair's right edge.
+    pub fn tabs(media: bool) -> impl Iterator<Item = (Tab, Rect)> {
+        let agents = if media { TAB_AGENTS } else { Rect { x: TAB_MEDIA.x + TAB_MEDIA.w - TAB_AGENTS.w, ..TAB_AGENTS } };
+        std::iter::once((Tab::Agents, agents)).chain(media.then_some((Tab::Media, TAB_MEDIA)))
+    }
+
     pub const MAX_ROWS: usize = 4;
     pub const ROW_X: f32 = 8.0;
     pub const ROW_Y: f32 = 44.0;
@@ -333,6 +291,10 @@ pub mod layout {
     pub const ROW_W: f32 = 344.0;
     pub const ROW_H: f32 = 32.0;
     pub const ROW_RADIUS: f32 = 10.0;
+    pub const LIST: Rect = Rect {
+        x: 0.0, y: ROW_Y, w: super::EXPANDED.w,
+        h: ROW_STEP * (MAX_ROWS - 1) as f32 + ROW_H,
+    };
     pub const ART: Rect = Rect { x: 16.0, y: 16.0, w: 70.0, h: 70.0 };
     pub const TITLE: Rect = Rect { x: 98.0, y: 34.0, w: 200.0, h: 18.0 };
     pub const ARTIST: Rect = Rect { x: 98.0, y: 54.0, w: 246.0, h: 16.0 };
@@ -368,19 +330,38 @@ fn in_circle((cx, cy, r): (f32, f32, f32), p: Point) -> bool {
     (p.x - cx).powi(2) + (p.y - cy).powi(2) <= r * r
 }
 
+pub fn max_scroll(rows: usize) -> usize {
+    rows.saturating_sub(layout::MAX_ROWS)
+}
+
+/// Positive wheel notches move toward the first row.
+pub fn scroll_by(offset: usize, notches: i32, rows: usize) -> usize {
+    let offset = offset.min(max_scroll(rows));
+    if notches >= 0 {
+        offset.saturating_sub(notches as usize)
+    } else {
+        offset.saturating_add(notches.unsigned_abs() as usize).min(max_scroll(rows))
+    }
+}
+
 /// What a click at `p` (relative to the expanded island's top-left) hit, if anything.
-pub fn hit_expanded(tab: Tab, tabs_shown: bool, rows: usize, seekable: bool, p: Point) -> Option<ExpandedHit> {
+pub fn hit_expanded(tab: Tab, media_present: bool, rows: usize, scroll: usize, seekable: bool, p: Point) -> Option<ExpandedHit> {
     use layout::*;
-    if tabs_shown {
-        if inside(TAB_AGENTS, p) {
-            return Some(ExpandedHit::Tab(Tab::Agents));
-        }
-        if inside(TAB_MEDIA, p) {
-            return Some(ExpandedHit::Tab(Tab::Media));
+    for (tab, r) in tabs(media_present) {
+        if inside(r, p) {
+            return Some(ExpandedHit::Tab(tab));
         }
     }
     match tab {
-        Tab::Agents => (0..rows.min(MAX_ROWS)).find(|&i| inside(row(i), p)).map(ExpandedHit::Row),
+        Tab::Agents => {
+            if !inside(LIST, p) {
+                return None;
+            }
+            let scroll = scroll.min(max_scroll(rows));
+            (scroll..rows.min(scroll.saturating_add(MAX_ROWS)))
+                .find(|&i| inside(row(i - scroll), p))
+                .map(ExpandedHit::Row)
+        }
         Tab::Media => {
             let seek_hit = Rect {
                 x: SEEK.x,
@@ -411,60 +392,46 @@ mod tests {
     }
 
     #[test]
-    fn priority_order() {
+    fn priority_ignores_media() {
         let t0 = Instant::now();
-        let mut t = AgentTable::default();
-        assert_eq!(choose_collapsed(&t, false), Collapsed::Idle);
-        t.upsert(test_info("w1:p1", Working), t0);
-        assert_eq!(choose_collapsed(&t, false), Collapsed::Working { count: 1 });
-        assert_eq!(choose_collapsed(&t, true), Collapsed::Media);
-        t.upsert(test_info("w1:p2", Done), t0);
-        assert!(matches!(choose_collapsed(&t, true), Collapsed::Done { pane_id, .. } if pane_id == "w1:p2"));
-        t.upsert(test_info("w1:p3", Blocked), t0);
-        assert!(matches!(choose_collapsed(&t, true), Collapsed::Blocked { pane_id, .. } if pane_id == "w1:p3"));
-        t.upsert(test_info("w1:p1", Idle), t0);
-        t.remove("w1:p2");
-        t.remove("w1:p3");
-        assert_eq!(choose_collapsed(&t, false), Collapsed::Idle);
-        assert_eq!(default_tab(&Collapsed::Working { count: 1 }), Tab::Agents);
-        assert_eq!(default_tab(&Collapsed::Idle), Tab::Media);
-        assert_eq!(default_tab(&Collapsed::Media), Tab::Media);
+        for media in [false, true] {
+            let mut t = AgentTable::default();
+            assert_eq!(choose_collapsed(&t, media), Collapsed { dot: Dot::Idle, media });
+            t.upsert(test_info("w1:p1", Working), t0);
+            assert_eq!(choose_collapsed(&t, media), Collapsed { dot: Dot::Working, media });
+            t.upsert(test_info("w1:p2", Done), t0);
+            assert_eq!(choose_collapsed(&t, media), Collapsed { dot: Dot::Done, media });
+            t.upsert(test_info("w1:p3", Blocked), t0);
+            assert_eq!(choose_collapsed(&t, media), Collapsed { dot: Dot::Blocked, media });
+            t.upsert(test_info("w1:p1", Idle), t0);
+            t.remove("w1:p2");
+            t.remove("w1:p3");
+            assert_eq!(choose_collapsed(&t, media), Collapsed { dot: Dot::Idle, media });
+        }
     }
 
     #[test]
-    fn labels() {
-        let t0 = Instant::now();
-        let mut t = AgentTable::default();
-        t.upsert(test_info("w1:p1", Blocked), t0);
-        let mut codex = test_info("w1:p2", Done);
-        codex.agent = Some("codex".into());
-        codex.cwd = None;
-        t.upsert(codex.clone(), t0);
-        assert_eq!(
-            choose_collapsed(&t, false),
-            Collapsed::Blocked { label: "claude needs you · learn-anything +1".into(), pane_id: "w1:p1".into() }
-        );
-        let mut only = AgentTable::default();
-        only.upsert(codex, t0);
-        assert_eq!(choose_collapsed(&only, false), Collapsed::Done { label: "codex done".into(), pane_id: "w1:p2".into() });
-        // the oldest blocked agent is the one shown
-        t.upsert(test_info("w1:p0", Blocked), t0 + Duration::from_secs(1));
-        assert!(matches!(choose_collapsed(&t, false), Collapsed::Blocked { label, pane_id }
-            if pane_id == "w1:p1" && label.ends_with(" +2")));
+    fn tab_layouts_and_hits() {
+        assert_eq!(layout::tabs(false).collect::<Vec<_>>(), vec![(Tab::Agents, rect(290.0, 10.0, 60.0, 24.0))]);
+        assert_eq!(layout::tabs(true).collect::<Vec<_>>(), vec![
+            (Tab::Agents, rect(232.0, 10.0, 60.0, 24.0)),
+            (Tab::Media, rect(296.0, 10.0, 54.0, 24.0)),
+        ]);
+        let hit = |media, x| hit_expanded(Tab::Agents, media, 0, 0, false, Point { x, y: 20.0 });
+        assert_eq!(hit(false, 291.0), Some(ExpandedHit::Tab(Tab::Agents)));
+        assert_eq!(hit(false, 345.0), Some(ExpandedHit::Tab(Tab::Agents)));
+        assert_eq!(hit(false, 250.0), None);
+        assert_eq!(hit(true, 250.0), Some(ExpandedHit::Tab(Tab::Agents)));
+        assert_eq!(hit(true, 300.0), Some(ExpandedHit::Tab(Tab::Media)));
+        assert_eq!(hit(true, 294.0), None);
+        for x in 0..=360 {
+            assert_ne!(hit(false, x as f32), Some(ExpandedHit::Tab(Tab::Media)));
+        }
     }
 
     #[test]
     fn sizes() {
-        assert_eq!(collapsed_size(&Collapsed::Idle), Size { w: 40.0, h: 40.0 });
-        assert_eq!(collapsed_size(&Collapsed::Media).w, 160.0);
-        assert_eq!(collapsed_size(&Collapsed::Working { count: 3 }).w, 160.0);
-        assert_eq!(collapsed_size(&Collapsed::Done { label: String::new(), pane_id: String::new() }).w, 240.0);
-        assert_eq!(collapsed_size(&Collapsed::Blocked { label: String::new(), pane_id: String::new() }).w, 260.0);
-        let mut t = AgentTable::default();
-        assert!(!tabs_visible(&t, true));
-        t.upsert(test_info("w1:p1", Idle), Instant::now());
-        assert!(!tabs_visible(&t, false));
-        assert!(tabs_visible(&t, true));
+        assert_eq!(COLLAPSED, Size { w: 32.0, h: 32.0 });
     }
 
     const TOP: Spot = Spot::TOP_CENTRE;
@@ -696,24 +663,57 @@ mod tests {
             let r = layout::row(i);
             assert_eq!(r.x, 8.0);
             assert_eq!(r.x + r.w, EXPANDED.w - 8.0);
+            let p = Point { x: r.x + r.w / 2.0, y: r.y + r.h / 2.0 };
+            assert_eq!(hit_expanded(Tab::Agents, false, 5, 1, false, p), Some(ExpandedHit::Row(i + 1)));
         }
+    }
+
+    #[test]
+    fn scrolling_clamps_to_the_available_rows() {
+        for rows in 0..=4 {
+            assert_eq!(max_scroll(rows), 0);
+            assert_eq!(scroll_by(10, -100, rows), 0);
+            assert_eq!(scroll_by(10, 100, rows), 0);
+        }
+        assert_eq!(max_scroll(5), 1);
+        assert_eq!(scroll_by(0, -1, 5), 1);
+        assert_eq!(scroll_by(1, 1, 5), 0);
+        assert_eq!(scroll_by(2, -2, 10), 4);
+        assert_eq!(scroll_by(2, 1, 10), 1);
+        assert_eq!(scroll_by(2, i32::MIN, 10), 6);
+        assert_eq!(scroll_by(2, i32::MAX, 10), 0);
+        assert_eq!(scroll_by(20, 0, 5), 1);
+    }
+
+    #[test]
+    fn scrolled_hits_use_absolute_rows_inside_the_list() {
+        let hit = |rows, scroll, x, y| hit_expanded(Tab::Agents, false, rows, scroll, false, Point { x, y });
+        assert_eq!(hit(5, 1, 100.0, 50.0), Some(ExpandedHit::Row(1)));
+        assert_eq!(hit(5, 1, 100.0, 175.0), Some(ExpandedHit::Row(4)));
+        assert_eq!(hit(2, 0, 100.0, 120.0), None);
+        assert_eq!(hit(5, 1, 100.0, 43.0), None);
+        assert_eq!(hit(6, 1, 100.0, 181.0), None);
+        assert_eq!(hit(6, 1, 100.0, 178.5), None);
+        assert_eq!(hit(5, 1, 100.0, 77.0), None);
+        assert_eq!(hit(5, 1, 7.0, 50.0), None);
+        assert_eq!(hit(5, 1, 353.0, 50.0), None);
     }
 
     #[test]
     fn expanded_hits() {
         let p = |x, y| Point { x, y };
-        assert_eq!(hit_expanded(Tab::Media, true, 0, true, p(180.0, 160.0)), Some(ExpandedHit::PlayPause));
-        assert_eq!(hit_expanded(Tab::Media, true, 0, true, p(130.0, 160.0)), Some(ExpandedHit::Prev));
-        assert_eq!(hit_expanded(Tab::Media, true, 0, true, p(230.0, 160.0)), Some(ExpandedHit::Next));
-        assert_eq!(hit_expanded(Tab::Media, true, 0, true, p(180.0, 110.0)), Some(ExpandedHit::Seek(0.5)));
-        assert_eq!(hit_expanded(Tab::Media, true, 0, false, p(180.0, 110.0)), None);
-        assert_eq!(hit_expanded(Tab::Agents, true, 2, false, p(100.0, 80.0)), Some(ExpandedHit::Row(1)));
-        assert_eq!(hit_expanded(Tab::Agents, true, 1, false, p(100.0, 80.0)), None);
-        assert_eq!(hit_expanded(Tab::Agents, true, 0, false, p(300.0, 20.0)), Some(ExpandedHit::Tab(Tab::Media)));
-        assert_eq!(hit_expanded(Tab::Media, true, 0, false, p(250.0, 20.0)), Some(ExpandedHit::Tab(Tab::Agents)));
-        assert_eq!(hit_expanded(Tab::Agents, false, 0, false, p(300.0, 20.0)), None);
+        assert_eq!(hit_expanded(Tab::Media, true, 0, 0, true, p(180.0, 160.0)), Some(ExpandedHit::PlayPause));
+        assert_eq!(hit_expanded(Tab::Media, true, 0, 0, true, p(130.0, 160.0)), Some(ExpandedHit::Prev));
+        assert_eq!(hit_expanded(Tab::Media, true, 0, 0, true, p(230.0, 160.0)), Some(ExpandedHit::Next));
+        assert_eq!(hit_expanded(Tab::Media, true, 0, 0, true, p(180.0, 110.0)), Some(ExpandedHit::Seek(0.5)));
+        assert_eq!(hit_expanded(Tab::Media, true, 0, 0, false, p(180.0, 110.0)), None);
+        assert_eq!(hit_expanded(Tab::Agents, true, 2, 0, false, p(100.0, 80.0)), Some(ExpandedHit::Row(1)));
+        assert_eq!(hit_expanded(Tab::Agents, true, 1, 0, false, p(100.0, 80.0)), None);
+        assert_eq!(hit_expanded(Tab::Agents, true, 0, 0, false, p(300.0, 20.0)), Some(ExpandedHit::Tab(Tab::Media)));
+        assert_eq!(hit_expanded(Tab::Media, true, 0, 0, false, p(250.0, 20.0)), Some(ExpandedHit::Tab(Tab::Agents)));
+        assert_eq!(hit_expanded(Tab::Agents, false, 0, 0, false, p(300.0, 20.0)), Some(ExpandedHit::Tab(Tab::Agents)));
         // buttons only exist on the media tab
-        assert_eq!(hit_expanded(Tab::Agents, true, 0, false, p(180.0, 160.0)), None);
+        assert_eq!(hit_expanded(Tab::Agents, true, 0, 0, false, p(180.0, 160.0)), None);
     }
 
     #[test]
@@ -767,32 +767,16 @@ mod tests {
     }
 
     #[test]
-    fn fullscreen_shows_only_the_blocked_pill() {
-        let blocked = Collapsed::Blocked { label: "a needs you".into(), pane_id: "w1:p1".into() };
-        let done = Collapsed::Done { label: "a done".into(), pane_id: "w1:p1".into() };
-        assert_eq!(shown(false, false, &Collapsed::Idle), Shown::All);
-        assert_eq!(shown(false, false, &blocked), Shown::All);
-        assert_eq!(shown(false, true, &blocked), Shown::CollapsedOnly);
-        for c in [Collapsed::Idle, Collapsed::Media, Collapsed::Working { count: 2 }, done] {
-            assert_eq!(shown(false, true, &c), Shown::Hidden, "{c:?}");
+    fn fullscreen_shows_only_the_blocked_dot() {
+        for media in [false, true] {
+            for dot in [Dot::Idle, Dot::Working, Dot::Done, Dot::Blocked] {
+                let c = Collapsed { dot, media };
+                assert_eq!(shown(false, false, &c), Shown::All);
+                assert_eq!(shown(false, true, &c), if dot == Dot::Blocked { Shown::CollapsedOnly } else { Shown::Hidden });
+                assert_eq!(shown(true, false, &c), Shown::Hidden);
+                assert_eq!(shown(true, true, &c), Shown::Hidden);
+            }
         }
-        // hidden from the tray stays hidden, even for a blocked agent
-        assert_eq!(shown(true, false, &blocked), Shown::Hidden);
-        assert_eq!(shown(true, true, &blocked), Shown::Hidden);
-    }
-
-    #[test]
-    fn status_group_is_centred_in_the_pill() {
-        let pill = rect(100.0, 0.0, 160.0, 37.0);
-        // spinner 14 + gap 8 + label 50 = 72 wide, so it starts (160 - 72) / 2 = 44 in
-        assert_eq!(centred_status(pill, 10.0, 14.0, 8.0, 50.0), (144.0, 166.0, 50.0));
-    }
-
-    #[test]
-    fn status_label_too_wide_keeps_the_padding() {
-        let pill = rect(100.0, 0.0, 160.0, 37.0);
-        // room for the label is 160 - 2 * 10 - 14 - 8 = 118; the caller trims it to that
-        assert_eq!(centred_status(pill, 10.0, 14.0, 8.0, 300.0), (110.0, 132.0, 118.0));
     }
 
     /// The island's top-left on screen (physical pixels) at `spot`.

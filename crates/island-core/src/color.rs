@@ -23,6 +23,16 @@ pub fn dominant_color(bgra: &[u8], width: u32, height: u32) -> Option<[u8; 3]> {
     Some([(best[1] / n) as u8, (best[2] / n) as u8, (best[3] / n) as u8])
 }
 
+/// `rgb` scaled up, hue kept, until its brightest channel is at least 200, so it stays visible
+/// on the black island.
+pub fn brighten(rgb: [u8; 3]) -> [u8; 3] {
+    let max = rgb.into_iter().max().unwrap_or(0).max(1) as f32;
+    if max >= 200.0 {
+        return rgb;
+    }
+    rgb.map(|c| (c as f32 * 200.0 / max).round() as u8)
+}
+
 /// Largest image side turned into a bitmap: every Direct3D feature level accepts 2048, and
 /// media thumbnails are a few hundred pixels.
 pub const MAX_IMAGE_SIDE: u32 = 2048;
@@ -37,6 +47,14 @@ pub fn bgra_fits(bgra: &[u8], width: u32, height: u32) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn brighten_keeps_hue_and_bright_colours() {
+        assert_eq!(brighten([80, 20, 20]), [200, 50, 50]);
+        assert_eq!(brighten([0, 0, 0]), [0, 0, 0]);
+        assert_eq!(brighten([255, 10, 10]), [255, 10, 10]);
+        assert_eq!(brighten([200, 200, 200]), [200, 200, 200]);
+    }
 
     #[test]
     fn dominant_colour() {
