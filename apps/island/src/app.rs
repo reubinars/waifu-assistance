@@ -129,7 +129,7 @@ impl App {
         let collapsed = Collapsed::Idle;
         let anim = Animator::new(collapsed_size(&collapsed), COLLAPSED_RADIUS, Face::Idle);
         let tray = Tray::add(win.tray).inspect_err(|e| log::error!("tray icon: {e}")).ok();
-        App {
+        let mut app = App {
             tray,
             user_hidden: false,
             fullscreen: false,
@@ -159,7 +159,9 @@ impl App {
             animating: false,
             spinner_on: false,
             tick_on: false,
-        }
+        };
+        app.win.place(app.mode(), app.spot(), app.has_pet());
+        app
     }
 
     pub fn start_sources(&mut self, tx: UiSender) {
@@ -423,10 +425,10 @@ impl App {
         let (work, bounds, scale) = window::primary_monitor();
         let (bx, by) = (press.block.x + dx as f32, press.block.y + dy as f32);
         let size = block_size(self.anim.size(), self.has_pet());
-        let spot = spot_at(self.mode(), work, bounds, scale, size, bx, by);
+        let spot = spot_at(self.mode(), work, bounds, scale, size, self.has_pet(), Point { x: bx, y: by });
         self.config.set_spot(spot);
         // only the origin changes, so the device and its swap chain stay
-        self.win.place(self.mode(), self.spot());
+        self.win.place(self.mode(), self.spot(), self.has_pet());
         self.dirty = true;
     }
 
@@ -570,7 +572,7 @@ impl App {
 
     fn reposition(&mut self) {
         let old = (self.win.origin, self.win.scale);
-        self.win.place(self.mode(), self.spot());
+        self.win.place(self.mode(), self.spot(), self.has_pet());
         if (self.win.origin, self.win.scale) != old {
             // the swap chain and every device resource are sized for the old scale
             self.device = None;
@@ -687,7 +689,12 @@ impl App {
                 }
             }
         }
-        if let Err(e) = self.render(now, t) {
+        let had_pet = self.has_pet();
+        let rendered = self.render(now, t);
+        if self.has_pet() != had_pet {
+            self.reposition();
+        }
+        if let Err(e) = rendered {
             self.device = None;
             self.art_bmp = None;
             self.pet_bmps = None;
