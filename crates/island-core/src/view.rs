@@ -295,6 +295,10 @@ pub mod layout {
     pub const ROW_W: f32 = 344.0;
     pub const ROW_H: f32 = 32.0;
     pub const ROW_RADIUS: f32 = 10.0;
+    pub const LIST: Rect = Rect {
+        x: 0.0, y: ROW_Y, w: super::EXPANDED.w,
+        h: ROW_STEP * (MAX_ROWS - 1) as f32 + ROW_H,
+    };
     pub const ART: Rect = Rect { x: 16.0, y: 16.0, w: 70.0, h: 70.0 };
     pub const TITLE: Rect = Rect { x: 98.0, y: 34.0, w: 200.0, h: 18.0 };
     pub const ARTIST: Rect = Rect { x: 98.0, y: 54.0, w: 246.0, h: 16.0 };
@@ -330,8 +334,22 @@ fn in_circle((cx, cy, r): (f32, f32, f32), p: Point) -> bool {
     (p.x - cx).powi(2) + (p.y - cy).powi(2) <= r * r
 }
 
+pub fn max_scroll(rows: usize) -> usize {
+    rows.saturating_sub(layout::MAX_ROWS)
+}
+
+/// Positive wheel notches move toward the first row.
+pub fn scroll_by(offset: usize, notches: i32, rows: usize) -> usize {
+    let offset = offset.min(max_scroll(rows));
+    if notches >= 0 {
+        offset.saturating_sub(notches as usize)
+    } else {
+        offset.saturating_add(notches.unsigned_abs() as usize).min(max_scroll(rows))
+    }
+}
+
 /// What a click at `p` (relative to the expanded island's top-left) hit, if anything.
-pub fn hit_expanded(tab: Tab, tabs_shown: bool, rows: usize, seekable: bool, p: Point) -> Option<ExpandedHit> {
+pub fn hit_expanded(tab: Tab, tabs_shown: bool, rows: usize, scroll: usize, seekable: bool, p: Point) -> Option<ExpandedHit> {
     use layout::*;
     if tabs_shown {
         if inside(TAB_AGENTS, p) {
@@ -342,7 +360,15 @@ pub fn hit_expanded(tab: Tab, tabs_shown: bool, rows: usize, seekable: bool, p: 
         }
     }
     match tab {
-        Tab::Agents => (0..rows.min(MAX_ROWS)).find(|&i| inside(row(i), p)).map(ExpandedHit::Row),
+        Tab::Agents => {
+            if !inside(LIST, p) {
+                return None;
+            }
+            let scroll = scroll.min(max_scroll(rows));
+            (scroll..rows.min(scroll.saturating_add(MAX_ROWS)))
+                .find(|&i| inside(row(i - scroll), p))
+                .map(ExpandedHit::Row)
+        }
         Tab::Media => {
             let seek_hit = Rect {
                 x: SEEK.x,
@@ -640,24 +666,57 @@ mod tests {
             let r = layout::row(i);
             assert_eq!(r.x, 8.0);
             assert_eq!(r.x + r.w, EXPANDED.w - 8.0);
+            let p = Point { x: r.x + r.w / 2.0, y: r.y + r.h / 2.0 };
+            assert_eq!(hit_expanded(Tab::Agents, false, 5, 1, false, p), Some(ExpandedHit::Row(i + 1)));
         }
+    }
+
+    #[test]
+    fn scrolling_clamps_to_the_available_rows() {
+        for rows in 0..=4 {
+            assert_eq!(max_scroll(rows), 0);
+            assert_eq!(scroll_by(10, -100, rows), 0);
+            assert_eq!(scroll_by(10, 100, rows), 0);
+        }
+        assert_eq!(max_scroll(5), 1);
+        assert_eq!(scroll_by(0, -1, 5), 1);
+        assert_eq!(scroll_by(1, 1, 5), 0);
+        assert_eq!(scroll_by(2, -2, 10), 4);
+        assert_eq!(scroll_by(2, 1, 10), 1);
+        assert_eq!(scroll_by(2, i32::MIN, 10), 6);
+        assert_eq!(scroll_by(2, i32::MAX, 10), 0);
+        assert_eq!(scroll_by(20, 0, 5), 1);
+    }
+
+    #[test]
+    fn scrolled_hits_use_absolute_rows_inside_the_list() {
+        let hit = |rows, scroll, x, y| hit_expanded(Tab::Agents, false, rows, scroll, false, Point { x, y });
+        assert_eq!(hit(5, 1, 100.0, 50.0), Some(ExpandedHit::Row(1)));
+        assert_eq!(hit(5, 1, 100.0, 175.0), Some(ExpandedHit::Row(4)));
+        assert_eq!(hit(2, 0, 100.0, 120.0), None);
+        assert_eq!(hit(5, 1, 100.0, 43.0), None);
+        assert_eq!(hit(6, 1, 100.0, 181.0), None);
+        assert_eq!(hit(6, 1, 100.0, 178.5), None);
+        assert_eq!(hit(5, 1, 100.0, 77.0), None);
+        assert_eq!(hit(5, 1, 7.0, 50.0), None);
+        assert_eq!(hit(5, 1, 353.0, 50.0), None);
     }
 
     #[test]
     fn expanded_hits() {
         let p = |x, y| Point { x, y };
-        assert_eq!(hit_expanded(Tab::Media, true, 0, true, p(180.0, 160.0)), Some(ExpandedHit::PlayPause));
-        assert_eq!(hit_expanded(Tab::Media, true, 0, true, p(130.0, 160.0)), Some(ExpandedHit::Prev));
-        assert_eq!(hit_expanded(Tab::Media, true, 0, true, p(230.0, 160.0)), Some(ExpandedHit::Next));
-        assert_eq!(hit_expanded(Tab::Media, true, 0, true, p(180.0, 110.0)), Some(ExpandedHit::Seek(0.5)));
-        assert_eq!(hit_expanded(Tab::Media, true, 0, false, p(180.0, 110.0)), None);
-        assert_eq!(hit_expanded(Tab::Agents, true, 2, false, p(100.0, 80.0)), Some(ExpandedHit::Row(1)));
-        assert_eq!(hit_expanded(Tab::Agents, true, 1, false, p(100.0, 80.0)), None);
-        assert_eq!(hit_expanded(Tab::Agents, true, 0, false, p(300.0, 20.0)), Some(ExpandedHit::Tab(Tab::Media)));
-        assert_eq!(hit_expanded(Tab::Media, true, 0, false, p(250.0, 20.0)), Some(ExpandedHit::Tab(Tab::Agents)));
-        assert_eq!(hit_expanded(Tab::Agents, false, 0, false, p(300.0, 20.0)), None);
+        assert_eq!(hit_expanded(Tab::Media, true, 0, 0, true, p(180.0, 160.0)), Some(ExpandedHit::PlayPause));
+        assert_eq!(hit_expanded(Tab::Media, true, 0, 0, true, p(130.0, 160.0)), Some(ExpandedHit::Prev));
+        assert_eq!(hit_expanded(Tab::Media, true, 0, 0, true, p(230.0, 160.0)), Some(ExpandedHit::Next));
+        assert_eq!(hit_expanded(Tab::Media, true, 0, 0, true, p(180.0, 110.0)), Some(ExpandedHit::Seek(0.5)));
+        assert_eq!(hit_expanded(Tab::Media, true, 0, 0, false, p(180.0, 110.0)), None);
+        assert_eq!(hit_expanded(Tab::Agents, true, 2, 0, false, p(100.0, 80.0)), Some(ExpandedHit::Row(1)));
+        assert_eq!(hit_expanded(Tab::Agents, true, 1, 0, false, p(100.0, 80.0)), None);
+        assert_eq!(hit_expanded(Tab::Agents, true, 0, 0, false, p(300.0, 20.0)), Some(ExpandedHit::Tab(Tab::Media)));
+        assert_eq!(hit_expanded(Tab::Media, true, 0, 0, false, p(250.0, 20.0)), Some(ExpandedHit::Tab(Tab::Agents)));
+        assert_eq!(hit_expanded(Tab::Agents, false, 0, 0, false, p(300.0, 20.0)), None);
         // buttons only exist on the media tab
-        assert_eq!(hit_expanded(Tab::Agents, true, 0, false, p(180.0, 160.0)), None);
+        assert_eq!(hit_expanded(Tab::Agents, true, 0, 0, false, p(180.0, 160.0)), None);
     }
 
     #[test]

@@ -7,7 +7,7 @@ use island_core::Rect;
 use island_core::anim::{Fade, breathe};
 use island_core::herdr::AgentStatus;
 use island_core::view::layout::{self, MAX_ROWS};
-use island_core::view::{ExpandedHit, Tab};
+use island_core::view::{EXPANDED, ExpandedHit, Tab, max_scroll};
 use windows::Win32::Graphics::Direct2D::ID2D1Bitmap1;
 use windows::core::Result;
 
@@ -27,7 +27,7 @@ pub enum Hot {
     Seek,
 }
 
-const HOT_COUNT: usize = 6 + MAX_ROWS;
+const HOT_COUNT: usize = 7 + MAX_ROWS;
 
 impl Hot {
     pub fn of(hit: ExpandedHit) -> Hot {
@@ -49,7 +49,7 @@ impl Hot {
             Hot::Play => 3,
             Hot::Next => 4,
             Hot::Seek => 5,
-            Hot::Row(i) => 6 + i.min(MAX_ROWS - 1),
+            Hot::Row(i) => 6 + i % (MAX_ROWS + 1),
         }
     }
 }
@@ -135,6 +135,7 @@ pub struct Scene<'a> {
     pub t: f64,
     pub tabs: bool,
     pub rows: Vec<Row>,
+    pub scroll: f32,
     pub media: Option<Media>,
     pub art: Option<&'a ID2D1Bitmap1>,
     pub accent: Option<Color>,
@@ -183,41 +184,58 @@ fn draw_rows(p: &mut Painter, ox: f32, oy: f32, k: f32, s: &Scene) -> Result<()>
     const TIME_W: f32 = 26.0;
     const SPACE: f32 = 8.0;
     const RIGHT: f32 = 10.0;
-    for (i, row) in s.rows.iter().take(MAX_ROWS).enumerate() {
-        let r = off(layout::row(i), ox, oy);
-        let h = s.hover.hover(Hot::Row(i), s.t);
-        if h > 0.0 {
-            p.round_rect(r, layout::ROW_RADIUS, Color::white(0.10 * h).fade(k));
+    let list = off(layout::LIST, ox, oy);
+    let mask = p.rect_geometry(list)?;
+    p.push_layer(Some(&mask), 1.0);
+    let drawn = (|| -> Result<()> {
+        for (i, row) in s.rows.iter().enumerate() {
+            let r = off(layout::row(i), ox, oy - s.scroll * layout::ROW_STEP);
+            if r.y + r.h <= list.y || r.y >= list.y + list.h {
+                continue;
+            }
+            let h = s.hover.hover(Hot::Row(i), s.t);
+            if h > 0.0 {
+                p.round_rect(r, layout::ROW_RADIUS, Color::white(0.10 * h).fade(k));
+            }
+            let cy = r.y + r.h / 2.0;
+            p.circle(r.x + DOT_X, cy, 6.0, status_color(row.status).fade(k));
+            let line = |x: f32, w: f32| Rect { x, y: r.y, w: w.max(0.0), h: r.h };
+
+            let time_x = r.x + r.w - RIGHT - TIME_W;
+            let time = p.layout_tabular(&row.since, line(time_x, TIME_W), 10.0, 500, Align::Right)?;
+            p.draw_layout(&time, time_x, r.y, TEXT_TERTIARY.fade(k));
+
+            let name_x = r.x + NAME_X;
+            let name = p.layout(&row.name, line(name_x, NAME_MAX), 12.0, 600, Align::Left)?;
+            let name_w = Painter::width(&name);
+            p.draw_layout(&name, name_x, r.y, TEXT_PRIMARY.fade(k));
+
+            let folder_end = time_x - SPACE;
+            let folder_w = if row.folder.is_empty() {
+                0.0
+            } else {
+                let probe = p.layout(&row.folder, line(0.0, FOLDER_MAX), 11.0, 400, Align::Left)?;
+                Painter::width(&probe).min(FOLDER_MAX)
+            };
+            if folder_w > 0.0 {
+                p.text(&row.folder, line(folder_end - folder_w, folder_w + 1.0), 11.0, 400, TEXT_TERTIARY.fade(k), Align::Left)?;
+            }
+
+            let title_x = name_x + name_w + SPACE;
+            let title_end = if folder_w > 0.0 { folder_end - folder_w - SPACE } else { folder_end };
+            if title_end - title_x > 12.0 {
+                p.text(&row.title, line(title_x, title_end - title_x), 11.0, 400, TEXT_SECONDARY.fade(k), Align::Left)?;
+            }
         }
-        let cy = r.y + r.h / 2.0;
-        p.circle(r.x + DOT_X, cy, 6.0, status_color(row.status).fade(k));
-        let line = |x: f32, w: f32| Rect { x, y: r.y, w: w.max(0.0), h: r.h };
-
-        let time_x = r.x + r.w - RIGHT - TIME_W;
-        let time = p.layout_tabular(&row.since, line(time_x, TIME_W), 10.0, 500, Align::Right)?;
-        p.draw_layout(&time, time_x, r.y, TEXT_TERTIARY.fade(k));
-
-        let name_x = r.x + NAME_X;
-        let name = p.layout(&row.name, line(name_x, NAME_MAX), 12.0, 600, Align::Left)?;
-        let name_w = Painter::width(&name);
-        p.draw_layout(&name, name_x, r.y, TEXT_PRIMARY.fade(k));
-
-        let folder_end = time_x - SPACE;
-        let folder_w = if row.folder.is_empty() {
-            0.0
-        } else {
-            let probe = p.layout(&row.folder, line(0.0, FOLDER_MAX), 11.0, 400, Align::Left)?;
-            Painter::width(&probe).min(FOLDER_MAX)
-        };
-        if folder_w > 0.0 {
-            p.text(&row.folder, line(folder_end - folder_w, folder_w + 1.0), 11.0, 400, TEXT_TERTIARY.fade(k), Align::Left)?;
-        }
-
-        let title_x = name_x + name_w + SPACE;
-        let title_end = if folder_w > 0.0 { folder_end - folder_w - SPACE } else { folder_end };
-        if title_end - title_x > 12.0 {
-            p.text(&row.title, line(title_x, title_end - title_x), 11.0, 400, TEXT_SECONDARY.fade(k), Align::Left)?;
-        }
+        Ok(())
+    })();
+    p.pop_layer();
+    drawn?;
+    let max = max_scroll(s.rows.len());
+    if max > 0 {
+        let h = list.h * MAX_ROWS as f32 / s.rows.len() as f32;
+        let y = list.y + (list.h - h) * (s.scroll / max as f32).clamp(0.0, 1.0);
+        p.round_rect(Rect { x: ox + EXPANDED.w - 5.0, y, w: 2.5, h }, 1.25, Color::white(0.25).fade(k));
     }
     Ok(())
 }

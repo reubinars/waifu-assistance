@@ -12,26 +12,29 @@ use crate::tray::{self, Tray};
 use crate::ui_collapsed::{self, SPINNER_TICK_MS, Scene};
 use crate::ui_expanded::{self, Hot, Hover};
 use crate::window::{self, Event, VK_ESCAPE, Windows};
+use island_core::anim::Fade;
 use island_core::config::Config;
 use island_core::media::MediaClock;
 use island_core::pet::{PetClock, PetState, Sheet, pet_state};
 use island_core::session::HerdrSession;
-use island_core::view::layout::{MAX_ROWS, SEEK};
+use island_core::view::layout::SEEK;
 use island_core::view::{
     COLLAPSED, Collapsed, Dot, DisplayMode, EXPANDED, ExpandedHit, Shown, Spot, Tab, block_rect, block_size, choose_collapsed, clock_label,
     corner_radii, default_tab, fullscreen_jump_target, hit_expanded, is_drag, island_rect,
-    jump_target, pet_cell, shown, spot_at, tabs_visible, time_in_state,
+    jump_target, max_scroll, pet_cell, scroll_by, shown, spot_at, tabs_visible, time_in_state,
 };
 use island_core::{Point, Rect, Size};
 use std::time::{Duration, Instant};
-use windows::Win32::Foundation::{D2DERR_RECREATE_TARGET, HANDLE};
+use windows::Win32::Foundation::{D2DERR_RECREATE_TARGET, HANDLE, POINT};
 use windows::Win32::Graphics::Dxgi::{DXGI_ERROR_DEVICE_HUNG, DXGI_ERROR_DEVICE_REMOVED, DXGI_ERROR_DEVICE_RESET};
 use windows::Win32::Graphics::Direct2D::ID2D1Bitmap1;
-use windows::Win32::UI::WindowsAndMessaging::{KillTimer, PostQuitMessage, SetTimer};
+use windows::Win32::UI::WindowsAndMessaging::{GetCursorPos, KillTimer, PostQuitMessage, SetTimer};
 use windows::core::{Error, Result};
 
 const COLLAPSED_RADIUS: f32 = 20.0;
 const EXPANDED_RADIUS: f32 = 32.0;
+const SCROLL_FADE: f32 = 0.12;
+const WHEEL_DELTA: i32 = 120;
 
 pub const TIMER_LINGER: usize = 1;
 pub const TIMER_SPINNER: usize = 2;
@@ -96,6 +99,9 @@ pub struct App {
     expanded_at: Option<Instant>,
     tab: Tab,
     hover: Hover,
+    scroll: usize,
+    wheel_acc: i32,
+    scroll_fade: Fade,
     /// Seekbar position (0..=1) while it is dragged.
     drag: Option<f32>,
     press: Option<Press>,
@@ -148,6 +154,9 @@ impl App {
             expanded_at: None,
             tab: Tab::Media,
             hover: Hover::default(),
+            scroll: 0,
+            wheel_acc: 0,
+            scroll_fade: Fade { from: 0.0, to: 0.0, start: 0.0, duration: 0.0 },
             drag: None,
             press: None,
             anim,
@@ -243,6 +252,7 @@ impl App {
             Event::MouseMove(x, y) if self.press.is_some() => self.on_press_move(x, y),
             Event::MouseMove(x, y) => self.on_mouse_move(self.win.to_dip(x, y)),
             Event::MouseLeave => self.on_mouse_leave(),
+            Event::Wheel(delta) => self.on_wheel(delta, now),
             Event::MouseDown(x, y) if !self.expanded => self.on_press(x, y),
             Event::MouseDown(x, y) => self.on_mouse_down(self.win.to_dip(x, y)),
             Event::MouseUp(..) if self.press.is_some() => self.on_release(),
@@ -355,9 +365,46 @@ impl App {
         let o = self.expanded_origin();
         let present = self.clock.is_present(Instant::now());
         let tabs = tabs_visible(&self.session.agents, present);
-        let rows = self.session.agents.rows(MAX_ROWS).len();
+        let rows = self.session.agents.rows(usize::MAX).len();
         let seekable = present && self.clock.seekable();
-        hit_expanded(self.tab, tabs, rows, seekable, Point { x: p.x - o.x, y: p.y - o.y })
+        hit_expanded(self.tab, tabs, rows, self.scroll, seekable, Point { x: p.x - o.x, y: p.y - o.y })
+    }
+
+    fn cursor(&self) -> Option<Point> {
+        let mut p = POINT::default();
+        unsafe { GetCursorPos(&mut p).ok()? };
+        Some(self.win.to_dip(p.x, p.y))
+    }
+
+    fn refresh_hover(&mut self, t: f64) {
+        let hot = self.cursor().and_then(|p| self.expanded_hit(p)).map(Hot::of);
+        self.hover.set_hot(hot, t);
+    }
+
+    fn set_scroll(&mut self, scroll: usize, t: f64) {
+        if scroll == self.scroll {
+            return;
+        }
+        self.scroll = scroll;
+        self.scroll_fade = Fade { from: self.scroll_fade.value_at(t), to: scroll as f32, start: t, duration: SCROLL_FADE };
+        self.refresh_hover(t);
+        self.dirty = true;
+    }
+
+    fn on_wheel(&mut self, delta: i32, now: Instant) {
+        if !self.expanded || self.tab != Tab::Agents {
+            return;
+        }
+        let Some(p) = self.cursor() else { return };
+        let o = self.expanded_origin();
+        if p.x < o.x || p.x > o.x + EXPANDED.w || p.y < o.y || p.y > o.y + EXPANDED.h {
+            return;
+        }
+        self.wheel_acc += delta;
+        let notches = self.wheel_acc / WHEEL_DELTA;
+        self.wheel_acc %= WHEEL_DELTA;
+        let rows = self.session.agents.rows(usize::MAX).len();
+        self.set_scroll(scroll_by(self.scroll, notches, rows), self.secs(now));
     }
 
     fn seek_fraction(&self, p: Point) -> f32 {
@@ -481,7 +528,7 @@ impl App {
                 self.retarget(Instant::now());
             }
             ExpandedHit::Row(i) => {
-                let pane = self.session.agents.rows(MAX_ROWS).get(i).map(|a| a.info.pane_id.clone());
+                let pane = self.session.agents.rows(usize::MAX).get(i).map(|a| a.info.pane_id.clone());
                 if let Some(pane) = pane {
                     self.jump(&pane);
                 }
@@ -550,6 +597,9 @@ impl App {
         }
         self.expanded = false;
         self.expanded_at = None;
+        self.scroll = 0;
+        self.wheel_acc = 0;
+        self.scroll_fade = Fade { from: 0.0, to: 0.0, start: 0.0, duration: 0.0 };
         if self.drag.take().is_some() {
             self.win.capture(false);
         }
@@ -579,6 +629,8 @@ impl App {
     /// Recomputes what the island should show and sets the animation targets.
     fn retarget(&mut self, now: Instant) {
         let t = self.secs(now);
+        let rows = self.session.agents.rows(usize::MAX).len();
+        self.set_scroll(self.scroll.min(max_scroll(rows)), t);
         self.pet.set(pet_state(&self.session.agents), t);
         let present = self.clock.is_present(now);
         let collapsed = choose_collapsed(&self.session.agents, present);
@@ -690,7 +742,7 @@ impl App {
             self.animating = false;
             return false;
         }
-        self.animating = self.anim.busy(t) || self.hover.busy(t) || self.continuous();
+        self.animating = self.anim.busy(t) || self.hover.busy(t) || !self.scroll_fade.done_at(t) || self.continuous();
         let tick = !self.animating && self.anim.face == Face::Expanded(Tab::Agents);
         if tick != self.tick_on {
             self.tick_on = tick;
@@ -764,10 +816,10 @@ impl App {
                 })
             }
         };
-        let rows = self
+        let rows: Vec<_> = self
             .session
             .agents
-            .rows(MAX_ROWS)
+            .rows(usize::MAX)
             .into_iter()
             .map(|a| ui_expanded::Row {
                 status: a.info.status,
@@ -780,6 +832,7 @@ impl App {
         let collapsed = Scene { t, playing: self.clock.is_playing() };
         let expanded = ui_expanded::Scene {
             t,
+            scroll: self.scroll_fade.value_at(t).min(max_scroll(rows.len()) as f32),
             tabs: tabs_visible(&self.session.agents, present),
             rows,
             media,
