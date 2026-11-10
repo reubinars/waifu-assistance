@@ -322,7 +322,7 @@ pub fn create(mode: DisplayMode, spot: Spot) -> Result<Windows> {
             placed: None,
             prev_foreground: None,
         };
-        win.place(mode, spot, false);
+        win.place(mode, spot, 0);
         let _ = ShowWindow(visual, SW_SHOWNOACTIVATE);
         Ok(win)
     }
@@ -330,9 +330,9 @@ pub fn create(mode: DisplayMode, spot: Spot) -> Result<Windows> {
 
 impl Windows {
     /// Puts the visual window at `spot` on the primary monitor; updates `scale`.
-    pub fn place(&mut self, mode: DisplayMode, spot: Spot, pet: bool) {
+    pub fn place(&mut self, mode: DisplayMode, spot: Spot, pets: u8) {
         let (work, bounds, scale) = primary_monitor();
-        let o = window_origin(mode, work, bounds, scale, spot, pet);
+        let o = window_origin(mode, work, bounds, scale, spot, pets);
         let (w, h) = self.size_px_for(scale);
         self.origin = (o.x as i32, o.y as i32);
         self.scale = scale;
