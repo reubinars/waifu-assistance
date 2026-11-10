@@ -133,7 +133,7 @@ pub struct Media {
 
 pub struct Scene<'a> {
     pub t: f64,
-    pub tabs: bool,
+    pub media_present: bool,
     pub rows: Vec<Row>,
     pub scroll: f32,
     pub media: Option<Media>,
@@ -148,17 +148,16 @@ fn off(r: Rect, ox: f32, oy: f32) -> Rect {
 
 /// Draws `tab` with the expanded island's top-left at (ox, oy), at opacity `k`.
 pub fn draw(p: &mut Painter, tab: Tab, ox: f32, oy: f32, k: f32, s: &Scene) -> Result<()> {
-    if s.tabs {
-        for (t, r, label) in [(Tab::Agents, layout::TAB_AGENTS, "Agents"), (Tab::Media, layout::TAB_MEDIA, "Media")] {
-            let r = off(r, ox, oy);
-            let h = s.hover.hover(Hot::Tab(t), s.t);
-            let restore = p.scale_about(1.0 + 0.1 * h, r.x + r.w / 2.0, r.y + r.h / 2.0);
-            let active = t == tab;
-            p.round_rect(r, r.h / 2.0, Color::white(if active { 0.14 } else { 0.06 }).fade(k));
-            let c = if active { TEXT_PRIMARY } else { TEXT_SECONDARY };
-            p.text(label, r, 11.0, 600, c.fade(k), Align::Center)?;
-            p.set_transform(restore);
-        }
+    for (t, r) in layout::tabs(s.media_present) {
+        let label = match t { Tab::Agents => "Agents", Tab::Media => "Media" };
+        let r = off(r, ox, oy);
+        let h = s.hover.hover(Hot::Tab(t), s.t);
+        let restore = p.scale_about(1.0 + 0.1 * h, r.x + r.w / 2.0, r.y + r.h / 2.0);
+        let active = t == tab;
+        p.round_rect(r, r.h / 2.0, Color::white(if active { 0.14 } else { 0.06 }).fade(k));
+        let c = if active { TEXT_PRIMARY } else { TEXT_SECONDARY };
+        p.text(label, r, 11.0, 600, c.fade(k), Align::Center)?;
+        p.set_transform(restore);
     }
     match tab {
         Tab::Agents => draw_rows(p, ox, oy, k, s),
@@ -184,6 +183,10 @@ fn draw_rows(p: &mut Painter, ox: f32, oy: f32, k: f32, s: &Scene) -> Result<()>
     const TIME_W: f32 = 26.0;
     const SPACE: f32 = 8.0;
     const RIGHT: f32 = 10.0;
+    if s.rows.is_empty() {
+        let row = off(layout::row(0), ox, oy);
+        return p.text("No agents", Rect { x: row.x + NAME_X, w: row.w - NAME_X, ..row }, 14.0, 600, TEXT_SECONDARY.fade(k), Align::Left);
+    }
     let list = off(layout::LIST, ox, oy);
     let mask = p.rect_geometry(list)?;
     p.push_layer(Some(&mask), 1.0);

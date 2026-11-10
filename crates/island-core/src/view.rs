@@ -76,18 +76,6 @@ pub fn shown(user_hidden: bool, fullscreen: bool, c: &Collapsed) -> Shown {
     }
 }
 
-pub fn default_tab(c: &Collapsed) -> Tab {
-    match c.dot {
-        Dot::Working | Dot::Done | Dot::Blocked => Tab::Agents,
-        Dot::Idle => Tab::Media,
-    }
-}
-
-/// Tabs appear only when both agents and media have something to show.
-pub fn tabs_visible(agents: &AgentTable, media_present: bool) -> bool {
-    !agents.is_empty() && media_present
-}
-
 /// Where the island sits on the main monitor. Each axis runs from 0 (left / top edge) through 0.5
 /// (centre) to 1 (right / bottom edge), and the island grows away from the edges in the same
 /// proportion: at the top it grows down, at the bottom up, in the middle both ways.
@@ -283,11 +271,19 @@ pub fn clock_label(secs: f64) -> String {
 /// Expanded-island layout, relative to the expanded island's top-left (DIPs).
 pub mod layout {
     use crate::Rect;
+    use super::Tab;
 
     pub const PAD_Y: f32 = 14.0;
     pub const PAD_X: f32 = 16.0;
     pub const TAB_AGENTS: Rect = Rect { x: 232.0, y: 10.0, w: 60.0, h: 24.0 };
     pub const TAB_MEDIA: Rect = Rect { x: 296.0, y: 10.0, w: 54.0, h: 24.0 };
+
+    /// Agents is always shown; alone it aligns with the pair's right edge.
+    pub fn tabs(media: bool) -> impl Iterator<Item = (Tab, Rect)> {
+        let agents = if media { TAB_AGENTS } else { Rect { x: TAB_MEDIA.x + TAB_MEDIA.w - TAB_AGENTS.w, ..TAB_AGENTS } };
+        std::iter::once((Tab::Agents, agents)).chain(media.then_some((Tab::Media, TAB_MEDIA)))
+    }
+
     pub const MAX_ROWS: usize = 4;
     pub const ROW_X: f32 = 8.0;
     pub const ROW_Y: f32 = 44.0;
@@ -349,14 +345,11 @@ pub fn scroll_by(offset: usize, notches: i32, rows: usize) -> usize {
 }
 
 /// What a click at `p` (relative to the expanded island's top-left) hit, if anything.
-pub fn hit_expanded(tab: Tab, tabs_shown: bool, rows: usize, scroll: usize, seekable: bool, p: Point) -> Option<ExpandedHit> {
+pub fn hit_expanded(tab: Tab, media_present: bool, rows: usize, scroll: usize, seekable: bool, p: Point) -> Option<ExpandedHit> {
     use layout::*;
-    if tabs_shown {
-        if inside(TAB_AGENTS, p) {
-            return Some(ExpandedHit::Tab(Tab::Agents));
-        }
-        if inside(TAB_MEDIA, p) {
-            return Some(ExpandedHit::Tab(Tab::Media));
+    for (tab, r) in tabs(media_present) {
+        if inside(r, p) {
+            return Some(ExpandedHit::Tab(tab));
         }
     }
     match tab {
@@ -418,23 +411,27 @@ mod tests {
     }
 
     #[test]
-    fn default_tabs() {
-        for media in [false, true] {
-            for dot in [Dot::Working, Dot::Done, Dot::Blocked] {
-                assert_eq!(default_tab(&Collapsed { dot, media }), Tab::Agents);
-            }
-            assert_eq!(default_tab(&Collapsed { dot: Dot::Idle, media }), Tab::Media);
+    fn tab_layouts_and_hits() {
+        assert_eq!(layout::tabs(false).collect::<Vec<_>>(), vec![(Tab::Agents, rect(290.0, 10.0, 60.0, 24.0))]);
+        assert_eq!(layout::tabs(true).collect::<Vec<_>>(), vec![
+            (Tab::Agents, rect(232.0, 10.0, 60.0, 24.0)),
+            (Tab::Media, rect(296.0, 10.0, 54.0, 24.0)),
+        ]);
+        let hit = |media, x| hit_expanded(Tab::Agents, media, 0, 0, false, Point { x, y: 20.0 });
+        assert_eq!(hit(false, 291.0), Some(ExpandedHit::Tab(Tab::Agents)));
+        assert_eq!(hit(false, 345.0), Some(ExpandedHit::Tab(Tab::Agents)));
+        assert_eq!(hit(false, 250.0), None);
+        assert_eq!(hit(true, 250.0), Some(ExpandedHit::Tab(Tab::Agents)));
+        assert_eq!(hit(true, 300.0), Some(ExpandedHit::Tab(Tab::Media)));
+        assert_eq!(hit(true, 294.0), None);
+        for x in 0..=360 {
+            assert_ne!(hit(false, x as f32), Some(ExpandedHit::Tab(Tab::Media)));
         }
     }
 
     #[test]
     fn sizes() {
         assert_eq!(COLLAPSED, Size { w: 40.0, h: 40.0 });
-        let mut t = AgentTable::default();
-        assert!(!tabs_visible(&t, true));
-        t.upsert(test_info("w1:p1", Idle), Instant::now());
-        assert!(!tabs_visible(&t, false));
-        assert!(tabs_visible(&t, true));
     }
 
     const TOP: Spot = Spot::TOP_CENTRE;
@@ -714,7 +711,7 @@ mod tests {
         assert_eq!(hit_expanded(Tab::Agents, true, 1, 0, false, p(100.0, 80.0)), None);
         assert_eq!(hit_expanded(Tab::Agents, true, 0, 0, false, p(300.0, 20.0)), Some(ExpandedHit::Tab(Tab::Media)));
         assert_eq!(hit_expanded(Tab::Media, true, 0, 0, false, p(250.0, 20.0)), Some(ExpandedHit::Tab(Tab::Agents)));
-        assert_eq!(hit_expanded(Tab::Agents, false, 0, 0, false, p(300.0, 20.0)), None);
+        assert_eq!(hit_expanded(Tab::Agents, false, 0, 0, false, p(300.0, 20.0)), Some(ExpandedHit::Tab(Tab::Agents)));
         // buttons only exist on the media tab
         assert_eq!(hit_expanded(Tab::Agents, true, 0, 0, false, p(180.0, 160.0)), None);
     }

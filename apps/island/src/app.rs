@@ -20,8 +20,8 @@ use island_core::session::HerdrSession;
 use island_core::view::layout::SEEK;
 use island_core::view::{
     COLLAPSED, Collapsed, Dot, DisplayMode, EXPANDED, ExpandedHit, Shown, Spot, Tab, block_rect, block_size, choose_collapsed, clock_label,
-    corner_radii, default_tab, fullscreen_jump_target, hit_expanded, is_drag, island_rect,
-    jump_target, max_scroll, pet_cell, scroll_by, shown, spot_at, tabs_visible, time_in_state,
+    corner_radii, fullscreen_jump_target, hit_expanded, is_drag, island_rect,
+    jump_target, max_scroll, pet_cell, scroll_by, shown, spot_at, time_in_state,
 };
 use island_core::{Point, Rect, Size};
 use std::time::{Duration, Instant};
@@ -152,7 +152,7 @@ impl App {
             collapsed,
             expanded: false,
             expanded_at: None,
-            tab: Tab::Media,
+            tab: Tab::Agents,
             hover: Hover::default(),
             scroll: 0,
             wheel_acc: 0,
@@ -214,7 +214,12 @@ impl App {
             }
             SourceEvent::BridgeDown => self.session.bridge_down(),
             SourceEvent::Demo(a) => match a {
-                DemoAction::Expand(tab) => self.expand(tab, false, now),
+                DemoAction::Expand(tab) => {
+                    if !self.expanded {
+                        self.expand(false, now);
+                    }
+                    self.tab = tab;
+                }
                 DemoAction::Collapse => self.collapse(),
                 DemoAction::Mode(m) => self.set_mode(m),
             },
@@ -364,10 +369,9 @@ impl App {
     fn expanded_hit(&mut self, p: Point) -> Option<ExpandedHit> {
         let o = self.expanded_origin();
         let present = self.clock.is_present(Instant::now());
-        let tabs = tabs_visible(&self.session.agents, present);
         let rows = self.session.agents.rows(usize::MAX).len();
         let seekable = present && self.clock.seekable();
-        hit_expanded(self.tab, tabs, rows, self.scroll, seekable, Point { x: p.x - o.x, y: p.y - o.y })
+        hit_expanded(self.tab, present, rows, self.scroll, seekable, Point { x: p.x - o.x, y: p.y - o.y })
     }
 
     fn cursor(&self) -> Option<Point> {
@@ -490,7 +494,7 @@ impl App {
         match target.filter(|_| attention) {
             Some(pane) => self.jump(&pane),
             None if self.fullscreen => {}
-            None => self.expand(default_tab(&self.collapsed), true, now),
+            None => self.expand(true, now),
         }
     }
 
@@ -580,10 +584,10 @@ impl App {
         self.collapse();
     }
 
-    fn expand(&mut self, tab: Tab, activate: bool, now: Instant) {
+    fn expand(&mut self, activate: bool, now: Instant) {
         self.expanded = true;
         self.expanded_at = Some(now);
-        self.tab = tab;
+        self.tab = Tab::Agents;
         self.hover.reset();
         if activate {
             self.win.activate();
@@ -638,12 +642,8 @@ impl App {
             log::debug!("collapsed {collapsed:?}");
             self.collapsed = collapsed;
         }
-        if self.expanded && !tabs_visible(&self.session.agents, present) {
-            if !self.session.agents.is_empty() {
-                self.tab = Tab::Agents;
-            } else if present {
-                self.tab = Tab::Media;
-            }
+        if self.tab == Tab::Media && !present {
+            self.tab = Tab::Agents;
         }
         let (size, radius, face) = if self.expanded {
             (EXPANDED, EXPANDED_RADIUS, Face::Expanded(self.tab))
@@ -833,7 +833,7 @@ impl App {
         let expanded = ui_expanded::Scene {
             t,
             scroll: self.scroll_fade.value_at(t).min(max_scroll(rows.len()) as f32),
-            tabs: tabs_visible(&self.session.agents, present),
+            media_present: present,
             rows,
             media,
             art: self.art_bmp.as_ref(),
