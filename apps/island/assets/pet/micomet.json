@@ -11,16 +11,16 @@
   "sampling": "nearest",
   "scaling": "integer_physical_pixels",
   "alpha": "binary",
-  "max_opaque_colors": 20,
+  "max_opaque_colors": 24,
   "atlases": {
     "solo": {
-      "file": "suisei-solo.png",
-      "cell_width": 64,
+      "file": "micomet-solo.png",
+      "cell_width": 128,
       "cell_height": 64,
       "columns": 6,
       "rows": 4,
       "anchor": [
-        32,
+        64,
         60
       ],
       "states": {
@@ -121,13 +121,13 @@
       }
     },
     "emblem": {
-      "file": "suisei-emblem.png",
-      "cell_width": 32,
+      "file": "micomet-emblem.png",
+      "cell_width": 64,
       "cell_height": 32,
       "columns": 6,
       "rows": 2,
       "anchor": [
-        16,
+        32,
         28
       ],
       "states": {
