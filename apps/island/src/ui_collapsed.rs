@@ -30,8 +30,7 @@ pub fn draw(p: &mut Painter, face: &Face, r: Rect, k: f32, s: &Scene) -> Result<
             for i in 0..24 {
                 let angle = i as f32 * std::f32::consts::TAU / 24.0 - std::f32::consts::FRAC_PI_2;
                 let level = sound_bar_scale(i % 5, s.t + i as f64 * 0.07);
-                // the longest bars reach the island edge (radius 20), so no black band shows beyond them
-                let (r0, r1) = (15.5, 15.5 + 4.5 * level);
+                let (r0, r1) = (15.5, 15.5 + 1.0 + 3.0 * level);
                 let (sx, sy) = (angle.cos(), angle.sin());
                 p.line_round(cx + sx * r0, cy + sy * r0, cx + sx * r1, cy + sy * r1, Color::white(0.85).fade(k), 1.5);
             }
