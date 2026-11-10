@@ -3,3 +3,6 @@
 
 # Rust
 /target/
+
+# Local notes, plans and specs
+/docs/
