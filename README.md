@@ -1,6 +1,6 @@
 # island
 
-A Dynamic Island for Windows, for working with coding agents in WSL. A small pill at the top of the main monitor tells you when an agent in herdr needs you, and one click takes you to its pane. It also shows what's playing (art, title, seekbar, controls). Native Rust (Win32, Direct2D, DirectComposition). It uses no CPU while idle and stays under 20 MB.
+A Dynamic Island for Windows, for working with coding agents in WSL. Collapsed, it is a small dot: orange pulse when blocked, green when done, white spinner when working, dim white when idle. A white ring shows media, with an orbiting arc while playing. Click to jump to an agent that needs you, or expand for the agents list and media controls. Native Rust (Win32, Direct2D, DirectComposition). It uses no CPU while idle and stays under 20 MB.
 
 A 64×64 pixel-art pet sits beside the island, on its left, whenever the island is shown. Her pose follows the agents' status in priority order: blocked > done > working > idle. She sleeps when no agents are reported.
 
@@ -12,7 +12,7 @@ From WSL, with Rust and [`cargo-xwin`](https://github.com/rust-cross/cargo-xwin)
 scripts/install.sh
 ```
 
-This builds both programs, installs the bridge to `~/.local/bin/island-bridge` and `island.exe` to `%LOCALAPPDATA%\island\`, then starts the island (stopping any copy already running). Run it again to update. Drag the pill anywhere on the main monitor (in Attached mode, along the top edge); the spot is saved. It opens away from the edges it sits at, so at the bottom it opens upward. The tray icon (a white dot) has Hide/Show, Pill/Attached, Reset position, Start with Windows and Quit.
+This builds both programs, installs the bridge to `~/.local/bin/island-bridge` and `island.exe` to `%LOCALAPPDATA%\island\`, then starts the island (stopping any copy already running). Run it again to update. Drag the dot anywhere on the main monitor (in Attached mode, along the top edge); the spot is saved. It opens away from the edges it sits at, so at the bottom it opens upward. The tray icon (a white dot) has Hide/Show, Pill/Attached, Reset position, Start with Windows and Quit.
 
 ## Config
 
@@ -38,7 +38,7 @@ Logs go to `%LOCALAPPDATA%\island\island.log`. Pass `--debug` for more detail, o
 
 **Media.** The island follows Windows' current media session (SMTC), so any player that publishes there works: Spotify, browsers and the like. Controls and seeking go back through the same session.
 
-**Fullscreen.** When the foreground window covers the whole main monitor (a video, a game), the island hides. The one exception is a blocked agent: its pill still shows.
+**Fullscreen.** When the foreground window covers the whole main monitor (a video, a game), the island hides. The one exception is a blocked agent: its dot still shows.
 
 ## Develop
 
