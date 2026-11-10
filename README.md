@@ -1,6 +1,6 @@
 # island
 
-A Dynamic Island for Windows, for working with coding agents in WSL. Collapsed, it is a small dot: orange pulse when blocked, green when done, white spinner when working, dim white when idle. A white ring shows media, with white bars pulsing round it while playing. Click to jump to an agent that needs you, or expand for the agents list and media controls. Native Rust (Win32, Direct2D, DirectComposition). It uses no CPU while idle and stays under 20 MB.
+A Dynamic Island for Windows, for working with coding agents in WSL. Collapsed, it is a small dot: orange pulse when blocked, green when done, white spinner when working, dim white when idle. A white ring shows media, with an orbiting arc while playing. Click to jump to an agent that needs you, or expand for the agents list and media controls. Native Rust (Win32, Direct2D, DirectComposition). It uses no CPU while idle and stays under 20 MB.
 
 A 64×64 pixel-art pet sits beside the island, on its left, whenever the island is shown. Her pose follows the agents' status in priority order: blocked > done > working > idle. She sleeps when no agents are reported.
 
