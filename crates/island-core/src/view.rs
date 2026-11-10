@@ -272,19 +272,21 @@ pub fn clock_label(secs: f64) -> String {
 
 /// Expanded-island layout, relative to the expanded island's top-left (DIPs).
 pub mod layout {
-    use crate::Rect;
+    use crate::{Point, Rect};
 
     pub const PAD_Y: f32 = 14.0;
     pub const PAD_X: f32 = 16.0;
     pub const TAB_AGENTS: Rect = Rect { x: 232.0, y: 10.0, w: 60.0, h: 24.0 };
     pub const TAB_MEDIA: Rect = Rect { x: 296.0, y: 10.0, w: 54.0, h: 24.0 };
     pub const MAX_ROWS: usize = 4;
-    pub const ROW_X: f32 = 8.0;
+    pub const ROW_X: f32 = 88.0;
     pub const ROW_Y: f32 = 44.0;
     pub const ROW_STEP: f32 = 34.0;
-    pub const ROW_W: f32 = 344.0;
+    pub const ROW_W: f32 = 264.0;
     pub const ROW_H: f32 = 32.0;
     pub const ROW_RADIUS: f32 = 10.0;
+    pub const PET_AGENTS: Point = Point { x: 16.0, y: 79.0 };
+    pub const PET_MEDIA: Point = Point { x: 276.0, y: 130.0 };
     pub const ART: Rect = Rect { x: 16.0, y: 16.0, w: 70.0, h: 70.0 };
     pub const TITLE: Rect = Rect { x: 98.0, y: 34.0, w: 200.0, h: 18.0 };
     pub const ARTIST: Rect = Rect { x: 98.0, y: 54.0, w: 246.0, h: 16.0 };
@@ -485,6 +487,26 @@ mod tests {
         assert!(hit_rounded(r, [0.0, 0.0, 20.0, 20.0], Point { x: 1.0, y: 1.0 }));
         assert!(!hit_rounded(r, [0.0, 0.0, 20.0, 20.0], Point { x: 1.0, y: 39.0 }));
         assert!(!hit_rounded(r, [20.0; 4], Point { x: 170.0, y: 20.0 }));
+    }
+
+    #[test]
+    fn rows_clear_the_pet_column() {
+        let pet_right = layout::PET_AGENTS.x + 64.0;
+        for i in 0..layout::MAX_ROWS {
+            let r = layout::row(i);
+            assert!(r.x >= pet_right + 8.0);
+            assert!(r.x + r.w <= EXPANDED.w - 8.0);
+        }
+        assert!(layout::PET_AGENTS.y >= layout::ROW_Y);
+        assert!(layout::PET_AGENTS.y + 64.0 <= layout::row(layout::MAX_ROWS - 1).y + layout::ROW_H);
+    }
+
+    #[test]
+    fn the_media_pet_clears_the_buttons_and_fits() {
+        let (nx, _, nr) = layout::NEXT;
+        assert!(layout::PET_MEDIA.x >= nx + nr);
+        assert!(layout::PET_MEDIA.y >= layout::TIMES.y + layout::TIMES.h);
+        assert!(layout::PET_MEDIA.x + 64.0 <= EXPANDED.w && layout::PET_MEDIA.y + 64.0 <= EXPANDED.h);
     }
 
     #[test]

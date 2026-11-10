@@ -1,6 +1,6 @@
 //! Pet state selection and atlas animation timing, independent of rendering.
 
-use crate::{Rect, agents::AgentTable, herdr::AgentStatus};
+use crate::{Point, Rect, agents::AgentTable, herdr::AgentStatus};
 use serde::Deserialize;
 use std::collections::BTreeMap;
 
@@ -150,6 +150,18 @@ impl Atlas {
     }
 }
 
+/// Keep the cell's 1× anchor position while snapping integer-scaled pixels to the physical grid.
+pub fn sprite_dest(at: Point, atlas: &Atlas, scale: f32) -> Rect {
+    let n = scale.floor().max(1.0);
+    let (ax, ay) = (atlas.anchor.0 as f32, atlas.anchor.1 as f32);
+    Rect {
+        x: ((at.x + ax) * scale - ax * n).round() / scale,
+        y: ((at.y + ay) * scale - ay * n).round() / scale,
+        w: atlas.cell_w as f32 * n / scale,
+        h: atlas.cell_h as f32 * n / scale,
+    }
+}
+
 impl Clip {
     fn frame(&self, elapsed_ms: u32) -> Option<(usize, u32)> {
         let mut elapsed = if self.looping {
@@ -223,6 +235,24 @@ mod tests {
 
     fn sheet() -> Sheet {
         Sheet::parse(JSON).unwrap()
+    }
+
+    fn assert_near(got: f32, want: f32) {
+        assert!((got - want).abs() < 1e-4, "{got} != {want}");
+    }
+
+    #[test]
+    fn sprites_land_on_their_anchor_at_any_scale() {
+        for scale in [1.0, 1.25, 1.5, 2.0] {
+            let r = sprite_dest(Point { x: 10.3, y: 4.0 }, &sheet().emblem, scale);
+            let n = scale.floor().max(1.0);
+            assert_near(r.w * scale, 32.0 * n);
+            assert_near(r.h * scale, 32.0 * n);
+            assert_near((r.x * scale).fract().min(1.0 - (r.x * scale).fract()), 0.0);
+            assert_near((r.y * scale).fract().min(1.0 - (r.y * scale).fract()), 0.0);
+            assert!(((r.x + 16.0 * n / scale) - (10.3 + 16.0)).abs() * scale <= 0.5);
+            assert!(((r.y + 28.0 * n / scale) - (4.0 + 28.0)).abs() * scale <= 0.5);
+        }
     }
 
     #[test]
