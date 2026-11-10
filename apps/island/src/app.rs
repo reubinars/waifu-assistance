@@ -829,7 +829,7 @@ impl App {
                 since: time_in_state(now.saturating_duration_since(a.since)),
             })
             .collect();
-        let collapsed = Scene { t, playing: self.clock.is_playing(), accent: self.accent().unwrap_or(Color::white(1.0)) };
+        let collapsed = Scene { t, playing: self.clock.is_playing(), accent: arc_accent(self.art.as_ref().and_then(|a| a.accent)) };
         let expanded = ui_expanded::Scene {
             t,
             scroll: self.scroll_fade.value_at(t).min(max_scroll(rows.len()) as f32),
@@ -968,6 +968,14 @@ fn draw_backdrop(p: &mut Painter, b: &Backdrop) -> Result<()> {
     }
     p.fill(&shape, Color::BLACK);
     Ok(())
+}
+
+/// The collapsed arc's colour: the album-art tint brightened for the black dot, else white.
+fn arc_accent(accent: Option<[u8; 3]>) -> Color {
+    accent.map_or(Color::white(1.0), |c| {
+        let [r, g, b] = island_core::color::brighten(c);
+        Color::rgba(r, g, b, 1.0)
+    })
 }
 
 /// The errors after which the device must be rebuilt (and rebuilding helps).
