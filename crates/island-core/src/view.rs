@@ -28,11 +28,16 @@ pub enum Tab {
     Media,
 }
 
-/// The fixed transparent window the island is drawn in (DIPs).
-pub const WINDOW: Size = Size { w: 420.0, h: 260.0 };
 pub const EXPANDED: Size = Size { w: 360.0, h: 200.0 };
+/// Room around the island inside its window for the shadow and glow to fade out in, so the
+/// window's edge never cuts them off. Where the island sits at a screen edge, this room hangs
+/// past that edge (off screen, or over the taskbar strip; the window is click-through).
+const SHADOW_ROOM: f32 = 50.0;
+/// The fixed transparent window the island is drawn in (DIPs): the expanded island plus that room.
+pub const WINDOW: Size = Size { w: EXPANDED.w + 2.0 * SHADOW_ROOM, h: EXPANDED.h + 2.0 * SHADOW_ROOM };
 const COLLAPSED_H: f32 = 40.0;
-const PILL_TOP: f32 = 4.0;
+/// How far the pill keeps off the edges of the screen (the work area).
+const PILL_MARGIN: f32 = 4.0;
 
 fn label(a: &Agent, verb: &str, others: usize) -> String {
     let mut s = format!("{} {verb}", a.display_name());
@@ -105,13 +110,43 @@ pub fn tabs_visible(agents: &AgentTable, media_present: bool) -> bool {
     !agents.is_empty() && media_present
 }
 
-/// The island's rect inside the window, in DIPs.
-pub fn island_rect(mode: DisplayMode, size: Size) -> Rect {
-    let y = match mode {
-        DisplayMode::Pill => PILL_TOP,
+/// Where the island sits on the main monitor. Each axis runs from 0 (left / top edge) through 0.5
+/// (centre) to 1 (right / bottom edge), and the island grows away from the edges in the same
+/// proportion: at the top it grows down, at the bottom up, in the middle both ways.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Spot {
+    pub x: f32,
+    pub y: f32,
+}
+
+impl Spot {
+    pub const TOP_CENTRE: Spot = Spot { x: 0.5, y: 0.0 };
+
+    /// Clamped to 0..=1; NaN centres `x` and puts `y` at the top. Attached is a notch, so it is
+    /// always on the top edge.
+    pub fn new(mode: DisplayMode, x: f32, y: f32) -> Spot {
+        let clamp = |v: f32, nan: f32| if v.is_nan() { nan } else { v.clamp(0.0, 1.0) };
+        let y = match mode {
+            DisplayMode::Pill => clamp(y, 0.0),
+            DisplayMode::Attached => 0.0,
+        };
+        Spot { x: clamp(x, 0.5), y }
+    }
+}
+
+fn margin(mode: DisplayMode) -> f32 {
+    match mode {
+        DisplayMode::Pill => PILL_MARGIN,
         DisplayMode::Attached => 0.0,
-    };
-    Rect { x: (WINDOW.w - size.w) / 2.0, y, w: size.w, h: size.h }
+    }
+}
+
+/// The island's rect inside the window, in DIPs: anywhere inside the shadow room, by `spot`.
+pub fn island_rect(spot: Spot, size: Size) -> Rect {
+    let r = SHADOW_ROOM;
+    let x = r + (WINDOW.w - 2.0 * r - size.w) * spot.x;
+    let y = r + (WINDOW.h - 2.0 * r - size.h) * spot.y;
+    Rect { x, y, w: size.w, h: size.h }
 }
 
 /// [top-left, top-right, bottom-right, bottom-left].
@@ -122,37 +157,47 @@ pub fn corner_radii(mode: DisplayMode, radius: f32) -> [f32; 4] {
     }
 }
 
-/// The span the window slides along: the work area (pill) or the whole monitor (attached).
-fn top_area(mode: DisplayMode, work_area: Rect, bounds: Rect) -> Rect {
+/// Where the window may go: the work area (pill) or the whole monitor (attached).
+fn area(mode: DisplayMode, work_area: Rect, bounds: Rect) -> Rect {
     match mode {
         DisplayMode::Pill => work_area,
         DisplayMode::Attached => bounds,
     }
 }
 
-/// The window's top-left in physical pixels, at the top of the work area (pill) or of the whole
-/// monitor (attached). `position` runs from 0 (left edge) through 0.5 (centred) to 1 (right edge);
-/// out of range it is clamped, and NaN, or a monitor narrower than the window, centres it.
-pub fn window_origin(mode: DisplayMode, work_area: Rect, bounds: Rect, scale: f32, position: f32) -> Point {
-    let area = top_area(mode, work_area, bounds);
-    let room = area.w - WINDOW.w * scale;
-    let p = if room > 0.0 && !position.is_nan() { position.clamp(0.0, 1.0) } else { 0.5 };
-    Point { x: area.x + (room * p).round(), y: area.y }
+/// The window's top-left in physical pixels. It moves across the work area (pill) or the whole
+/// monitor (attached), grown by the shadow room less the margin, so that at an edge the island
+/// is `margin` from it and the room hangs past it. A monitor narrower or shorter than the window
+/// centres it on that axis.
+pub fn window_origin(mode: DisplayMode, work_area: Rect, bounds: Rect, scale: f32, spot: Spot) -> Point {
+    let a = area(mode, work_area, bounds);
+    let hang = (SHADOW_ROOM - margin(mode)) * scale;
+    let along = |start: f32, len: f32, win: f32, p: f32| {
+        let room = len + 2.0 * hang - win * scale;
+        start - hang + (room * if room > 0.0 { p } else { 0.5 }).round()
+    };
+    Point { x: along(a.x, a.w, WINDOW.w, spot.x), y: along(a.y, a.h, WINDOW.h, spot.y) }
 }
 
-/// The `position` that puts the window's left edge at `x` (physical pixels), clamped to 0..=1.
-pub fn window_position(mode: DisplayMode, work_area: Rect, bounds: Rect, scale: f32, x: f32) -> f32 {
-    let area = top_area(mode, work_area, bounds);
-    let room = area.w - WINDOW.w * scale;
-    if room > 0.0 { ((x - area.x) / room).clamp(0.0, 1.0) } else { 0.5 }
+/// The spot that puts an island of `size` (DIPs) with its top-left at `(x, y)` (physical
+/// pixels); past an edge it stays at that edge. The inverse of `window_origin` + `island_rect`.
+pub fn spot_at(mode: DisplayMode, work_area: Rect, bounds: Rect, scale: f32, size: Size, x: f32, y: f32) -> Spot {
+    let a = area(mode, work_area, bounds);
+    let m = margin(mode) * scale;
+    // the island's left edge runs from `start + m` to `start + len - m - size`
+    let along = |start: f32, len: f32, size: f32, pos: f32| {
+        let span = len - 2.0 * m - size * scale;
+        if span > 0.0 { (pos - start - m) / span } else { 0.5 }
+    };
+    Spot::new(mode, along(a.x, a.w, size.w, x), along(a.y, a.h, size.h, y))
 }
 
-/// A press on the collapsed island becomes a drag once the pointer has moved this far sideways.
+/// A press on the collapsed island becomes a drag once the pointer has moved this far.
 const DRAG_START: f32 = 4.0;
 
-/// Whether a sideways move of `dx` physical pixels is a drag rather than a click.
-pub fn is_drag(dx: i32, scale: f32) -> bool {
-    dx.abs() as f32 / scale > DRAG_START
+/// Whether a move of `(dx, dy)` physical pixels is a drag rather than a click.
+pub fn is_drag(dx: i32, dy: i32, scale: f32) -> bool {
+    (dx as f32).hypot(dy as f32) / scale > DRAG_START
 }
 
 /// Whether `p` lies inside `rect` with the given corner radii.
@@ -374,23 +419,61 @@ mod tests {
         assert!(tabs_visible(&t, true));
     }
 
+    const TOP: Spot = Spot::TOP_CENTRE;
+
     #[test]
     fn placement() {
-        assert_eq!(island_rect(DisplayMode::Pill, Size { w: 160.0, h: 40.0 }), rect(130.0, 4.0, 160.0, 40.0));
-        assert_eq!(island_rect(DisplayMode::Attached, EXPANDED).y, 0.0);
-        assert_eq!(corner_radii(DisplayMode::Attached, 20.0), [0.0, 0.0, 20.0, 20.0]);
-        assert_eq!(corner_radii(DisplayMode::Pill, 20.0), [20.0; 4]);
+        let pill = Size { w: 160.0, h: 40.0 };
         let wa = rect(0.0, 0.0, 1920.0, 1040.0);
         let b = rect(0.0, 0.0, 1920.0, 1080.0);
-        assert_eq!(window_origin(DisplayMode::Pill, wa, b, 1.0, 0.5), Point { x: 750.0, y: 0.0 });
+        assert_eq!(island_on_screen(DisplayMode::Pill, wa, b, 1.0, pill, TOP), Point { x: 880.0, y: 4.0 });
+        // attached hangs from the very top of the monitor
+        assert_eq!(island_on_screen(DisplayMode::Attached, wa, b, 1.0, EXPANDED, TOP), Point { x: 780.0, y: 0.0 });
+        assert_eq!(corner_radii(DisplayMode::Attached, 20.0), [0.0, 0.0, 20.0, 20.0]);
+        assert_eq!(corner_radii(DisplayMode::Pill, 20.0), [20.0; 4]);
         let wa15 = rect(0.0, 0.0, 2880.0, 1680.0);
-        assert_eq!(window_origin(DisplayMode::Pill, wa15, wa15, 1.5, 0.5), Point { x: 1125.0, y: 0.0 });
+        assert_eq!(island_on_screen(DisplayMode::Pill, wa15, wa15, 1.5, pill, TOP), Point { x: 1320.0, y: 6.0 });
         let top_taskbar = rect(0.0, 48.0, 1920.0, 1032.0);
-        assert_eq!(window_origin(DisplayMode::Pill, top_taskbar, b, 1.0, 0.5).y, 48.0);
-        assert_eq!(window_origin(DisplayMode::Attached, top_taskbar, b, 1.0, 0.5).y, 0.0);
+        assert_eq!(island_on_screen(DisplayMode::Pill, top_taskbar, b, 1.0, pill, TOP).y, 52.0);
+        assert_eq!(island_on_screen(DisplayMode::Attached, top_taskbar, b, 1.0, pill, TOP).y, 0.0);
         // second monitor to the left of the primary
         let left = rect(-1920.0, 0.0, 1920.0, 1080.0);
-        assert_eq!(window_origin(DisplayMode::Pill, left, left, 1.0, 0.5).x, -1170.0);
+        assert_eq!(island_on_screen(DisplayMode::Pill, left, left, 1.0, pill, TOP).x, -1040.0);
+    }
+
+    #[test]
+    fn the_island_grows_away_from_the_edges_it_sits_at() {
+        let wa = rect(0.0, 0.0, 1920.0, 1040.0);
+        let on_screen = |spot, size| island_on_screen(DisplayMode::Pill, wa, wa, 1.0, size, spot);
+        let pill = Size { w: 40.0, h: 40.0 };
+        // bottom-left: 4 in from the left, 4 above the bottom; expanded keeps that corner
+        let bottom_left = Spot { x: 0.0, y: 1.0 };
+        assert_eq!(on_screen(bottom_left, pill), Point { x: 4.0, y: 996.0 });
+        assert_eq!(on_screen(bottom_left, EXPANDED), Point { x: 4.0, y: 836.0 });
+        let top_right = Spot { x: 1.0, y: 0.0 };
+        assert_eq!(on_screen(top_right, EXPANDED), Point { x: 1556.0, y: 4.0 });
+        // in the middle it grows both ways from the same centre
+        let middle = Spot { x: 0.5, y: 0.5 };
+        assert_eq!(on_screen(middle, pill), Point { x: 940.0, y: 500.0 });
+        assert_eq!(on_screen(middle, EXPANDED), Point { x: 780.0, y: 420.0 });
+    }
+
+    #[test]
+    fn the_shadow_has_room_on_every_side() {
+        let ok = |r: Rect| r.x >= 50.0 && r.y >= 50.0 && r.x + r.w <= WINDOW.w - 50.0 && r.y + r.h <= WINDOW.h - 50.0;
+        let pill = Size { w: 40.0, h: 40.0 };
+        for spot in [TOP, Spot { x: 0.0, y: 1.0 }, Spot { x: 1.0, y: 0.0 }, Spot { x: 0.5, y: 0.5 }] {
+            assert!(ok(island_rect(spot, pill)), "{spot:?}");
+            assert!(ok(island_rect(spot, EXPANDED)), "{spot:?}");
+        }
+    }
+
+    #[test]
+    fn spots_are_clamped_and_attached_stays_on_top() {
+        assert_eq!(Spot::new(DisplayMode::Pill, 7.0, -1.0), Spot { x: 1.0, y: 0.0 });
+        assert_eq!(Spot::new(DisplayMode::Pill, f32::NAN, f32::NAN), TOP);
+        assert_eq!(Spot::new(DisplayMode::Pill, 0.0, 1.0), Spot { x: 0.0, y: 1.0 });
+        assert_eq!(Spot::new(DisplayMode::Attached, 0.0, 1.0), Spot { x: 0.0, y: 0.0 });
     }
 
     #[test]
@@ -500,42 +583,61 @@ mod tests {
         assert_eq!(centred_status(pill, 10.0, 14.0, 8.0, 300.0), (110.0, 132.0, 118.0));
     }
 
-    #[test]
-    fn position_slides_the_window_along_the_top() {
-        let wa = rect(0.0, 0.0, 1920.0, 1040.0);
-        let b = rect(0.0, 0.0, 1920.0, 1080.0);
-        // the window is 420 wide, so its left edge goes from 0 to 1500
-        assert_eq!(window_origin(DisplayMode::Pill, wa, b, 1.0, 0.0), Point { x: 0.0, y: 0.0 });
-        assert_eq!(window_origin(DisplayMode::Pill, wa, b, 1.0, 1.0), Point { x: 1500.0, y: 0.0 });
-        assert_eq!(window_origin(DisplayMode::Pill, wa, b, 1.0, 0.2), Point { x: 300.0, y: 0.0 });
-        // a hand-edited config can't push it off screen
-        assert_eq!(window_origin(DisplayMode::Pill, wa, b, 1.0, 7.0).x, 1500.0);
-        assert_eq!(window_origin(DisplayMode::Pill, wa, b, 1.0, -1.0).x, 0.0);
-        assert_eq!(window_origin(DisplayMode::Pill, wa, b, 1.0, f32::NAN).x, 750.0);
+    /// The island's top-left on screen (physical pixels) at `spot`.
+    fn island_on_screen(mode: DisplayMode, wa: Rect, b: Rect, scale: f32, size: Size, spot: Spot) -> Point {
+        let o = window_origin(mode, wa, b, scale, spot);
+        let r = island_rect(spot, size);
+        Point { x: o.x + r.x * scale, y: o.y + r.y * scale }
     }
 
     #[test]
-    fn window_position_inverts_window_origin() {
-        let left = rect(-1920.0, 0.0, 1920.0, 1080.0);
-        assert_eq!(window_position(DisplayMode::Pill, left, left, 1.0, -1620.0), 0.2);
-        // dragged past an edge
-        assert_eq!(window_position(DisplayMode::Pill, left, left, 1.0, 50.0), 1.0);
-        assert_eq!(window_position(DisplayMode::Pill, left, left, 1.0, -5000.0), 0.0);
-        // attached measures against the whole monitor, like window_origin
-        let wa = rect(100.0, 0.0, 1820.0, 1080.0);
+    fn spot_at_inverts_the_placement() {
+        let wa = rect(0.0, 0.0, 1920.0, 1040.0);
         let b = rect(0.0, 0.0, 1920.0, 1080.0);
-        assert_eq!(window_position(DisplayMode::Attached, wa, b, 1.0, 750.0), 0.5);
-        // a monitor narrower than the window: the window stays centred
-        let tiny = rect(0.0, 0.0, 300.0, 600.0);
-        assert_eq!(window_position(DisplayMode::Pill, tiny, tiny, 1.0, 0.0), 0.5);
+        let size = Size { w: 160.0, h: 40.0 };
+        for (mode, spot) in [
+            (DisplayMode::Pill, Spot { x: 0.2, y: 0.75 }),
+            (DisplayMode::Pill, Spot { x: 0.0, y: 1.0 }),
+            (DisplayMode::Pill, Spot { x: 1.0, y: 0.0 }),
+            (DisplayMode::Attached, Spot { x: 0.5, y: 0.0 }),
+        ] {
+            let p = island_on_screen(mode, wa, b, 1.0, size, spot);
+            assert_near(spot_at(mode, wa, b, 1.0, size, p.x, p.y), spot);
+        }
+        // at 150 % on a second monitor to the left
+        let left = rect(-2880.0, 0.0, 2880.0, 1620.0);
+        let spot = Spot { x: 0.25, y: 0.5 };
+        let p = island_on_screen(DisplayMode::Pill, left, left, 1.5, size, spot);
+        assert_near(spot_at(DisplayMode::Pill, left, left, 1.5, size, p.x, p.y), spot);
+    }
+
+    /// Equal up to the window snapping to whole pixels (under 1 px of ~1800).
+    fn assert_near(got: Spot, want: Spot) {
+        assert!((got.x - want.x).abs() < 1e-3 && (got.y - want.y).abs() < 1e-3, "{got:?} != {want:?}");
+    }
+
+    #[test]
+    fn dragged_past_an_edge_it_stays_at_that_edge() {
+        let wa = rect(0.0, 0.0, 1920.0, 1040.0);
+        let size = Size { w: 160.0, h: 40.0 };
+        assert_eq!(spot_at(DisplayMode::Pill, wa, wa, 1.0, size, -500.0, 5000.0), Spot { x: 0.0, y: 1.0 });
+        assert_eq!(spot_at(DisplayMode::Pill, wa, wa, 1.0, size, 5000.0, -500.0), Spot { x: 1.0, y: 0.0 });
+        // attached ignores the vertical move
+        assert_eq!(spot_at(DisplayMode::Attached, wa, wa, 1.0, size, 880.0, 700.0), Spot { x: 0.5, y: 0.0 });
+        // a monitor narrower than the island: centred
+        let tiny = rect(0.0, 0.0, 100.0, 600.0);
+        assert_eq!(spot_at(DisplayMode::Pill, tiny, tiny, 1.0, size, 0.0, 0.0).x, 0.5);
     }
 
     #[test]
     fn a_drag_starts_past_four_dips() {
-        assert!(!is_drag(4, 1.0));
-        assert!(is_drag(5, 1.0));
-        assert!(is_drag(-5, 1.0));
-        assert!(!is_drag(6, 1.5));
-        assert!(is_drag(7, 1.5));
+        assert!(!is_drag(4, 0, 1.0));
+        assert!(is_drag(5, 0, 1.0));
+        assert!(is_drag(-5, 0, 1.0));
+        assert!(is_drag(0, -5, 1.0));
+        assert!(!is_drag(2, 3, 1.0));
+        assert!(is_drag(3, 3, 1.0));
+        assert!(!is_drag(6, 0, 1.5));
+        assert!(is_drag(7, 0, 1.5));
     }
 }

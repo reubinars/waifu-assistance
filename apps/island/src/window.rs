@@ -7,11 +7,12 @@ use crate::fullscreen::WM_APP_FULLSCREEN;
 use crate::log;
 use crate::tray::WM_APP_TRAY;
 use std::sync::atomic::{AtomicU32, Ordering};
-use windows::Win32::UI::Shell::NIN_SELECT;
+use island_core::platform::{Edge, clear_of_taskbar};
+use windows::Win32::UI::Shell::{ABM_GETSTATE, ABM_GETTASKBARPOS, ABS_AUTOHIDE, APPBARDATA, NIN_SELECT, SHAppBarMessage};
 use windows::Win32::UI::WindowsAndMessaging::{
     HWND_TOPMOST, RegisterWindowMessageW, SW_HIDE, SWP_NOMOVE, SWP_NOSIZE, WM_CONTEXTMENU,
 };
-use island_core::view::{DisplayMode, WINDOW, window_origin};
+use island_core::view::{DisplayMode, Spot, WINDOW, window_origin};
 use island_core::{Point, Rect};
 use std::cell::RefCell;
 use std::collections::VecDeque;
@@ -186,17 +187,42 @@ extern "system" fn input_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> L
     }
 }
 
-/// The primary monitor's work area and bounds (physical pixels) and its scale (DPI / 96).
+fn rect(r: RECT) -> Rect {
+    Rect { x: r.left as f32, y: r.top as f32, w: (r.right - r.left) as f32, h: (r.bottom - r.top) as f32 }
+}
+
+/// The primary monitor's work area and bounds (physical pixels) and its scale (DPI / 96). The
+/// work area leaves out an auto-hiding taskbar's strip too.
 pub fn primary_monitor() -> (Rect, Rect, f32) {
-    let r = |r: RECT| Rect { x: r.left as f32, y: r.top as f32, w: (r.right - r.left) as f32, h: (r.bottom - r.top) as f32 };
     unsafe {
         let mon = MonitorFromPoint(POINT { x: 0, y: 0 }, MONITOR_DEFAULTTOPRIMARY);
         let mut info = MONITORINFO { cbSize: size_of::<MONITORINFO>() as u32, ..Default::default() };
         let _ = GetMonitorInfoW(mon, &mut info);
         let (mut dx, mut dy) = (96u32, 96u32);
         let _ = GetDpiForMonitor(mon, MDT_EFFECTIVE_DPI, &mut dx, &mut dy);
-        (r(info.rcWork), r(info.rcMonitor), dx as f32 / 96.0)
+        let (work, bounds) = (rect(info.rcWork), rect(info.rcMonitor));
+        let work = match auto_hide_taskbar() {
+            Some((edge, thickness)) => clear_of_taskbar(work, bounds, edge, thickness),
+            None => work,
+        };
+        (work, bounds, dx as f32 / 96.0)
     }
+}
+
+/// The (primary-monitor) taskbar's edge and thickness when it auto-hides.
+fn auto_hide_taskbar() -> Option<(Edge, f32)> {
+    let mut abd = APPBARDATA { cbSize: size_of::<APPBARDATA>() as u32, ..Default::default() };
+    unsafe {
+        if SHAppBarMessage(ABM_GETSTATE, &mut abd) as u32 & ABS_AUTOHIDE == 0 {
+            return None;
+        }
+        if SHAppBarMessage(ABM_GETTASKBARPOS, &mut abd) == 0 {
+            return None;
+        }
+    }
+    let edge = Edge::from_abe(abd.uEdge)?;
+    let r = rect(abd.rc);
+    Some((edge, if matches!(edge, Edge::Left | Edge::Right) { r.w } else { r.h }))
 }
 
 pub struct Windows {
@@ -214,7 +240,7 @@ pub struct Windows {
     prev_foreground: Option<HWND>,
 }
 
-pub fn create(mode: DisplayMode, position: f32) -> Result<Windows> {
+pub fn create(mode: DisplayMode, spot: Spot) -> Result<Windows> {
     unsafe {
         let instance = GetModuleHandleW(None)?.into();
         let cursor = LoadCursorW(None, IDC_ARROW)?;
@@ -290,17 +316,17 @@ pub fn create(mode: DisplayMode, position: f32) -> Result<Windows> {
             placed: None,
             prev_foreground: None,
         };
-        win.place(mode, position);
+        win.place(mode, spot);
         let _ = ShowWindow(visual, SW_SHOWNOACTIVATE);
         Ok(win)
     }
 }
 
 impl Windows {
-    /// Puts the visual window at `position` along the top of the primary monitor; updates `scale`.
-    pub fn place(&mut self, mode: DisplayMode, position: f32) {
+    /// Puts the visual window at `spot` on the primary monitor; updates `scale`.
+    pub fn place(&mut self, mode: DisplayMode, spot: Spot) {
         let (work, bounds, scale) = primary_monitor();
-        let o = window_origin(mode, work, bounds, scale, position);
+        let o = window_origin(mode, work, bounds, scale, spot);
         let (w, h) = self.size_px_for(scale);
         self.origin = (o.x as i32, o.y as i32);
         self.scale = scale;

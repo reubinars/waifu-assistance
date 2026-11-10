@@ -10,7 +10,7 @@ From WSL, with Rust and [`cargo-xwin`](https://github.com/rust-cross/cargo-xwin)
 scripts/install.sh
 ```
 
-This builds both programs, installs the bridge to `~/.local/bin/island-bridge` and `island.exe` to `%LOCALAPPDATA%\island\`, then starts the island (stopping any copy already running). Run it again to update. Drag the pill left or right to move it along the top edge; the spot is saved. The tray icon (a white dot) has Hide/Show, Pill/Attached, Reset position, Start with Windows and Quit.
+This builds both programs, installs the bridge to `~/.local/bin/island-bridge` and `island.exe` to `%LOCALAPPDATA%\island\`, then starts the island (stopping any copy already running). Run it again to update. Drag the pill anywhere on the main monitor (in Attached mode, along the top edge); the spot is saved. It opens away from the edges it sits at, so at the bottom it opens upward. The tray icon (a white dot) has Hide/Show, Pill/Attached, Reset position, Start with Windows and Quit.
 
 ## Config
 
@@ -19,7 +19,8 @@ This builds both programs, installs the bridge to `~/.local/bin/island-bridge` a
 | Key | Default | |
 |---|---|---|
 | `display_mode` | `"pill"` | `"pill"` floats below the top edge; `"attached"` hangs from it |
-| `position` | `0.5` | where the island sits along the top edge: `0` far left, `0.5` centre, `1` far right; set by dragging it |
+| `position_x` | `0.5` | where the island sits across the screen: `0` far left, `0.5` centre, `1` far right; set by dragging it (older configs call it `position`) |
+| `position_y` | `0.0` | and down it: `0` top, `1` bottom, just above the taskbar; set by dragging it; Attached ignores it |
 | `start_with_windows` | `true` | kept in sync with `HKCU\…\Run\Island` at every start |
 | `wsl_distro` | `""` | distro running herdr; `""` = the default distro |
 | `bridge_path` | `"$HOME/.local/bin/island-bridge"` | bridge path inside WSL |

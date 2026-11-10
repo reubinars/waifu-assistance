@@ -1,6 +1,6 @@
 //! `%LOCALAPPDATA%\island\config.toml`.
 
-use crate::view::DisplayMode;
+use crate::view::{DisplayMode, Spot};
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -20,8 +20,12 @@ pub struct Config {
     /// Run (a URI or a program) when a jump finds no terminal window; "" = do nothing.
     #[serde(default)]
     pub terminal_launch: String,
-    /// Where the island sits along the top edge: 0 = far left, 0.5 = centre, 1 = far right.
-    pub position: f32,
+    /// Where the island sits across the main monitor: 0 = far left, 0.5 = centre, 1 = far right.
+    /// Older configs called it `position`.
+    #[serde(alias = "position")]
+    pub position_x: f32,
+    /// And down it: 0 = top, 1 = bottom (just above the taskbar). Attached ignores it.
+    pub position_y: f32,
 }
 
 impl Default for Config {
@@ -34,7 +38,8 @@ impl Default for Config {
             terminal_window_class: "CASCADIA_HOSTING_WINDOW_CLASS".into(),
             terminal_process: String::new(),
             terminal_launch: String::new(),
-            position: 0.5,
+            position_x: 0.5,
+            position_y: 0.0,
         }
     }
 }
@@ -43,6 +48,18 @@ impl Config {
     /// Missing keys take their defaults.
     pub fn parse(s: &str) -> Result<Config, toml::de::Error> {
         toml::from_str(s)
+    }
+
+    pub fn spot(&self) -> Spot {
+        Spot::new(self.display_mode, self.position_x, self.position_y)
+    }
+
+    /// Saves where the island was moved to; attached only moves sideways, so the pill keeps its height.
+    pub fn set_spot(&mut self, s: Spot) {
+        self.position_x = s.x;
+        if self.display_mode == DisplayMode::Pill {
+            self.position_y = s.y;
+        }
     }
 
     pub fn to_toml(&self) -> String {
@@ -93,10 +110,25 @@ mod tests {
     }
 
     #[test]
-    fn position_defaults_to_the_centre_and_roundtrips() {
-        assert_eq!(Config::default().position, 0.5);
-        let moved = Config::parse("position = 0.3").unwrap();
-        assert_eq!(moved.position, 0.3);
+    fn position_defaults_to_the_top_centre_and_roundtrips() {
+        assert_eq!(Config::default().spot(), Spot::TOP_CENTRE);
+        let moved = Config::parse("position_x = 0.3\nposition_y = 1.0").unwrap();
+        assert_eq!(moved.spot(), Spot { x: 0.3, y: 1.0 });
         assert_eq!(Config::parse(&moved.to_toml()).unwrap(), moved);
+    }
+
+    #[test]
+    fn an_old_top_edge_position_still_loads() {
+        let old = Config::parse("position = 0.3").unwrap();
+        assert_eq!(old.spot(), Spot { x: 0.3, y: 0.0 });
+    }
+
+    #[test]
+    fn attached_keeps_the_pills_height() {
+        let mut c = Config { display_mode: DisplayMode::Attached, position_y: 1.0, ..Config::default() };
+        assert_eq!(c.spot(), Spot { x: 0.5, y: 0.0 });
+        c.set_spot(Spot { x: 0.1, y: 0.0 });
+        c.display_mode = DisplayMode::Pill;
+        assert_eq!(c.spot(), Spot { x: 0.1, y: 1.0 });
     }
 }
