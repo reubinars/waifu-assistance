@@ -154,7 +154,7 @@ impl App {
             pet_sheet,
             pet_bmps: None,
             pet: PetClock::new(PetState::Sleep, 0.0),
-            // Suisei only shows beside the first pet.
+            // miComet only shows beside the first pet.
             pet2_sheet,
             pet2_bmps: None,
             pet2: PetClock::new(PetState::Sleep, 0.0),
@@ -199,7 +199,7 @@ impl App {
         self.config.spot()
     }
 
-    /// How many pets are shown: none without the first, else one plus Suisei if she loaded.
+    /// How many pets are shown: none without the first, else one plus miComet if it loaded.
     fn pets(&self) -> u8 {
         if self.pet_sheet.is_none() { 0 } else { 1 + u8::from(self.pet2_sheet.is_some()) }
     }

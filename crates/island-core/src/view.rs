@@ -27,12 +27,13 @@ pub enum Tab {
 
 pub const EXPANDED: Size = Size { w: 360.0, h: 200.0 };
 pub const PET: Size = Size { w: 64.0, h: 64.0 };
+pub const SECOND_PET: Size = Size { w: 128.0, h: 64.0 };
 /// Occupied part of the pet cell; its bottom four rows are transparent.
 pub const PET_BOX: Size = Size { w: 64.0, h: 60.0 };
 pub const PET_GAP: f32 = 4.0;
-/// How far the second pet's cell advances left of the first: the cells overlap by their
-/// transparent margins, so the two sprites stand close without ever touching.
-pub const PET_STEP: f32 = PET.w - 12.0;
+/// How far the second pet's cell advances left of the first: the cells overlap by 16 DIPs of
+/// transparent margin, so the two stand close; they only touch when both sleep.
+pub const PET_STEP: f32 = SECOND_PET.w - 16.0;
 /// Room around the island inside its window for the shadow and glow to fade out in, so the
 /// window's edge never cuts them off. Where the island sits at a screen edge, this room hangs
 /// past that edge (off screen, or over the taskbar strip; the window is click-through).
@@ -487,7 +488,13 @@ mod tests {
     }
 
     #[test]
-    fn suisei_sits_one_step_left_of_the_pet() {
+    fn the_second_pet_cell_matches_the_embedded_micomet_atlas() {
+        let sheet = crate::pet::Sheet::parse(include_str!("../../../apps/island/assets/pet/micomet.json")).unwrap();
+        assert_eq!(SECOND_PET, Size { w: sheet.solo.cell_w as f32, h: sheet.solo.cell_h as f32 });
+    }
+
+    #[test]
+    fn micomet_sits_one_step_left_of_the_pet() {
         for mode in [DisplayMode::Pill, DisplayMode::Attached] {
             for size in PET_SIZES {
                 for spot in PET_SPOTS {
@@ -496,7 +503,9 @@ mod tests {
                     }
                     let (one, two) = (pet_cell(mode, spot, size, 1), pet_cell(mode, spot, size, 2));
                     let s = second_pet_cell(mode, spot, size);
-                    assert_eq!(s.x + PET_STEP, two.x);
+                    assert_eq!(s.x + 112.0, two.x);
+                    // miComet's cell reaches 16 DIPs into the first pet's.
+                    assert_eq!(s.x + 128.0, two.x + 16.0);
                     assert_eq!(s.y, two.y);
                     // the first pet keeps its place relative to the island
                     assert_eq!(two.x + PET.w + PET_GAP, island_rect(mode, spot, size, 2).x);
@@ -504,8 +513,9 @@ mod tests {
                     assert_eq!(one.y, two.y);
                     let b = block_rect(spot, size, 2);
                     assert_eq!(s.x, b.x);
-                    assert!(s.y >= b.y && s.y + PET_BOX.h <= b.y + b.h);
-                    assert_eq!(b.w, block_size(size, 1).w + PET_STEP);
+                    assert!(s.x + SECOND_PET.w <= b.x + b.w);
+                    assert!(s.y >= b.y && s.y + SECOND_PET.h - 4.0 <= b.y + b.h);
+                    assert_eq!(b.w, block_size(size, 1).w + 112.0);
                 }
             }
         }
@@ -557,7 +567,7 @@ mod tests {
 
     #[test]
     fn the_block_fits_the_shadow_room() {
-        assert_eq!(WINDOW, Size { w: 580.0, h: 300.0 });
+        assert_eq!(WINDOW, Size { w: 640.0, h: 300.0 });
         for size in PET_SIZES {
             for spot in PET_SPOTS {
                 for pet in [0, 1, 2] {

@@ -402,7 +402,7 @@ mod tests {
         assert_eq!(clock.ms(2.0), 0);
     }
 
-    const SUISEI: &str = include_str!("../../../apps/island/assets/pet/suisei.json");
+    const MICOMET: &str = include_str!("../../../apps/island/assets/pet/micomet.json");
 
     fn table(statuses: &[AgentStatus]) -> AgentTable {
         let mut agents = AgentTable::default();
@@ -414,7 +414,7 @@ mod tests {
     }
 
     #[test]
-    fn suisei_follows_her_table() {
+    fn micomet_follows_its_table() {
         use AgentStatus::{Blocked as B, Done as D, Idle as I, Working as W};
         for (statuses, media, want) in [
             (vec![B, B], true, Blocked),
@@ -439,10 +439,10 @@ mod tests {
     }
 
     #[test]
-    fn the_shipped_suisei_sheet_matches_its_atlases() {
-        let s = Sheet::parse(SUISEI).unwrap();
-        assert_eq!((s.solo.cell_w * s.solo.columns, s.solo.cell_h * s.solo.rows), (384, 256));
-        assert_eq!(s.solo.anchor, (32, 60));
+    fn the_shipped_micomet_sheet_matches_its_atlases() {
+        let s = Sheet::parse(MICOMET).unwrap();
+        assert_eq!((s.solo.cell_w * s.solo.columns, s.solo.cell_h * s.solo.rows), (768, 256));
+        assert_eq!(s.solo.anchor, (64, 60));
         assert_eq!(s.solo.cell(Sing, 0), (5, 0));
         assert_eq!(s.solo.cell(Sing, 320), (5, 1));
         assert_eq!(s.solo.next_change(Sing, 100), Some(220));
@@ -457,10 +457,10 @@ mod tests {
 
     #[test]
     fn a_bad_sing_clip_is_rejected() {
-        let mut bad: serde_json::Value = serde_json::from_str(SUISEI).unwrap();
+        let mut bad: serde_json::Value = serde_json::from_str(MICOMET).unwrap();
         bad["atlases"]["solo"]["states"]["sing"]["frames"] = serde_json::json!([]);
         assert!(Sheet::parse(&bad.to_string()).is_err());
-        let mut bad: serde_json::Value = serde_json::from_str(SUISEI).unwrap();
+        let mut bad: serde_json::Value = serde_json::from_str(MICOMET).unwrap();
         bad["atlases"]["emblem"]["states"]["sing"]["column"] = 6.into();
         assert!(Sheet::parse(&bad.to_string()).is_err());
     }

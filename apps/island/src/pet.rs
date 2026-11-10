@@ -17,8 +17,8 @@ use windows::core::{Error, Result};
 
 const SOLO: &[u8] = include_bytes!("../assets/pet/pet-solo.png");
 const JSON: &str = include_str!("../assets/pet/pet.json");
-const SUISEI_SOLO: &[u8] = include_bytes!("../assets/pet/suisei-solo.png");
-const SUISEI_JSON: &str = include_str!("../assets/pet/suisei.json");
+const MICOMET_SOLO: &[u8] = include_bytes!("../assets/pet/micomet-solo.png");
+const MICOMET_JSON: &str = include_str!("../assets/pet/micomet.json");
 
 struct Image {
     bgra: Vec<u8>,
@@ -71,9 +71,9 @@ pub fn load() -> Option<(Sheet, PetImages)> {
     load_sheet("pet", JSON, SOLO)
 }
 
-/// Suisei, decoded independently of the first pet.
+/// miComet, decoded independently of the first pet.
 pub fn load_second() -> Option<(Sheet, PetImages)> {
-    load_sheet("second pet", SUISEI_JSON, SUISEI_SOLO)
+    load_sheet("second pet", MICOMET_JSON, MICOMET_SOLO)
 }
 
 fn load_sheet(name: &str, json: &str, solo: &[u8]) -> Option<(Sheet, PetImages)> {
