@@ -4,7 +4,7 @@ A Dynamic Island for Windows, for working with coding agents in WSL. Collapsed, 
 
 A 64×64 pixel-art pet sits beside the island, on its left, whenever the island is shown. Her pose follows the agents' status in priority order: blocked > done > working > idle. She sleeps when no agents are reported.
 
-The agents list scrolls with the mouse wheel when it is longer than four rows.
+The island always opens on Agents; the Media tab appears while media is around. The agents list scrolls with the mouse wheel when it is longer than four rows.
 
 ## Install
 
