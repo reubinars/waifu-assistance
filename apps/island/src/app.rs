@@ -31,7 +31,7 @@ use windows::Win32::Graphics::Direct2D::ID2D1Bitmap1;
 use windows::Win32::UI::WindowsAndMessaging::{GetCursorPos, KillTimer, PostQuitMessage, SetTimer};
 use windows::core::{Error, Result};
 
-const COLLAPSED_RADIUS: f32 = 20.0;
+const COLLAPSED_RADIUS: f32 = 16.0;
 const EXPANDED_RADIUS: f32 = 32.0;
 const SCROLL_FADE: f32 = 0.12;
 const WHEEL_DELTA: i32 = 120;

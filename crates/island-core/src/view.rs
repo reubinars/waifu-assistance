@@ -39,7 +39,7 @@ pub const WINDOW: Size = Size {
     w: EXPANDED.w + PET_BOX.w + PET_GAP + 2.0 * SHADOW_ROOM,
     h: EXPANDED.h + 2.0 * SHADOW_ROOM,
 };
-pub const COLLAPSED: Size = Size { w: 40.0, h: 40.0 };
+pub const COLLAPSED: Size = Size { w: 32.0, h: 32.0 };
 /// How far the pill keeps off the edges of the screen (the work area).
 const PILL_MARGIN: f32 = 4.0;
 
@@ -431,7 +431,7 @@ mod tests {
 
     #[test]
     fn sizes() {
-        assert_eq!(COLLAPSED, Size { w: 40.0, h: 40.0 });
+        assert_eq!(COLLAPSED, Size { w: 32.0, h: 32.0 });
     }
 
     const TOP: Spot = Spot::TOP_CENTRE;
