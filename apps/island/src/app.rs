@@ -21,7 +21,7 @@ use island_core::view::layout::SEEK;
 use island_core::view::{
     COLLAPSED, Collapsed, Dot, DisplayMode, EXPANDED, ExpandedHit, Shown, Spot, Tab, block_rect, block_size, choose_collapsed, clock_label,
     corner_radii, fullscreen_jump_target, hit_expanded, is_drag, island_rect,
-    jump_target, max_scroll, pet_cell, scroll_by, second_pet_cell, shown, spot_at, time_in_state,
+    jump_target, max_scroll, pet_cell, scroll_by, second_pet_cell, shown, spot_at,
 };
 use island_core::{Point, Rect, Size};
 use std::time::{Duration, Instant};
@@ -851,9 +851,8 @@ impl App {
             .map(|a| ui_expanded::Row {
                 status: a.info.status,
                 name: a.display_name().to_string(),
-                title: a.info.title.clone().unwrap_or_default(),
                 folder: a.folder().to_string(),
-                since: time_in_state(now.saturating_duration_since(a.since)),
+                subtitle: a.subtitle().map(str::to_owned),
             })
             .collect();
         let collapsed = Scene { t, playing: self.clock.is_playing(), accent: arc_accent(self.art.as_ref().and_then(|a| a.accent)) };

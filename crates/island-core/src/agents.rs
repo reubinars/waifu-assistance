@@ -20,6 +20,19 @@ impl Agent {
         let cwd = self.info.cwd.as_deref().unwrap_or("").trim_end_matches('/');
         cwd.rsplit('/').next().unwrap_or("")
     }
+
+    /// The trimmed title, or None when it is blank or just repeats the folder name.
+    /// A trailing `| <folder>` (Codex while working) is dropped.
+    pub fn subtitle(&self) -> Option<&str> {
+        let folder = self.folder();
+        let mut t = self.info.title.as_deref()?.trim();
+        if !folder.is_empty()
+            && let Some(rest) = t.strip_suffix(folder).and_then(|r| r.trim_end().strip_suffix('|'))
+        {
+            t = rest.trim();
+        }
+        (!t.is_empty() && t != folder).then_some(t)
+    }
 }
 
 fn rank(s: AgentStatus) -> u8 {
@@ -202,5 +215,25 @@ mod tests {
         let mut i = info("w1:p1", Idle);
         i.cwd = Some("/home/u/projects/dynamic-island/docs/rea/".into());
         assert_eq!(Agent { info: i, since: Instant::now() }.folder(), "rea");
+    }
+
+    #[test]
+    fn subtitle_rules() {
+        let with = |title: Option<&str>| {
+            let mut i = info("w1:p1", Idle);
+            i.title = title.map(Into::into);
+            Agent { info: i, since: Instant::now() }
+        };
+        assert_eq!(with(None).subtitle(), None);
+        assert_eq!(with(Some("   ")).subtitle(), None);
+        assert_eq!(with(Some("learn-anything")).subtitle(), None);
+        assert_eq!(with(Some("  Japanese guide ")).subtitle(), Some("Japanese guide"));
+        // Codex while working: `<task> | <folder>`
+        assert_eq!(with(Some("Report project progress | learn-anything")).subtitle(), Some("Report project progress"));
+        assert_eq!(with(Some(" | learn-anything")).subtitle(), None);
+        assert_eq!(with(Some("a | b | other-folder")).subtitle(), Some("a | b | other-folder"));
+        let mut no_cwd = with(Some("task | "));
+        no_cwd.info.cwd = None;
+        assert_eq!(no_cwd.subtitle(), Some("task |"));
     }
 }

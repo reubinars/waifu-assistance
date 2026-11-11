@@ -7,7 +7,7 @@ use island_core::Rect;
 use island_core::anim::{Fade, breathe};
 use island_core::herdr::AgentStatus;
 use island_core::view::layout::{self, MAX_ROWS};
-use island_core::view::{EXPANDED, ExpandedHit, Tab, max_scroll};
+use island_core::view::{EXPANDED, ExpandedHit, Tab, max_scroll, status_word};
 use windows::Win32::Graphics::Direct2D::ID2D1Bitmap1;
 use windows::core::Result;
 
@@ -115,9 +115,9 @@ impl Hover {
 pub struct Row {
     pub status: AgentStatus,
     pub name: String,
-    pub title: String,
     pub folder: String,
-    pub since: String,
+    /// The agent's title, or None when there is nothing to show beyond the name.
+    pub subtitle: Option<String>,
 }
 
 pub struct Media {
@@ -174,15 +174,21 @@ fn status_color(s: AgentStatus) -> Color {
     }
 }
 
-/// One line per agent: dot, name, title (fills), folder, time in state.
+/// One two-line card per agent. Line 1: dot, name, folder, and the status word on the right.
+/// Line 2: the title, when there is one; without it line 1 is centred in the card.
 fn draw_rows(p: &mut Painter, ox: f32, oy: f32, k: f32, s: &Scene) -> Result<()> {
     const DOT_X: f32 = 14.0;
     const NAME_X: f32 = 26.0;
     const NAME_MAX: f32 = 110.0;
     const FOLDER_MAX: f32 = 90.0;
-    const TIME_W: f32 = 26.0;
+    const STATUS_BOX: f32 = 60.0;
     const SPACE: f32 = 8.0;
     const RIGHT: f32 = 10.0;
+    const MIN_FOLDER: f32 = 12.0;
+    const LINE1_Y: f32 = 6.0;
+    const LINE1_H: f32 = 18.0;
+    const LINE2_Y: f32 = 22.0;
+    const LINE2_H: f32 = 16.0;
     if s.rows.is_empty() {
         let row = off(layout::row(0), ox, oy);
         return p.text("No agents", Rect { x: row.x + NAME_X, w: row.w - NAME_X, ..row }, 14.0, 600, TEXT_SECONDARY.fade(k), Align::Left);
@@ -196,38 +202,39 @@ fn draw_rows(p: &mut Painter, ox: f32, oy: f32, k: f32, s: &Scene) -> Result<()>
             if r.y + r.h <= list.y || r.y >= list.y + list.h {
                 continue;
             }
+            p.round_rect(r, layout::ROW_RADIUS, Color::white(0.06).fade(k));
             let h = s.hover.hover(Hot::Row(i), s.t);
             if h > 0.0 {
                 p.round_rect(r, layout::ROW_RADIUS, Color::white(0.10 * h).fade(k));
             }
-            let cy = r.y + r.h / 2.0;
-            p.circle(r.x + DOT_X, cy, 6.0, status_color(row.status).fade(k));
-            let line = |x: f32, w: f32| Rect { x, y: r.y, w: w.max(0.0), h: r.h };
+            let (y1, h1) = match row.subtitle {
+                Some(_) => (r.y + LINE1_Y, LINE1_H),
+                None => (r.y + (r.h - LINE1_H) / 2.0, LINE1_H),
+            };
+            let band = |x: f32, w: f32| Rect { x, y: y1, w: w.max(0.0), h: h1 };
+            let color = status_color(row.status);
+            p.circle(r.x + DOT_X, y1 + h1 / 2.0, 6.0, color.fade(k));
 
-            let time_x = r.x + r.w - RIGHT - TIME_W;
-            let time = p.layout_tabular(&row.since, line(time_x, TIME_W), 10.0, 500, Align::Right)?;
-            p.draw_layout(&time, time_x, r.y, TEXT_TERTIARY.fade(k));
+            let right = r.x + r.w - RIGHT;
+            let status = p.layout(status_word(row.status), band(right - STATUS_BOX, STATUS_BOX), 11.0, 600, Align::Right)?;
+            let status_left = right - Painter::width(&status);
+            p.draw_layout(&status, right - STATUS_BOX, y1, color.fade(k));
 
             let name_x = r.x + NAME_X;
-            let name = p.layout(&row.name, line(name_x, NAME_MAX), 12.0, 600, Align::Left)?;
+            let name = p.layout(&row.name, band(name_x, NAME_MAX), 12.0, 600, Align::Left)?;
             let name_w = Painter::width(&name);
-            p.draw_layout(&name, name_x, r.y, TEXT_PRIMARY.fade(k));
+            p.draw_layout(&name, name_x, y1, TEXT_PRIMARY.fade(k));
 
-            let folder_end = time_x - SPACE;
-            let folder_w = if row.folder.is_empty() {
-                0.0
-            } else {
-                let probe = p.layout(&row.folder, line(0.0, FOLDER_MAX), 11.0, 400, Align::Left)?;
-                Painter::width(&probe).min(FOLDER_MAX)
-            };
-            if folder_w > 0.0 {
-                p.text(&row.folder, line(folder_end - folder_w, folder_w + 1.0), 11.0, 400, TEXT_TERTIARY.fade(k), Align::Left)?;
+            let folder_x = name_x + name_w + SPACE;
+            let folder_w = (status_left - SPACE - folder_x).min(FOLDER_MAX);
+            if !row.folder.is_empty() && folder_w >= MIN_FOLDER {
+                p.text(&row.folder, band(folder_x, folder_w), 11.0, 400, TEXT_TERTIARY.fade(k), Align::Left)?;
             }
 
-            let title_x = name_x + name_w + SPACE;
-            let title_end = if folder_w > 0.0 { folder_end - folder_w - SPACE } else { folder_end };
-            if title_end - title_x > 12.0 {
-                p.text(&row.title, line(title_x, title_end - title_x), 11.0, 400, TEXT_SECONDARY.fade(k), Align::Left)?;
+            if let Some(title) = &row.subtitle {
+                let x = r.x + NAME_X;
+                let rect = Rect { x, y: r.y + LINE2_Y, w: r.x + r.w - RIGHT - x, h: LINE2_H };
+                p.text(title, rect, 11.0, 400, TEXT_SECONDARY.fade(k), Align::Left)?;
             }
         }
         Ok(())

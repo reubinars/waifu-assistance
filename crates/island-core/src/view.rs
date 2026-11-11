@@ -265,13 +265,13 @@ pub fn fullscreen_jump_target(agents: &AgentTable) -> Option<String> {
     jump_target(agents).or_else(|| agents.first(AgentStatus::Blocked).map(|a| a.info.pane_id.clone()))
 }
 
-/// Time in state for an agent row: `12s`, `4m`, `1h` (whole units, rounded down).
-pub fn time_in_state(d: std::time::Duration) -> String {
-    let s = d.as_secs();
+/// The status word shown on an agent card; `Unknown` reads as `idle`.
+pub fn status_word(s: AgentStatus) -> &'static str {
     match s {
-        0..60 => format!("{s}s"),
-        60..3600 => format!("{}m", s / 60),
-        _ => format!("{}h", s / 3600),
+        AgentStatus::Blocked => "blocked",
+        AgentStatus::Done => "done",
+        AgentStatus::Working => "working",
+        AgentStatus::Idle | AgentStatus::Unknown => "idle",
     }
 }
 
@@ -298,13 +298,13 @@ pub mod layout {
         std::iter::once((Tab::Agents, agents)).chain(media.then_some((Tab::Media, TAB_MEDIA)))
     }
 
-    pub const MAX_ROWS: usize = 4;
+    pub const MAX_ROWS: usize = 3;
     pub const ROW_X: f32 = 8.0;
     pub const ROW_Y: f32 = 44.0;
-    pub const ROW_STEP: f32 = 34.0;
+    pub const ROW_STEP: f32 = 50.0;
     pub const ROW_W: f32 = 344.0;
-    pub const ROW_H: f32 = 32.0;
-    pub const ROW_RADIUS: f32 = 10.0;
+    pub const ROW_H: f32 = 44.0;
+    pub const ROW_RADIUS: f32 = 12.0;
     pub const LIST: Rect = Rect {
         x: 0.0, y: ROW_Y, w: super::EXPANDED.w,
         h: ROW_STEP * (MAX_ROWS - 1) as f32 + ROW_H,
@@ -714,35 +714,41 @@ mod tests {
             let p = Point { x: r.x + r.w / 2.0, y: r.y + r.h / 2.0 };
             assert_eq!(hit_expanded(Tab::Agents, false, 5, 1, false, p), Some(ExpandedHit::Row(i + 1)));
         }
+        assert_eq!(layout::row(0).h, 44.0);
+        assert_eq!(layout::row(1).y - layout::row(0).y, 50.0);
+        assert_eq!(layout::LIST.y + layout::LIST.h, 188.0);
+        const { assert!(layout::LIST.y + layout::LIST.h <= EXPANDED.h) };
     }
 
     #[test]
     fn scrolling_clamps_to_the_available_rows() {
-        for rows in 0..=4 {
+        for rows in 0..=3 {
             assert_eq!(max_scroll(rows), 0);
             assert_eq!(scroll_by(10, -100, rows), 0);
             assert_eq!(scroll_by(10, 100, rows), 0);
         }
-        assert_eq!(max_scroll(5), 1);
+        assert_eq!(max_scroll(4), 1);
+        assert_eq!(max_scroll(5), 2);
         assert_eq!(scroll_by(0, -1, 5), 1);
         assert_eq!(scroll_by(1, 1, 5), 0);
+        assert_eq!(scroll_by(0, -5, 4), 1);
         assert_eq!(scroll_by(2, -2, 10), 4);
         assert_eq!(scroll_by(2, 1, 10), 1);
-        assert_eq!(scroll_by(2, i32::MIN, 10), 6);
+        assert_eq!(scroll_by(2, i32::MIN, 10), 7);
         assert_eq!(scroll_by(2, i32::MAX, 10), 0);
-        assert_eq!(scroll_by(20, 0, 5), 1);
+        assert_eq!(scroll_by(20, 0, 5), 2);
     }
 
     #[test]
     fn scrolled_hits_use_absolute_rows_inside_the_list() {
         let hit = |rows, scroll, x, y| hit_expanded(Tab::Agents, false, rows, scroll, false, Point { x, y });
         assert_eq!(hit(5, 1, 100.0, 50.0), Some(ExpandedHit::Row(1)));
-        assert_eq!(hit(5, 1, 100.0, 175.0), Some(ExpandedHit::Row(4)));
-        assert_eq!(hit(2, 0, 100.0, 120.0), None);
+        assert_eq!(hit(5, 1, 100.0, 175.0), Some(ExpandedHit::Row(3)));
+        assert_eq!(hit(2, 0, 100.0, 150.0), None);
         assert_eq!(hit(5, 1, 100.0, 43.0), None);
-        assert_eq!(hit(6, 1, 100.0, 181.0), None);
-        assert_eq!(hit(6, 1, 100.0, 178.5), None);
-        assert_eq!(hit(5, 1, 100.0, 77.0), None);
+        assert_eq!(hit(6, 1, 100.0, 190.0), None);
+        assert_eq!(hit(5, 1, 100.0, 141.0), None);
+        assert_eq!(hit(5, 1, 100.0, 91.0), None);
         assert_eq!(hit(5, 1, 7.0, 50.0), None);
         assert_eq!(hit(5, 1, 353.0, 50.0), None);
     }
@@ -755,8 +761,8 @@ mod tests {
         assert_eq!(hit_expanded(Tab::Media, true, 0, 0, true, p(230.0, 160.0)), Some(ExpandedHit::Next));
         assert_eq!(hit_expanded(Tab::Media, true, 0, 0, true, p(180.0, 110.0)), Some(ExpandedHit::Seek(0.5)));
         assert_eq!(hit_expanded(Tab::Media, true, 0, 0, false, p(180.0, 110.0)), None);
-        assert_eq!(hit_expanded(Tab::Agents, true, 2, 0, false, p(100.0, 80.0)), Some(ExpandedHit::Row(1)));
-        assert_eq!(hit_expanded(Tab::Agents, true, 1, 0, false, p(100.0, 80.0)), None);
+        assert_eq!(hit_expanded(Tab::Agents, true, 2, 0, false, p(100.0, 120.0)), Some(ExpandedHit::Row(1)));
+        assert_eq!(hit_expanded(Tab::Agents, true, 1, 0, false, p(100.0, 120.0)), None);
         assert_eq!(hit_expanded(Tab::Agents, true, 0, 0, false, p(300.0, 20.0)), Some(ExpandedHit::Tab(Tab::Media)));
         assert_eq!(hit_expanded(Tab::Media, true, 0, 0, false, p(250.0, 20.0)), Some(ExpandedHit::Tab(Tab::Agents)));
         assert_eq!(hit_expanded(Tab::Agents, false, 0, 0, false, p(300.0, 20.0)), Some(ExpandedHit::Tab(Tab::Agents)));
@@ -765,16 +771,12 @@ mod tests {
     }
 
     #[test]
-    fn time_in_state_labels() {
-        let s = Duration::from_secs;
-        assert_eq!(time_in_state(s(0)), "0s");
-        assert_eq!(time_in_state(s(12)), "12s");
-        assert_eq!(time_in_state(s(59)), "59s");
-        assert_eq!(time_in_state(s(60)), "1m");
-        assert_eq!(time_in_state(s(4 * 60 + 59)), "4m");
-        assert_eq!(time_in_state(s(3599)), "59m");
-        assert_eq!(time_in_state(s(3600)), "1h");
-        assert_eq!(time_in_state(s(30 * 3600)), "30h");
+    fn status_words() {
+        assert_eq!(status_word(Blocked), "blocked");
+        assert_eq!(status_word(Done), "done");
+        assert_eq!(status_word(Working), "working");
+        assert_eq!(status_word(Idle), "idle");
+        assert_eq!(status_word(Unknown), "idle");
     }
 
     #[test]
