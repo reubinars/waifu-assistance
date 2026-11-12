@@ -30,5 +30,6 @@ pub mod platform;
 pub mod pet;
 pub mod session;
 pub mod smtc;
+pub mod ticker;
 pub mod usage;
 pub mod view;
