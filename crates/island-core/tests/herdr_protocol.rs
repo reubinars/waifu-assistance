@@ -124,3 +124,11 @@ fn builds_requests() {
         "{\"id\":\"island:5\",\"method\":\"events.subscribe\",\"params\":{\"subscriptions\":[{\"type\":\"pane.agent_detected\"},{\"type\":\"pane.closed\"}]}}\n"
     );
 }
+
+#[test]
+fn usage_line_parses() {
+    let got = parse_line(r#"{"usage":[{"cli":"claude","windows":[{"minutes":300,"used_percent":42.0,"resets_at":null}]}]}"#).unwrap();
+    let Incoming::Usage(u) = got else { panic!("{got:?}") };
+    assert_eq!(u[0].cli, "claude");
+    assert_eq!(parse_line(r#"{"usage":[]}"#).unwrap(), Incoming::Usage(vec![]));
+}

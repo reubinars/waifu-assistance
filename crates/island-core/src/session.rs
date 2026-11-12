@@ -93,7 +93,7 @@ impl HerdrSession {
                 vec![]
             }
             Incoming::Ok { id } => self.subscription_started(&id),
-            Incoming::Error { .. } | Incoming::Other => vec![],
+            Incoming::Error { .. } | Incoming::Usage(_) | Incoming::Other => vec![],
         }
     }
 

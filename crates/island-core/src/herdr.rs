@@ -3,6 +3,7 @@
 //! Every field herdr sends is treated as optional except `pane_id`; unknown statuses,
 //! events and result types never fail a parse.
 
+use crate::usage::{self, CliUsage};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
@@ -41,6 +42,8 @@ pub enum Incoming {
     Released { pane_id: String },
     StatusChanged { pane_id: String, status: AgentStatus, agent: Option<String>, title: Option<String> },
     Closed { pane_id: String },
+    /// Plan-limit usage pushed by the bridge.
+    Usage(Vec<CliUsage>),
     /// Valid JSON we don't use.
     Other,
 }
@@ -93,6 +96,9 @@ pub fn parse_line(line: &str) -> Result<Incoming, serde_json::Error> {
     let v: Value = serde_json::from_str(line)?;
     if let Some(b) = v.get("bridge").and_then(Value::as_str) {
         return Ok(Incoming::Bridge { connected: b == "connected" });
+    }
+    if let Some(list) = v.get("usage") {
+        return Ok(Incoming::Usage(usage::parse_usage(list)));
     }
     if let Some(kind) = v.get("event").and_then(Value::as_str) {
         return Ok(event(kind, v.get("data").unwrap_or(&Value::Null)));
