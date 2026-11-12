@@ -26,6 +26,12 @@ pub enum Tab {
 }
 
 pub const EXPANDED: Size = Size { w: 360.0, h: 200.0 };
+/// The expanded island with the usage strip under the agent cards.
+pub const EXPANDED_USAGE: Size = Size { w: 360.0, h: 222.0 };
+/// The expanded island's size for whether the usage strip is shown.
+pub fn expanded_size(usage: bool) -> Size {
+    if usage { EXPANDED_USAGE } else { EXPANDED }
+}
 pub const PET: Size = Size { w: 64.0, h: 64.0 };
 pub const SECOND_PET: Size = Size { w: 128.0, h: 64.0 };
 /// Occupied part of the pet cell; its bottom four rows are transparent.
@@ -41,7 +47,7 @@ const SHADOW_ROOM: f32 = 50.0;
 /// The fixed transparent window (DIPs): the expanded island, two pet cells and shadow room.
 pub const WINDOW: Size = Size {
     w: EXPANDED.w + PET_BOX.w + PET_GAP + PET_STEP + 2.0 * SHADOW_ROOM,
-    h: EXPANDED.h + 2.0 * SHADOW_ROOM,
+    h: EXPANDED_USAGE.h + 2.0 * SHADOW_ROOM,
 };
 pub const COLLAPSED: Size = Size { w: 32.0, h: 32.0 };
 /// How far the pill keeps off the edges of the screen (the work area).
@@ -309,6 +315,7 @@ pub mod layout {
         x: 0.0, y: ROW_Y, w: super::EXPANDED.w,
         h: ROW_STEP * (MAX_ROWS - 1) as f32 + ROW_H,
     };
+    pub const USAGE: Rect = Rect { x: 8.0, y: 194.0, w: 344.0, h: 18.0 };
     pub const ART: Rect = Rect { x: 16.0, y: 16.0, w: 70.0, h: 70.0 };
     pub const TITLE: Rect = Rect { x: 98.0, y: 34.0, w: 200.0, h: 18.0 };
     pub const ARTIST: Rect = Rect { x: 98.0, y: 54.0, w: 246.0, h: 16.0 };
@@ -329,6 +336,7 @@ pub mod layout {
 pub enum ExpandedHit {
     Tab(Tab),
     Row(usize),
+    Usage,
     Prev,
     PlayPause,
     Next,
@@ -359,7 +367,7 @@ pub fn scroll_by(offset: usize, notches: i32, rows: usize) -> usize {
 }
 
 /// What a click at `p` (relative to the expanded island's top-left) hit, if anything.
-pub fn hit_expanded(tab: Tab, media_present: bool, rows: usize, scroll: usize, seekable: bool, p: Point) -> Option<ExpandedHit> {
+pub fn hit_expanded(tab: Tab, media_present: bool, rows: usize, scroll: usize, seekable: bool, usage: bool, p: Point) -> Option<ExpandedHit> {
     use layout::*;
     for (tab, r) in tabs(media_present) {
         if inside(r, p) {
@@ -368,6 +376,9 @@ pub fn hit_expanded(tab: Tab, media_present: bool, rows: usize, scroll: usize, s
     }
     match tab {
         Tab::Agents => {
+            if usage && inside(USAGE, p) {
+                return Some(ExpandedHit::Usage);
+            }
             if !inside(LIST, p) {
                 return None;
             }
@@ -431,7 +442,7 @@ mod tests {
             (Tab::Agents, rect(232.0, 10.0, 60.0, 24.0)),
             (Tab::Media, rect(296.0, 10.0, 54.0, 24.0)),
         ]);
-        let hit = |media, x| hit_expanded(Tab::Agents, media, 0, 0, false, Point { x, y: 20.0 });
+        let hit = |media, x| hit_expanded(Tab::Agents, media, 0, 0, false, false, Point { x, y: 20.0 });
         assert_eq!(hit(false, 291.0), Some(ExpandedHit::Tab(Tab::Agents)));
         assert_eq!(hit(false, 345.0), Some(ExpandedHit::Tab(Tab::Agents)));
         assert_eq!(hit(false, 250.0), None);
@@ -567,7 +578,7 @@ mod tests {
 
     #[test]
     fn the_block_fits_the_shadow_room() {
-        assert_eq!(WINDOW, Size { w: 640.0, h: 300.0 });
+        assert_eq!(WINDOW, Size { w: 640.0, h: 322.0 });
         for size in PET_SIZES {
             for spot in PET_SPOTS {
                 for pet in [0, 1, 2] {
@@ -712,7 +723,7 @@ mod tests {
             assert_eq!(r.x, 8.0);
             assert_eq!(r.x + r.w, EXPANDED.w - 8.0);
             let p = Point { x: r.x + r.w / 2.0, y: r.y + r.h / 2.0 };
-            assert_eq!(hit_expanded(Tab::Agents, false, 5, 1, false, p), Some(ExpandedHit::Row(i + 1)));
+            assert_eq!(hit_expanded(Tab::Agents, false, 5, 1, false, false, p), Some(ExpandedHit::Row(i + 1)));
         }
         assert_eq!(layout::row(0).h, 44.0);
         assert_eq!(layout::row(1).y - layout::row(0).y, 50.0);
@@ -741,7 +752,7 @@ mod tests {
 
     #[test]
     fn scrolled_hits_use_absolute_rows_inside_the_list() {
-        let hit = |rows, scroll, x, y| hit_expanded(Tab::Agents, false, rows, scroll, false, Point { x, y });
+        let hit = |rows, scroll, x, y| hit_expanded(Tab::Agents, false, rows, scroll, false, false, Point { x, y });
         assert_eq!(hit(5, 1, 100.0, 50.0), Some(ExpandedHit::Row(1)));
         assert_eq!(hit(5, 1, 100.0, 175.0), Some(ExpandedHit::Row(3)));
         assert_eq!(hit(2, 0, 100.0, 150.0), None);
@@ -756,18 +767,35 @@ mod tests {
     #[test]
     fn expanded_hits() {
         let p = |x, y| Point { x, y };
-        assert_eq!(hit_expanded(Tab::Media, true, 0, 0, true, p(180.0, 160.0)), Some(ExpandedHit::PlayPause));
-        assert_eq!(hit_expanded(Tab::Media, true, 0, 0, true, p(130.0, 160.0)), Some(ExpandedHit::Prev));
-        assert_eq!(hit_expanded(Tab::Media, true, 0, 0, true, p(230.0, 160.0)), Some(ExpandedHit::Next));
-        assert_eq!(hit_expanded(Tab::Media, true, 0, 0, true, p(180.0, 110.0)), Some(ExpandedHit::Seek(0.5)));
-        assert_eq!(hit_expanded(Tab::Media, true, 0, 0, false, p(180.0, 110.0)), None);
-        assert_eq!(hit_expanded(Tab::Agents, true, 2, 0, false, p(100.0, 120.0)), Some(ExpandedHit::Row(1)));
-        assert_eq!(hit_expanded(Tab::Agents, true, 1, 0, false, p(100.0, 120.0)), None);
-        assert_eq!(hit_expanded(Tab::Agents, true, 0, 0, false, p(300.0, 20.0)), Some(ExpandedHit::Tab(Tab::Media)));
-        assert_eq!(hit_expanded(Tab::Media, true, 0, 0, false, p(250.0, 20.0)), Some(ExpandedHit::Tab(Tab::Agents)));
-        assert_eq!(hit_expanded(Tab::Agents, false, 0, 0, false, p(300.0, 20.0)), Some(ExpandedHit::Tab(Tab::Agents)));
+        assert_eq!(hit_expanded(Tab::Media, true, 0, 0, true, false, p(180.0, 160.0)), Some(ExpandedHit::PlayPause));
+        assert_eq!(hit_expanded(Tab::Media, true, 0, 0, true, false, p(130.0, 160.0)), Some(ExpandedHit::Prev));
+        assert_eq!(hit_expanded(Tab::Media, true, 0, 0, true, false, p(230.0, 160.0)), Some(ExpandedHit::Next));
+        assert_eq!(hit_expanded(Tab::Media, true, 0, 0, true, false, p(180.0, 110.0)), Some(ExpandedHit::Seek(0.5)));
+        assert_eq!(hit_expanded(Tab::Media, true, 0, 0, false, false, p(180.0, 110.0)), None);
+        assert_eq!(hit_expanded(Tab::Agents, true, 2, 0, false, false, p(100.0, 120.0)), Some(ExpandedHit::Row(1)));
+        assert_eq!(hit_expanded(Tab::Agents, true, 1, 0, false, false, p(100.0, 120.0)), None);
+        assert_eq!(hit_expanded(Tab::Agents, true, 0, 0, false, false, p(300.0, 20.0)), Some(ExpandedHit::Tab(Tab::Media)));
+        assert_eq!(hit_expanded(Tab::Media, true, 0, 0, false, false, p(250.0, 20.0)), Some(ExpandedHit::Tab(Tab::Agents)));
+        assert_eq!(hit_expanded(Tab::Agents, false, 0, 0, false, false, p(300.0, 20.0)), Some(ExpandedHit::Tab(Tab::Agents)));
         // buttons only exist on the media tab
-        assert_eq!(hit_expanded(Tab::Agents, true, 0, 0, false, p(180.0, 160.0)), None);
+        assert_eq!(hit_expanded(Tab::Agents, true, 0, 0, false, false, p(180.0, 160.0)), None);
+    }
+
+    #[test]
+    fn usage_strip_geometry() {
+        assert_eq!(expanded_size(false), EXPANDED);
+        assert_eq!(expanded_size(true), EXPANDED_USAGE);
+        const { assert!(layout::USAGE.y >= layout::LIST.y + layout::LIST.h + 6.0) };
+        const { assert!(layout::USAGE.y + layout::USAGE.h <= EXPANDED_USAGE.h) };
+        assert!(WINDOW.h >= EXPANDED_USAGE.h);
+    }
+
+    #[test]
+    fn usage_strip_hit() {
+        let p = Point { x: 100.0, y: 200.0 };
+        assert_eq!(hit_expanded(Tab::Agents, false, 2, 0, false, true, p), Some(ExpandedHit::Usage));
+        assert_eq!(hit_expanded(Tab::Agents, false, 2, 0, false, false, p), None);
+        assert_eq!(hit_expanded(Tab::Media, true, 2, 0, false, true, p), None);
     }
 
     #[test]
