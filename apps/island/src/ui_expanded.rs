@@ -6,13 +6,18 @@ use crate::draw::{Align, Color, Painter, TEXT_PRIMARY, TEXT_SECONDARY, TEXT_TERT
 use island_core::Rect;
 use island_core::anim::{Fade, breathe};
 use island_core::herdr::AgentStatus;
+use island_core::ticker;
+use island_core::usage::{Level, Run, Tone};
 use island_core::view::layout::{self, MAX_ROWS};
 use island_core::view::{EXPANDED, ExpandedHit, Tab, max_scroll, status_word};
+use std::cell::Cell;
 use windows::Win32::Graphics::Direct2D::ID2D1Bitmap1;
+use windows::Win32::Graphics::DirectWrite::{DWRITE_TEXT_METRICS, IDWriteTextLayout};
 use windows::core::Result;
 
 const DONE: Color = Color::rgba(0x34, 0xc7, 0x59, 1.0);
 const BLOCKED: Color = Color::rgba(0xff, 0x95, 0x00, 1.0);
+const HIGH: Color = Color::rgba(0xff, 0x3b, 0x30, 1.0);
 const TAB_FADE: f32 = 0.2;
 const BUTTON_FADE: f32 = 0.12;
 
@@ -25,9 +30,11 @@ pub enum Hot {
     Play,
     Next,
     Seek,
+    /// The usage strip: pauses the ticker while hovered; no hover visuals.
+    Usage,
 }
 
-const HOT_COUNT: usize = 7 + MAX_ROWS;
+const HOT_COUNT: usize = 8 + MAX_ROWS;
 
 impl Hot {
     pub fn of(hit: ExpandedHit) -> Hot {
@@ -38,6 +45,7 @@ impl Hot {
             ExpandedHit::PlayPause => Hot::Play,
             ExpandedHit::Next => Hot::Next,
             ExpandedHit::Seek(_) => Hot::Seek,
+            ExpandedHit::Usage => Hot::Usage,
         }
     }
 
@@ -50,6 +58,7 @@ impl Hot {
             Hot::Next => 4,
             Hot::Seek => 5,
             Hot::Row(i) => 6 + i % (MAX_ROWS + 1),
+            Hot::Usage => 7 + MAX_ROWS,
         }
     }
 }
@@ -140,6 +149,12 @@ pub struct Scene<'a> {
     pub art: Option<&'a ID2D1Bitmap1>,
     pub accent: Option<Color>,
     pub hover: &'a Hover,
+    /// The usage strip's text; empty hides the strip.
+    pub usage: Vec<Run>,
+    /// How far the strip's text has scrolled left (px).
+    pub ticker_offset: f32,
+    /// The strip's measured text width, written while drawing (0 when the strip isn't drawn).
+    pub usage_width: Cell<f32>,
 }
 
 fn off(r: Rect, ox: f32, oy: f32) -> Rect {
@@ -160,7 +175,10 @@ pub fn draw(p: &mut Painter, tab: Tab, ox: f32, oy: f32, k: f32, s: &Scene) -> R
         p.set_transform(restore);
     }
     match tab {
-        Tab::Agents => draw_rows(p, ox, oy, k, s),
+        Tab::Agents => {
+            draw_rows(p, ox, oy, k, s)?;
+            if s.usage.is_empty() { Ok(()) } else { draw_usage(p, ox, oy, k, s) }
+        }
         Tab::Media => draw_media(p, ox, oy, k, s),
     }
 }
@@ -247,6 +265,68 @@ fn draw_rows(p: &mut Painter, ox: f32, oy: f32, k: f32, s: &Scene) -> Result<()>
         let y = list.y + (list.h - h) * (s.scroll / max as f32).clamp(0.0, 1.0);
         p.round_rect(Rect { x: ox + EXPANDED.w - 5.0, y, w: 2.5, h }, 1.25, Color::white(0.25).fade(k));
     }
+    Ok(())
+}
+
+fn tone_color(t: Tone) -> Color {
+    match t {
+        Tone::Name => TEXT_PRIMARY,
+        Tone::Dim => TEXT_TERTIARY,
+        Tone::Percent(Level::Low) => DONE,
+        Tone::Percent(Level::Mid) => BLOCKED,
+        Tone::Percent(Level::High) => HIGH,
+    }
+}
+
+/// The laid-out text's advance, trailing spaces included (`Painter::width` drops them, and the
+/// strip's runs end in the space before the next run).
+fn advance(l: &IDWriteTextLayout) -> f32 {
+    let mut m = DWRITE_TEXT_METRICS::default();
+    unsafe {
+        let _ = l.GetMetrics(&mut m);
+    }
+    m.widthIncludingTrailingWhitespace
+}
+
+/// The plan-limit strip under the cards: one line of runs, scrolled left by `ticker_offset` and
+/// repeated after `ticker::GAP` when wider than the strip.
+fn draw_usage(p: &mut Painter, ox: f32, oy: f32, k: f32, s: &Scene) -> Result<()> {
+    const FADE_BANDS: [f32; 4] = [0.8, 0.6, 0.4, 0.2];
+    const BAND_W: f32 = 3.0;
+    let strip = off(layout::USAGE, ox, oy);
+    let mut runs = Vec::with_capacity(s.usage.len());
+    let mut total = 0.0;
+    for run in &s.usage {
+        let weight = if run.tone == Tone::Name { 600 } else { 400 };
+        let l = p.layout(&run.text, Rect { w: 4000.0, ..strip }, 11.0, weight, Align::Left)?;
+        let w = advance(&l);
+        runs.push((l, w, tone_color(run.tone).fade(k)));
+        total += w;
+    }
+    s.usage_width.set(total);
+    let scrolls = total > strip.w;
+    let mask = p.rect_geometry(strip)?;
+    p.push_layer(Some(&mask), 1.0);
+    let starts: &[f32] = if scrolls { &[0.0, total + ticker::GAP] } else { &[0.0] };
+    for start in starts {
+        let mut x = strip.x - s.ticker_offset + start;
+        for (l, w, c) in &runs {
+            if x < strip.x + strip.w && x + w > strip.x {
+                p.draw_layout(l, x, strip.y, *c);
+            }
+            x += w;
+        }
+    }
+    if scrolls {
+        // no gradient brush: stepped black bands fade the text out at both edges
+        for (i, a) in FADE_BANDS.into_iter().enumerate() {
+            let c = Color::BLACK.with_alpha(a).fade(k);
+            let dx = BAND_W * i as f32;
+            p.round_rect(Rect { x: strip.x + dx, w: BAND_W, ..strip }, 0.0, c);
+            p.round_rect(Rect { x: strip.x + strip.w - dx - BAND_W, w: BAND_W, ..strip }, 0.0, c);
+        }
+    }
+    p.pop_layer();
     Ok(())
 }
 

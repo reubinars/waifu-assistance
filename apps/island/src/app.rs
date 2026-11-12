@@ -14,17 +14,21 @@ use crate::ui_expanded::{self, Hot, Hover};
 use crate::window::{self, Event, VK_ESCAPE, Windows};
 use island_core::anim::Fade;
 use island_core::config::Config;
+use island_core::herdr::Incoming;
 use island_core::media::MediaClock;
 use island_core::pet::{PetClock, PetState, Sheet, pet_state, second_pet_state};
 use island_core::session::HerdrSession;
-use island_core::view::layout::SEEK;
+use island_core::ticker::Ticker;
+use island_core::usage::{CliUsage, strip_runs};
+use island_core::view::layout::{self, SEEK};
 use island_core::view::{
-    COLLAPSED, Collapsed, Dot, DisplayMode, EXPANDED, ExpandedHit, Shown, Spot, Tab, block_rect, block_size, choose_collapsed, clock_label,
-    corner_radii, fullscreen_jump_target, hit_expanded, is_drag, island_rect,
+    COLLAPSED, Collapsed, Dot, DisplayMode, ExpandedHit, Shown, Spot, Tab, block_rect, block_size, choose_collapsed, clock_label,
+    corner_radii, expanded_size, fullscreen_jump_target, hit_expanded, is_drag, island_rect,
     jump_target, max_scroll, pet_cell, scroll_by, second_pet_cell, shown, spot_at,
 };
 use island_core::{Point, Rect, Size};
-use std::time::{Duration, Instant};
+use std::cell::Cell;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use windows::Win32::Foundation::{D2DERR_RECREATE_TARGET, HANDLE, POINT};
 use windows::Win32::Graphics::Dxgi::{DXGI_ERROR_DEVICE_HUNG, DXGI_ERROR_DEVICE_REMOVED, DXGI_ERROR_DEVICE_RESET};
 use windows::Win32::Graphics::Direct2D::ID2D1Bitmap1;
@@ -124,6 +128,11 @@ pub struct App {
     fullscreen: bool,
     /// Where tray changes are saved; `None` (demo) keeps them in memory and leaves the registry alone.
     config_path: Option<std::path::PathBuf>,
+    /// Plan-limit usage per CLI from the bridge; empty hides the strip.
+    usage: Vec<CliUsage>,
+    ticker: Ticker,
+    /// When the ticker was last advanced (secs since `t0`).
+    ticker_t: f64,
 }
 
 impl App {
@@ -177,6 +186,9 @@ impl App {
             animating: false,
             spinner_on: false,
             tick_on: false,
+            usage: Vec::new(),
+            ticker: Ticker::default(),
+            ticker_t: 0.0,
         };
         app.win.place(app.mode(), app.spot(), app.pets());
         app
@@ -209,6 +221,11 @@ impl App {
         island_rect(self.mode(), self.spot(), size, self.pets())
     }
 
+    /// The expanded island's size: taller while there is a usage strip.
+    fn expanded_size(&self) -> Size {
+        expanded_size(!self.usage.is_empty())
+    }
+
     pub fn on_source_event(&mut self, e: SourceEvent) {
         let now = Instant::now();
         match e {
@@ -217,6 +234,7 @@ impl App {
                 self.art = art;
                 self.art_bmp = None;
             }
+            SourceEvent::Herdr(Incoming::Usage(u)) => self.usage = u,
             SourceEvent::Herdr(msg) => {
                 for line in self.session.handle(msg, now) {
                     self.agent_src.send(&line);
@@ -372,7 +390,7 @@ impl App {
 
     /// The expanded island's top-left once settled (DIPs); what clicks are tested against.
     fn expanded_origin(&self) -> Point {
-        let r = self.rect_at(EXPANDED);
+        let r = self.rect_at(self.expanded_size());
         Point { x: r.x, y: r.y }
     }
 
@@ -381,7 +399,8 @@ impl App {
         let present = self.clock.is_present(Instant::now());
         let rows = self.session.agents.rows(usize::MAX).len();
         let seekable = present && self.clock.seekable();
-        hit_expanded(self.tab, present, rows, self.scroll, seekable, Point { x: p.x - o.x, y: p.y - o.y })
+        let usage = !self.usage.is_empty();
+        hit_expanded(self.tab, present, rows, self.scroll, seekable, usage, Point { x: p.x - o.x, y: p.y - o.y })
     }
 
     fn cursor(&self) -> Option<Point> {
@@ -411,12 +430,18 @@ impl App {
         }
         let Some(p) = self.cursor() else { return };
         let o = self.expanded_origin();
-        if p.x < o.x || p.x > o.x + EXPANDED.w || p.y < o.y || p.y > o.y + EXPANDED.h {
+        let size = self.expanded_size();
+        if p.x < o.x || p.x > o.x + size.w || p.y < o.y || p.y > o.y + size.h {
             return;
         }
         self.wheel_acc += delta;
         let notches = self.wheel_acc / WHEEL_DELTA;
         self.wheel_acc %= WHEEL_DELTA;
+        if self.expanded_hit(p) == Some(ExpandedHit::Usage) {
+            self.ticker.wheel(notches);
+            self.dirty = true;
+            return;
+        }
         let rows = self.session.agents.rows(usize::MAX).len();
         self.set_scroll(scroll_by(self.scroll, notches, rows), self.secs(now));
     }
@@ -550,7 +575,7 @@ impl App {
             ExpandedHit::Prev => self.media.command(MediaCommand::Previous),
             ExpandedHit::PlayPause => self.media.command(MediaCommand::PlayPause),
             ExpandedHit::Next => self.media.command(MediaCommand::Next),
-            ExpandedHit::Seek(_) => {}
+            ExpandedHit::Seek(_) | ExpandedHit::Usage => {}
         }
     }
 
@@ -613,6 +638,7 @@ impl App {
         self.expanded_at = None;
         self.scroll = 0;
         self.wheel_acc = 0;
+        self.ticker.reset();
         self.scroll_fade = Fade { from: 0.0, to: 0.0, start: 0.0, duration: 0.0 };
         if self.drag.take().is_some() {
             self.win.capture(false);
@@ -658,7 +684,7 @@ impl App {
             self.tab = Tab::Agents;
         }
         let (size, radius, face) = if self.expanded {
-            (EXPANDED, EXPANDED_RADIUS, Face::Expanded(self.tab))
+            (self.expanded_size(), EXPANDED_RADIUS, Face::Expanded(self.tab))
         } else {
             (COLLAPSED, COLLAPSED_RADIUS, Face::Dot { dot: self.collapsed.dot, media: self.collapsed.media })
         };
@@ -708,11 +734,20 @@ impl App {
         first.into_iter().chain(second).min()
     }
 
-    /// Whether the content itself moves every frame (media arc, blocked pulse).
+    /// Whether the usage strip is auto-scrolling: shown, wider than its strip, and not hovered.
+    fn ticker_running(&self) -> bool {
+        self.anim.face == Face::Expanded(Tab::Agents)
+            && !self.usage.is_empty()
+            && self.ticker.scrolls()
+            && self.hover.hot != Some(Hot::Usage)
+    }
+
+    /// Whether the content itself moves every frame (media arc, blocked pulse, usage ticker).
     fn continuous(&self) -> bool {
         match self.anim.face {
             Face::Dot { dot: Dot::Blocked, .. } => true,
             Face::Dot { media: true, .. } | Face::Expanded(Tab::Media) => self.clock.is_playing(),
+            Face::Expanded(Tab::Agents) => self.ticker_running(),
             _ => false,
         }
     }
@@ -720,6 +755,12 @@ impl App {
     /// Draws and presents one frame; returns whether to keep animating.
     pub fn frame(&mut self, now: Instant) -> bool {
         let t = self.secs(now);
+        // clamped so the first frame after an idle spell doesn't jump
+        let dt = (t - self.ticker_t).clamp(0.0, 0.1);
+        self.ticker_t = t;
+        if self.ticker_running() {
+            self.ticker.advance(dt as f32);
+        }
         self.anim.step(t);
         let mode = self.mode();
         let rect = self.rect_at(self.anim.size());
@@ -865,6 +906,9 @@ impl App {
             art: self.art_bmp.as_ref(),
             accent: self.art.as_ref().and_then(|a| a.accent).map(|[r, g, b]| Color::rgba(r, g, b, 1.0)),
             hover: &self.hover,
+            usage: strip_runs(&self.usage, now_unix()),
+            ticker_offset: self.ticker.offset(),
+            usage_width: Cell::new(0.0),
         };
         let pet = self.pet_sheet.as_ref().zip(self.pet_bmps.as_ref()).map(|((sheet, _), bmps)| Sprite {
             bmp: &bmps.solo,
@@ -886,6 +930,15 @@ impl App {
             dev, &self.anim, (self.config.display_mode, self.config.spot(), pets), t, &collapsed, &expanded, [pet.as_ref(), pet2.as_ref()],
         );
         let presented = dev.gfx.end();
+        // the strip measured its text: a new width can change whether (and how far) it scrolls
+        let w = expanded.usage_width.get();
+        if w > 0.0 {
+            let before = self.ticker;
+            self.ticker.set_widths(w, layout::USAGE.w);
+            if self.ticker != before {
+                self.dirty = true;
+            }
+        }
         drawn.and(presented)
     }
 }
@@ -928,13 +981,14 @@ fn draw_island(
     if mode == DisplayMode::Attached {
         p.line(rect.x, rect.y + 0.5, rect.x + rect.w, rect.y + 0.5, Color::white(0.04), 1.0);
     }
+    let ex_size = expanded_size(!ex.usage.is_empty());
     let (k_new, k_old) = anim.face_opacity(t);
     let mut drawn = Ok(());
     if let Some(old) = &anim.old {
-        drawn = draw_face(p, old, &anim.face, (rect, spot), k_old, scene, ex);
+        drawn = draw_face(p, old, &anim.face, (rect, spot, ex_size), k_old, scene, ex);
     }
     let other = anim.old.as_ref().unwrap_or(&anim.face);
-    let drawn = drawn.and_then(|_| draw_face(p, &anim.face, other, (rect, spot), k_new, scene, ex));
+    let drawn = drawn.and_then(|_| draw_face(p, &anim.face, other, (rect, spot, ex_size), k_new, scene, ex));
     p.pop_layer();
     drawn?;
     if let Some(pet) = sprites[0] {
@@ -946,12 +1000,13 @@ fn draw_island(
     Ok(())
 }
 
-/// One face at opacity `k` in the island's `rect` at `spot`; `other` is the face it is fading against.
+/// One face at opacity `k` in the island's `rect` at `spot`, the expanded face laid out at `size`;
+/// `other` is the face it is fading against.
 fn draw_face(
     p: &mut Painter,
     face: &Face,
     other: &Face,
-    (rect, spot): (Rect, Spot),
+    (rect, spot, size): (Rect, Spot, Size),
     k: f32,
     scene: &Scene,
     ex: &ui_expanded::Scene,
@@ -959,13 +1014,18 @@ fn draw_face(
     let Face::Expanded(tab) = face else { return ui_collapsed::draw(p, face, rect, k, scene) };
     // pinned to the island's edges the way the island is pinned to the screen's, so the content
     // stays put while the island grows away from those edges
-    let (ox, oy) = (rect.x + (rect.w - EXPANDED.w) * spot.x, rect.y + (rect.h - EXPANDED.h) * spot.y);
+    let (ox, oy) = (rect.x + (rect.w - size.w) * spot.x, rect.y + (rect.h - size.h) * spot.y);
     // entering from (or leaving to) the collapsed island: scale 0.92→1; switching tabs: no scale
     let scale = if matches!(other, Face::Expanded(_)) { 1.0 } else { 0.92 + 0.08 * k };
-    let restore = p.scale_about(scale, ox + EXPANDED.w / 2.0, oy + EXPANDED.h / 2.0);
+    let restore = p.scale_about(scale, ox + size.w / 2.0, oy + size.h / 2.0);
     let drawn = ui_expanded::draw(p, *tab, ox, oy, k, ex);
     p.set_transform(restore);
     drawn
+}
+
+/// Wall-clock unix seconds, for the strip's reset countdowns.
+fn now_unix() -> i64 {
+    SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64)
 }
 
 /// Glow (§6.5), shadow, and the black island.
