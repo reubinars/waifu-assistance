@@ -215,6 +215,9 @@ fn waits_for_missing_socket() {
     let sock = sock_path("missing");
     let b = Bridge::spawn(&sock, &home_for(&sock));
     assert_eq!(b.next(2), DISCONNECTED);
+    // an empty HOME still gets one usage line, so the island can clear a stale strip
+    let usage = b.usage.recv_timeout(Duration::from_secs(2)).expect("no usage line");
+    assert_eq!(usage, r#"{"usage":[]}"#);
     let _herdr = Herdr::listen(&sock);
     assert_eq!(b.next(3), CONNECTED);
 }

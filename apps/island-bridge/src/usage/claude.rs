@@ -66,6 +66,23 @@ mod tests {
     }
 
     #[test]
+    fn iso_resets_at_keeps_window_without_reset() {
+        let home = temp_home("claude-iso");
+        write(
+            &home,
+            ".cache/island/claude-limits.json",
+            r#"{"five_hour":{"used_percentage":42,"resets_at":"2026-11-12T10:00:00Z"}}"#,
+        );
+        assert_eq!(
+            read(&home),
+            Some(CliUsage {
+                cli: "claude".into(),
+                windows: vec![UsageWindow { minutes: 300, used_percent: 42.0, resets_at: None }],
+            })
+        );
+    }
+
+    #[test]
     fn missing_or_junk_is_none() {
         let home = temp_home("claude-none");
         assert_eq!(read(&home), None);
