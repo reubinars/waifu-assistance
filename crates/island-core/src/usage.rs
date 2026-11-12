@@ -60,13 +60,12 @@ pub fn level(pct: f32) -> Level {
     }
 }
 
+/// Under a day: whole hours (`5h`). A day or more: whole days (`7d`).
 pub fn window_label(minutes: u32) -> String {
-    if minutes % 1440 == 0 {
-        format!("{}d", minutes / 1440)
-    } else if minutes % 60 == 0 {
+    if minutes < 1440 {
         format!("{}h", minutes / 60)
     } else {
-        format!("{minutes}m")
+        format!("{}d", minutes / 1440)
     }
 }
 
@@ -118,7 +117,9 @@ pub fn strip_runs(snapshot: &[CliUsage], now_unix: i64) -> Vec<Run> {
             let sep = if j == 0 { " " } else { "  " };
             runs.push(Run { text: format!("{sep}{} ", window_label(w.minutes)), tone: Tone::Dim });
             let (pct, secs) = effective(w, now_unix);
-            runs.push(Run { text: format!("{:.0}%", pct), tone: Tone::Percent(level(pct)) });
+            // Colour and text both use the rounded percent, so the colour matches the number shown.
+            let shown = pct.round();
+            runs.push(Run { text: format!("{shown:.0}%"), tone: Tone::Percent(level(shown)) });
             if let Some(secs) = secs {
                 runs.push(Run { text: format!(" · {}", countdown(secs)), tone: Tone::Dim });
             }
@@ -137,8 +138,24 @@ mod tests {
         assert_eq!(window_label(60), "1h");
         assert_eq!(window_label(1440), "1d");
         assert_eq!(window_label(10080), "7d");
+        assert_eq!(window_label(90), "1h");
+        assert_eq!(window_label(1500), "1d");
+        assert_eq!(window_label(2000), "1d");
         assert_eq!(cli_label("claude"), "Claude");
         assert_eq!(cli_label("codex"), "Codex");
+    }
+
+    #[test]
+    fn level_follows_shown_percent() {
+        let w = |p| UsageWindow { minutes: 300, used_percent: p, resets_at: None };
+        assert_eq!(
+            strip_runs(&[CliUsage { cli: "claude".into(), windows: vec![w(79.6)] }], 0)[2],
+            Run { text: "80%".into(), tone: Tone::Percent(Level::High) }
+        );
+        assert_eq!(
+            strip_runs(&[CliUsage { cli: "claude".into(), windows: vec![w(49.6)] }], 0)[2],
+            Run { text: "50%".into(), tone: Tone::Percent(Level::Mid) }
+        );
     }
 
     #[test]
