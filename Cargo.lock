@@ -43,6 +43,10 @@ dependencies = [
 [[package]]
 name = "island-bridge"
 version = "0.1.0"
+dependencies = [
+ "island-core",
+ "serde_json",
+]
 
 [[package]]
 name = "island-core"

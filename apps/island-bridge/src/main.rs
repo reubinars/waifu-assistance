@@ -15,6 +15,8 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::time::{Duration, Instant};
 
+mod usage;
+
 const MIN_BACKOFF: Duration = Duration::from_secs(1);
 const MAX_BACKOFF: Duration = Duration::from_secs(10);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
@@ -43,7 +45,7 @@ fn socket_path() -> PathBuf {
 }
 
 /// Writes one line to stdout; if the island is gone there is nothing left to do.
-fn emit(line: &str) {
+pub(crate) fn emit(line: &str) {
     let mut out = io::stdout().lock();
     if writeln!(out, "{line}").and_then(|_| out.flush()).is_err() {
         std::process::exit(0);
@@ -180,6 +182,9 @@ fn wait(backoff: Duration, rx: &Receiver<Msg>) {
 }
 
 fn main() {
+    let home = std::env::var_os("HOME").filter(|h| !h.is_empty()).map(PathBuf::from);
+    usage::spawn(home);
+
     let (tx, rx) = mpsc::channel();
     spawn_stdin_reader(tx.clone());
 

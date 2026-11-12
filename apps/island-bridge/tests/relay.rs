@@ -93,28 +93,36 @@ struct Bridge {
     child: Child,
     stdin: Option<ChildStdin>,
     lines: Receiver<String>,
+    usage: Receiver<String>,
 }
 
 impl Bridge {
-    fn spawn(sock: &PathBuf) -> Bridge {
+    fn spawn(sock: &PathBuf, home: &PathBuf) -> Bridge {
         let mut child = Command::new(env!("CARGO_BIN_EXE_island-bridge"))
             .env("HERDR_SOCKET_PATH", sock)
+            .env("HOME", home)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .spawn()
             .unwrap();
         let stdout = child.stdout.take().unwrap();
         let (tx, lines) = mpsc::channel();
+        let (utx, usage) = mpsc::channel();
         std::thread::spawn(move || {
             for line in BufReader::new(stdout).lines() {
                 let Ok(line) = line else { break };
-                if tx.send(line).is_err() {
+                let sent = if line.starts_with(r#"{"usage""#) {
+                    utx.send(line).is_ok()
+                } else {
+                    tx.send(line).is_ok()
+                };
+                if !sent {
                     break;
                 }
             }
         });
         let stdin = child.stdin.take();
-        Bridge { child, stdin, lines }
+        Bridge { child, stdin, lines, usage }
     }
 
     fn next(&self, secs: u64) -> String {
@@ -137,10 +145,17 @@ impl Drop for Bridge {
     }
 }
 
+/// An empty HOME next to the socket, so the usage poller finds no CLI limits.
+fn home_for(sock: &PathBuf) -> PathBuf {
+    let home = sock.parent().unwrap().join("home");
+    std::fs::create_dir_all(&home).unwrap();
+    home
+}
+
 fn connected(name: &str) -> (PathBuf, Herdr, Bridge) {
     let sock = sock_path(name);
     let herdr = Herdr::listen(&sock);
-    let bridge = Bridge::spawn(&sock);
+    let bridge = Bridge::spawn(&sock, &home_for(&sock));
     assert_eq!(bridge.next(2), CONNECTED);
     (sock, herdr, bridge)
 }
@@ -198,7 +213,7 @@ fn new_subscription_replaces_old() {
 #[test]
 fn waits_for_missing_socket() {
     let sock = sock_path("missing");
-    let b = Bridge::spawn(&sock);
+    let b = Bridge::spawn(&sock, &home_for(&sock));
     assert_eq!(b.next(2), DISCONNECTED);
     let _herdr = Herdr::listen(&sock);
     assert_eq!(b.next(3), CONNECTED);
@@ -222,6 +237,21 @@ fn request_to_dead_herdr_reports_disconnected() {
     herdr.stop(&sock);
     b.send(LIST);
     assert_eq!(b.next(2), DISCONNECTED);
+}
+
+#[test]
+fn usage_is_printed_without_herdr() {
+    let sock = sock_path("usage"); // no listener: herdr is down
+    let home = sock.parent().unwrap().join("home");
+    std::fs::create_dir_all(home.join(".cache/island")).unwrap();
+    std::fs::write(
+        home.join(".cache/island/claude-limits.json"),
+        r#"{"five_hour":{"used_percentage":42,"resets_at":null}}"#,
+    )
+    .unwrap();
+    let b = Bridge::spawn(&sock, &home);
+    let line = b.usage.recv_timeout(Duration::from_secs(2)).expect("no usage line");
+    assert_eq!(line, r#"{"usage":[{"cli":"claude","windows":[{"minutes":300,"used_percent":42.0,"resets_at":null}]}]}"#);
 }
 
 #[test]
