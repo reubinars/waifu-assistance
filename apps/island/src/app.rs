@@ -133,6 +133,9 @@ pub struct App {
     ticker: Ticker,
     /// When the ticker was last advanced (secs since `t0`).
     ticker_t: f64,
+    /// Whether the ticker was running last frame: the first running frame after a pause must
+    /// not advance by the time spent paused.
+    ticker_was_running: bool,
 }
 
 impl App {
@@ -189,6 +192,7 @@ impl App {
             usage: Vec::new(),
             ticker: Ticker::default(),
             ticker_t: 0.0,
+            ticker_was_running: false,
         };
         app.win.place(app.mode(), app.spot(), app.pets());
         app
@@ -234,7 +238,13 @@ impl App {
                 self.art = art;
                 self.art_bmp = None;
             }
-            SourceEvent::Herdr(Incoming::Usage(u)) => self.usage = u,
+            SourceEvent::Herdr(Incoming::Usage(u)) => {
+                self.usage = u;
+                // the strip may have appeared or moved under a still pointer: hovering pauses it
+                if self.expanded {
+                    self.refresh_hover(self.secs(now));
+                }
+            }
             SourceEvent::Herdr(msg) => {
                 for line in self.session.handle(msg, now) {
                     self.agent_src.send(&line);
@@ -755,10 +765,12 @@ impl App {
     /// Draws and presents one frame; returns whether to keep animating.
     pub fn frame(&mut self, now: Instant) -> bool {
         let t = self.secs(now);
-        // clamped so the first frame after an idle spell doesn't jump
-        let dt = (t - self.ticker_t).clamp(0.0, 0.1);
+        // clamped so a slow frame doesn't jump; zero on the first running frame after a pause
+        let running = self.ticker_running();
+        let dt = if running && !self.ticker_was_running { 0.0 } else { (t - self.ticker_t).clamp(0.0, 0.1) };
         self.ticker_t = t;
-        if self.ticker_running() {
+        self.ticker_was_running = running;
+        if running {
             self.ticker.advance(dt as f32);
         }
         self.anim.step(t);

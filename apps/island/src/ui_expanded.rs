@@ -305,11 +305,14 @@ fn draw_usage(p: &mut Painter, ox: f32, oy: f32, k: f32, s: &Scene) -> Result<()
     }
     s.usage_width.set(total);
     let scrolls = total > strip.w;
+    // the offset was wrapped to last frame's width; wrap it to this one's so a width change
+    // can't draw a frame with a stale offset
+    let offset = if scrolls { s.ticker_offset.rem_euclid(total + ticker::GAP) } else { 0.0 };
     let mask = p.rect_geometry(strip)?;
     p.push_layer(Some(&mask), 1.0);
     let starts: &[f32] = if scrolls { &[0.0, total + ticker::GAP] } else { &[0.0] };
     for start in starts {
-        let mut x = strip.x - s.ticker_offset + start;
+        let mut x = strip.x - offset + start;
         for (l, w, c) in &runs {
             if x < strip.x + strip.w && x + w > strip.x {
                 p.draw_layout(l, x, strip.y, *c);
