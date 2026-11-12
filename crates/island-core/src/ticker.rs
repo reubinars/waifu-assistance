@@ -19,11 +19,12 @@ pub struct Ticker {
 }
 
 impl Ticker {
-    /// Updates the measured widths. The offset is kept, wrapped into the new period.
+    /// Updates the measured widths. While the content scrolls the offset is kept, wrapped into
+    /// the new period; once it fits the offset is cleared, so scrolling restarts from the start.
     pub fn set_widths(&mut self, content_w: f32, strip_w: f32) {
         self.content_w = content_w;
         self.strip_w = strip_w;
-        self.offset = wrap(self.offset, self.period());
+        self.offset = if self.scrolls() { wrap(self.offset, self.period()) } else { 0.0 };
     }
 
     /// True when the content is wider than the strip and so scrolls.
@@ -64,9 +65,10 @@ impl Ticker {
     }
 }
 
-/// Wraps `x` into `0..period`. A zero or negative period yields 0.
+/// Wraps `x` into `0..period`. A non-finite `x`, or a period that is not positive (NaN
+/// included), yields 0.
 fn wrap(x: f32, period: f32) -> f32 {
-    if period <= 0.0 {
+    if !x.is_finite() || !(period > 0.0) {
         return 0.0;
     }
     let r = x.rem_euclid(period);
@@ -95,6 +97,17 @@ mod tests {
         k.set_widths(400.0, 344.0);                    // period 432
         assert!((k.offset() - (900.0 % 432.0)).abs() < 1e-3);
         k.set_widths(200.0, 344.0); assert_eq!(k.offset(), 0.0);
+    }
+    #[test] fn non_finite_dt_zeroes_and_recovers() {
+        let mut k = t(500.0, 344.0);
+        k.advance(1.0); k.advance(f32::INFINITY); assert_eq!(k.offset(), 0.0);
+        k.advance(1.0); k.advance(f32::NAN); assert_eq!(k.offset(), 0.0);
+        k.advance(2.0); assert_eq!(k.offset(), 60.0);
+    }
+    #[test] fn fitting_clears_the_offset() {
+        let mut k = t(500.0, 344.0); k.advance(2.0);   // 60
+        k.set_widths(300.0, 344.0); assert_eq!(k.offset(), 0.0);
+        k.set_widths(500.0, 344.0); assert_eq!(k.offset(), 0.0);
     }
     #[test] fn reset_zeroes() { let mut k = t(500.0, 344.0); k.advance(1.0); k.reset(); assert_eq!(k.offset(), 0.0); assert!(k.scrolls()); }
 }

@@ -461,11 +461,12 @@ mod tests {
 
     const TOP: Spot = Spot::TOP_CENTRE;
 
-    const PET_SIZES: [Size; 4] = [
+    const PET_SIZES: [Size; 5] = [
         Size { w: 40.0, h: 40.0 },
         Size { w: 160.0, h: 40.0 },
         Size { w: 260.0, h: 40.0 },
         EXPANDED,
+        EXPANDED_USAGE,
     ];
     const PET_SPOTS: [Spot; 5] = [
         Spot { x: 0.0, y: 0.0 },
@@ -694,6 +695,7 @@ mod tests {
         for spot in [TOP, Spot { x: 0.0, y: 1.0 }, Spot { x: 1.0, y: 0.0 }, Spot { x: 0.5, y: 0.5 }] {
             assert!(ok(island_rect(DisplayMode::Pill, spot, pill, 0)), "{spot:?}");
             assert!(ok(island_rect(DisplayMode::Pill, spot, EXPANDED, 0)), "{spot:?}");
+            assert!(ok(island_rect(DisplayMode::Pill, spot, EXPANDED_USAGE, 0)), "{spot:?}");
         }
     }
 
