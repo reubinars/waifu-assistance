@@ -132,3 +132,22 @@ fn usage_line_parses() {
     assert_eq!(u[0].cli, "claude");
     assert_eq!(parse_line(r#"{"usage":[]}"#).unwrap(), Incoming::Usage(vec![]));
 }
+
+#[test]
+fn approval_lines_parse() {
+    use island_core::approvals::Decision;
+    let l = r#"{"approval":{"id":"a7","pane_id":"p3","agent":"claude","kind":"approval","tool":"Edit","summary":"Wants to edit 1 file","detail":{"files":[{"path":"a.rs","added":2,"removed":1}]},"timeout_ms":45000,"can_always":true}}"#;
+    let Incoming::Approval { id, pane_id, req, timeout_ms } = parse_line(l).unwrap() else { panic!() };
+    assert_eq!((id.as_str(), pane_id.as_str(), timeout_ms, req.can_always), ("a7", "p3", 45000, true));
+    assert_eq!(req.tool, "Edit");
+    assert_eq!(parse_line(r#"{"approval_closed":{"id":"a7"}}"#).unwrap(), Incoming::ApprovalClosed { id: "a7".into() });
+    assert_eq!(
+        parse_line(r#"{"question":{"pane_id":"p1","agent":"claude","text":"Which?"}}"#).unwrap(),
+        Incoming::Question { pane_id: "p1".into(), text: "Which?".into() }
+    );
+    let Incoming::Hooks(h) = parse_line(r#"{"hooks":{"claude":true,"codex":false}}"#).unwrap() else { panic!() };
+    assert_eq!(h.0.get("claude"), Some(&true));
+    assert_eq!(h.0.get("codex"), Some(&false));
+    assert_eq!(parse_line(r#"{"approval":{"id":"a7"}}"#).unwrap(), Incoming::Other); // malformed → ignored
+    assert_eq!(req_decide("a7", Decision::Always), "{\"decide\":{\"id\":\"a7\",\"decision\":\"always\"}}\n");
+}

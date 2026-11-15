@@ -3,6 +3,7 @@
 //! Every field herdr sends is treated as optional except `pane_id`; unknown statuses,
 //! events and result types never fail a parse.
 
+use crate::approvals::{ApprovalRequest, Decision, HookStatus};
 use crate::usage::{self, CliUsage};
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -44,6 +45,14 @@ pub enum Incoming {
     Closed { pane_id: String },
     /// Plan-limit usage pushed by the bridge.
     Usage(Vec<CliUsage>),
+    /// An agent is waiting for permission to run a tool.
+    Approval { id: String, pane_id: String, req: ApprovalRequest, timeout_ms: u64 },
+    /// The agent no longer needs the approval with this id (answered elsewhere, or timed out).
+    ApprovalClosed { id: String },
+    /// An agent is asking the user a question in this pane.
+    Question { pane_id: String, text: String },
+    /// Which agent CLIs have the island's hooks installed.
+    Hooks(HookStatus),
     /// Valid JSON we don't use.
     Other,
 }
@@ -68,6 +77,19 @@ fn agent_info(v: &Value) -> Option<AgentInfo> {
         cwd: text(v, "cwd"),
         status: status(v),
     })
+}
+
+/// The request's fields sit beside `id`, `pane_id` and `timeout_ms`; unknown keys (such as `kind`) are ignored.
+fn approval(a: &Value) -> Incoming {
+    let (Some(id), Some(pane_id), Some(timeout_ms)) =
+        (text(a, "id"), text(a, "pane_id"), a.get("timeout_ms").and_then(Value::as_u64))
+    else {
+        return Incoming::Other;
+    };
+    match ApprovalRequest::deserialize(a) {
+        Ok(req) => Incoming::Approval { id, pane_id, req, timeout_ms },
+        Err(_) => Incoming::Other,
+    }
 }
 
 fn event(kind: &str, data: &Value) -> Incoming {
@@ -96,6 +118,21 @@ pub fn parse_line(line: &str) -> Result<Incoming, serde_json::Error> {
     let v: Value = serde_json::from_str(line)?;
     if let Some(b) = v.get("bridge").and_then(Value::as_str) {
         return Ok(Incoming::Bridge { connected: b == "connected" });
+    }
+    if let Some(a) = v.get("approval") {
+        return Ok(approval(a));
+    }
+    if let Some(a) = v.get("approval_closed") {
+        return Ok(text(a, "id").map_or(Incoming::Other, |id| Incoming::ApprovalClosed { id }));
+    }
+    if let Some(q) = v.get("question") {
+        return Ok(match (text(q, "pane_id"), text(q, "text")) {
+            (Some(pane_id), Some(text)) => Incoming::Question { pane_id, text },
+            _ => Incoming::Other,
+        });
+    }
+    if let Some(h) = v.get("hooks") {
+        return Ok(HookStatus::deserialize(h).map_or(Incoming::Other, Incoming::Hooks));
     }
     if let Some(list) = v.get("usage") {
         return Ok(Incoming::Usage(usage::parse_usage(list)));
@@ -150,4 +187,11 @@ pub fn req_subscribe(id: &str, pane_ids: &[&str]) -> String {
     let mut subs = vec![json!({ "type": "pane.agent_detected" }), json!({ "type": "pane.closed" })];
     subs.extend(pane_ids.iter().map(|p| json!({ "type": "pane.agent_status_changed", "pane_id": p })));
     request(id, "events.subscribe", json!({ "subscriptions": subs }))
+}
+
+/// Answers the approval `id`. `Decision::None` is sent as `"none"`.
+pub fn req_decide(id: &str, d: Decision) -> String {
+    let mut s = json!({ "decide": { "id": id, "decision": d } }).to_string();
+    s.push('\n');
+    s
 }

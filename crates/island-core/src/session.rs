@@ -1,6 +1,7 @@
 //! Turns bridge lines into agent-table changes and the requests to send back (spec §4.3).
 
 use crate::agents::AgentTable;
+use crate::approvals::{ApprovalQueue, HookStatus};
 use crate::herdr::{self, Incoming};
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::Instant;
@@ -8,6 +9,9 @@ use std::time::Instant;
 #[derive(Default)]
 pub struct HerdrSession {
     pub agents: AgentTable,
+    pub approvals: ApprovalQueue,
+    /// The bridge's hook status snapshot. Kept across reconnects: the bridge re-sends it.
+    pub hooks: HookStatus,
     last_id: u64,
     /// Panes in the most recently sent subscription.
     sent: BTreeSet<String>,
@@ -51,6 +55,7 @@ impl HerdrSession {
 
     fn reset(&mut self) {
         self.agents.clear();
+        self.approvals.clear();
         self.sent.clear();
         self.acked.clear();
         self.pending.clear();
@@ -84,12 +89,30 @@ impl HerdrSession {
             }
             Incoming::StatusChanged { pane_id, status, title, .. } => {
                 self.agents.set_status(&pane_id, status, title, now);
+                self.approvals.on_status(&pane_id, status);
                 vec![]
             }
             // A stale status subscription for a closed or released pane is harmless; no resubscribe.
             // A released pane keeps its subscription, which still fits if an agent starts there again.
             Incoming::Closed { pane_id } | Incoming::Released { pane_id } => {
                 self.agents.remove(&pane_id);
+                self.approvals.remove_pane(&pane_id);
+                vec![]
+            }
+            Incoming::Approval { id, pane_id, req, timeout_ms } => {
+                self.approvals.insert(id, pane_id, req, timeout_ms, now);
+                vec![]
+            }
+            Incoming::ApprovalClosed { id } => {
+                self.approvals.close(&id);
+                vec![]
+            }
+            Incoming::Question { pane_id, text } => {
+                self.approvals.question(pane_id, text);
+                vec![]
+            }
+            Incoming::Hooks(hooks) => {
+                self.hooks = hooks;
                 vec![]
             }
             Incoming::Ok { id } => self.subscription_started(&id),
@@ -223,6 +246,26 @@ mod tests {
         let out = s.handle(Incoming::Ok { id: id_of(&sub) }, now());
         assert_eq!(out.len(), 1);
         assert!(out[0].contains("w1:p3"));
+    }
+
+    #[test]
+    fn bridge_down_clears_requests() {
+        let mut s = HerdrSession::default();
+        s.handle(list(&["w1:p1"]), now());
+        let req = crate::approvals::ApprovalRequest {
+            agent: "claude".into(),
+            tool: "Edit".into(),
+            summary: "Wants to edit 1 file".into(),
+            detail: None,
+            can_always: true,
+        };
+        s.handle(Incoming::Approval { id: "a1".into(), pane_id: "w1:p1".into(), req, timeout_ms: 45000 }, now());
+        let shown = s.approvals.pending(&s.agents, &s.hooks);
+        assert_eq!(shown.len(), 1);
+        assert_eq!(shown[0].pane_id, "w1:p1");
+        s.handle(Incoming::Bridge { connected: false }, now());
+        assert!(s.approvals.pending(&s.agents, &s.hooks).is_empty());
+        assert!(s.approvals.take("a1").is_none());
     }
 
     #[test]
