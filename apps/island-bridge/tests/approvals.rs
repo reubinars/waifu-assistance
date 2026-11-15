@@ -27,6 +27,10 @@ impl Bridge {
         let dir = std::env::temp_dir().join(format!("iba-{}-{name}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
+        Bridge::spawn_in(dir)
+    }
+
+    fn spawn_in(dir: PathBuf) -> Bridge {
         let mut child = Command::new(BIN)
             .env("XDG_RUNTIME_DIR", &dir)
             .env("HOME", &dir)
@@ -255,12 +259,79 @@ fn question_is_fire_and_forget() {
 
 #[test]
 fn herdr_lines_still_pass_through() {
-    let mut b = Bridge::spawn("pass");
-    b.send(r#"{"id":"x","method":"agent.list","params":{}}"#);
-    b.send(r#"{"decide":{"id":"a1"}}"#);
-    // herdr is absent, so the bridge reports that and stays up
-    assert_eq!(b.next_with("bridge")["bridge"], "disconnected");
-    assert!(b.child.try_wait().unwrap().is_none());
+    use std::os::unix::net::UnixListener;
+    let dir = std::env::temp_dir().join(format!("iba-{}-pass", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let herdr = dir.join("herdr.sock");
+    let listener = UnixListener::bind(&herdr).unwrap();
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        for stream in listener.incoming().flatten() {
+            let tx = tx.clone();
+            std::thread::spawn(move || {
+                let mut l = String::new();
+                if BufReader::new(stream).read_line(&mut l).unwrap_or(0) > 0 {
+                    let _ = tx.send(l.trim_end().to_string());
+                }
+            });
+        }
+    });
+    let mut child = Command::new(BIN)
+        .env("XDG_RUNTIME_DIR", &dir)
+        .env("HOME", &dir)
+        .env("HERDR_SOCKET_PATH", &herdr)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut stdin = child.stdin.take().unwrap();
+    let list = r#"{"id":"x","method":"agent.list","params":{}}"#;
+    writeln!(stdin, "{list}").unwrap();
+    writeln!(stdin, r#"{{"decide":{{"id":"a1","decision":"allow"}}}}"#).unwrap();
+    stdin.flush().unwrap();
+    assert_eq!(rx.recv_timeout(WAIT).unwrap(), list);
+    assert!(rx.recv_timeout(Duration::from_millis(500)).is_err(), "decide line reached herdr");
+    assert!(child.try_wait().unwrap().is_none());
+    let _ = child.kill();
+    let _ = child.wait();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn newest_bridge_takes_the_socket() {
+    use std::os::unix::fs::MetadataExt;
+    let a = Bridge::spawn("newest");
+    let ino = std::fs::metadata(a.sock()).unwrap().ino();
+    let b = Bridge::spawn_in(a.dir.clone());
+    let deadline = Instant::now() + WAIT;
+    while std::fs::metadata(b.sock()).unwrap().ino() == ino {
+        assert!(Instant::now() < deadline, "second bridge never took the path");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let hook = b.hook("claude", "claude_edit.json", Some("p1"));
+    b.next_with("approval");
+    drop(hook);
+}
+
+#[test]
+fn socket_file_without_listener_is_silent() {
+    let dir = std::env::temp_dir().join(format!("iba-{}-dead", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    drop(std::os::unix::net::UnixListener::bind(dir.join("island.sock")).unwrap());
+    let mut cmd = Command::new(BIN);
+    cmd.args(["hook", "claude"])
+        .env("XDG_RUNTIME_DIR", &dir)
+        .env("HOME", &dir)
+        .env("HERDR_PANE_ID", "p1")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped());
+    let t = Instant::now();
+    let (code, out) = finish(spawn_hook(cmd, "claude_edit.json"));
+    assert_eq!((code, out.as_str()), (0, ""));
+    assert!(t.elapsed() < Duration::from_secs(1));
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -271,7 +342,9 @@ fn unparsed_input_logs_once_and_exits_quietly() {
         assert_eq!((code, out.as_str()), (0, ""));
     }
     let log = std::fs::read_to_string(b.dir.join(".local/state/island/hook.log")).unwrap_or_default();
-    assert!(log.lines().count() <= 1, "{log}");
+    let lines: Vec<&str> = log.lines().collect();
+    assert_eq!(lines.len(), 1, "{log}");
+    assert!(lines[0].starts_with("claude - "), "{log}");
 }
 
 #[test]

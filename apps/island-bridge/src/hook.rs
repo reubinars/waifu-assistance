@@ -19,7 +19,7 @@ fn hook_timeout() -> Duration {
     std::env::var("ISLAND_HOOK_TIMEOUT_MS")
         .ok()
         .and_then(|v| v.parse().ok())
-        .map_or(HOOK_TIMEOUT, Duration::from_millis)
+        .map_or(HOOK_TIMEOUT, |ms: u64| Duration::from_millis(ms.max(1)))
 }
 
 #[cfg(not(debug_assertions))]

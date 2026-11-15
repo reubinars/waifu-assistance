@@ -43,14 +43,9 @@ pub fn spawn() -> io::Result<()> {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
     }
-    if let Ok(meta) = std::fs::symlink_metadata(&path) {
-        if !meta.file_type().is_socket() {
-            return Err(io::Error::new(io::ErrorKind::AlreadyExists, "a non-socket file is in the way"));
-        }
-        if UnixStream::connect(&path).is_ok() {
-            return Err(io::Error::new(io::ErrorKind::AddrInUse, "another bridge is serving the socket"));
-        }
-        std::fs::remove_file(&path)?;
+    // The newest bridge wins: a socket already there is replaced by the rename below.
+    if std::fs::symlink_metadata(&path).is_ok_and(|m| !m.file_type().is_socket()) {
+        return Err(io::Error::new(io::ErrorKind::AlreadyExists, "a non-socket file is in the way"));
     }
     // Bind under a temporary name and rename, so the socket never exists with wider permissions.
     let tmp = path.with_extension(format!("sock.{}", std::process::id()));
@@ -63,8 +58,13 @@ pub fn spawn() -> io::Result<()> {
         return Err(e);
     }
     std::thread::spawn(move || {
-        for stream in listener.incoming().flatten() {
-            std::thread::spawn(move || serve(stream));
+        for stream in listener.incoming() {
+            match stream {
+                Ok(stream) => {
+                    std::thread::spawn(move || serve(stream));
+                }
+                Err(_) => std::thread::sleep(Duration::from_millis(100)),
+            }
         }
     });
     Ok(())
@@ -117,7 +117,9 @@ pub fn decide(line: &str) {
     let Ok(v) = serde_json::from_str::<Value>(line) else { return };
     let Some(d) = v.get("decide") else { return };
     let Some(id) = d.get("id").and_then(Value::as_str) else { return };
-    let decision = d.get("decision").and_then(|x| serde_json::from_value::<Decision>(x.clone()).ok()).unwrap_or(Decision::None);
+    let Some(decision) = d.get("decision").and_then(|x| serde_json::from_value::<Decision>(x.clone()).ok()) else {
+        return;
+    };
     let Some(mut stream) = pending(|p| p.remove(id)) else { return };
     let reply = json!({"decision": decision}).to_string();
     let _ = stream.write_all(format!("{reply}\n").as_bytes());
