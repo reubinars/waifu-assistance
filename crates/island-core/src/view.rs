@@ -406,10 +406,17 @@ pub struct Card {
     pub kind: CardKind,
 }
 
+impl CardKind {
+    /// Row slots a card of this kind takes.
+    pub fn slots(&self) -> usize {
+        if matches!(self, CardKind::Approval { .. }) { 2 } else { 1 }
+    }
+}
+
 impl Card {
     /// Row slots the card takes.
     pub fn slots(&self) -> usize {
-        if matches!(self.kind, CardKind::Approval { .. }) { 2 } else { 1 }
+        self.kind.slots()
     }
 }
 
@@ -510,7 +517,7 @@ pub fn scroll_by(offset: usize, notches: i32, rows: usize) -> usize {
 }
 
 /// What a click at `p` (relative to the expanded island's top-left) hit, if anything.
-pub fn hit_expanded(tab: Tab, media_present: bool, spans: &[usize], scroll: usize, seekable: bool, usage: bool, p: Point) -> Option<ExpandedHit> {
+pub fn hit_expanded(tab: Tab, media_present: bool, cards: &[CardKind], scroll: usize, seekable: bool, usage: bool, p: Point) -> Option<ExpandedHit> {
     use layout::*;
     for (tab, r) in tabs(media_present) {
         if inside(r, p) {
@@ -525,11 +532,12 @@ pub fn hit_expanded(tab: Tab, media_present: bool, spans: &[usize], scroll: usiz
             if !inside(LIST, p) {
                 return None;
             }
-            let scroll = scroll.min(max_scroll(spans.iter().sum()));
+            let scroll = scroll.min(max_scroll(cards.iter().map(CardKind::slots).sum()));
             // A card partly above the list still hits on its visible part; the list clips the rest.
             let mut start = 0;
             let mut row = None;
-            for (i, &n) in spans.iter().enumerate() {
+            for (i, kind) in cards.iter().enumerate() {
+                let n = kind.slots();
                 let top = start;
                 start += n;
                 if top >= scroll + MAX_ROWS || start <= scroll {
@@ -539,12 +547,8 @@ pub fn hit_expanded(tab: Tab, media_present: bool, spans: &[usize], scroll: usiz
                 if !inside(card, p) {
                     continue;
                 }
-                // Only approvals span two slots, so that is all the spans can tell apart.
-                if n == 2 {
-                    let kind = CardKind::Approval { id: String::new(), can_always: true };
-                    if let Some((a, _)) = layout::buttons(&kind, card_band(card)).into_iter().find(|(_, r)| inside(*r, p)) {
-                        return Some(ExpandedHit::Button(i, a));
-                    }
+                if let Some((a, _)) = buttons(kind, card_band(card)).into_iter().find(|(_, r)| inside(*r, p)) {
+                    return Some(ExpandedHit::Button(i, a));
                 }
                 row = Some(i);
                 break;
@@ -890,7 +894,7 @@ mod tests {
             assert_eq!(r.x, 8.0);
             assert_eq!(r.x + r.w, EXPANDED.w - 8.0);
             let p = Point { x: r.x + r.w / 2.0, y: r.y + r.h / 2.0 };
-            assert_eq!(hit_expanded(Tab::Agents, false, &[1; 5], 1, false, false, p), Some(ExpandedHit::Row(i + 1)));
+            assert_eq!(hit_expanded(Tab::Agents, false, &[const { CardKind::Agent }; 5], 1, false, false, p), Some(ExpandedHit::Row(i + 1)));
         }
         assert_eq!(layout::slot_rect(0).h, 44.0);
         assert_eq!(layout::slot_rect(1).y - layout::slot_rect(0).y, 50.0);
@@ -919,7 +923,7 @@ mod tests {
 
     #[test]
     fn scrolled_hits_use_absolute_rows_inside_the_list() {
-        let hit = |rows, scroll, x, y| hit_expanded(Tab::Agents, false, &vec![1; rows], scroll, false, false, Point { x, y });
+        let hit = |rows, scroll, x, y| hit_expanded(Tab::Agents, false, &vec![CardKind::Agent; rows], scroll, false, false, Point { x, y });
         assert_eq!(hit(5, 1, 100.0, 50.0), Some(ExpandedHit::Row(1)));
         assert_eq!(hit(5, 1, 100.0, 175.0), Some(ExpandedHit::Row(3)));
         assert_eq!(hit(2, 0, 100.0, 150.0), None);
@@ -939,8 +943,8 @@ mod tests {
         assert_eq!(hit_expanded(Tab::Media, true, &[], 0, true, false, p(230.0, 160.0)), Some(ExpandedHit::Next));
         assert_eq!(hit_expanded(Tab::Media, true, &[], 0, true, false, p(180.0, 110.0)), Some(ExpandedHit::Seek(0.5)));
         assert_eq!(hit_expanded(Tab::Media, true, &[], 0, false, false, p(180.0, 110.0)), None);
-        assert_eq!(hit_expanded(Tab::Agents, true, &[1; 2], 0, false, false, p(100.0, 120.0)), Some(ExpandedHit::Row(1)));
-        assert_eq!(hit_expanded(Tab::Agents, true, &[1; 1], 0, false, false, p(100.0, 120.0)), None);
+        assert_eq!(hit_expanded(Tab::Agents, true, &[const { CardKind::Agent }; 2], 0, false, false, p(100.0, 120.0)), Some(ExpandedHit::Row(1)));
+        assert_eq!(hit_expanded(Tab::Agents, true, &[const { CardKind::Agent }; 1], 0, false, false, p(100.0, 120.0)), None);
         assert_eq!(hit_expanded(Tab::Agents, true, &[], 0, false, false, p(300.0, 20.0)), Some(ExpandedHit::Tab(Tab::Media)));
         assert_eq!(hit_expanded(Tab::Media, true, &[], 0, false, false, p(250.0, 20.0)), Some(ExpandedHit::Tab(Tab::Agents)));
         assert_eq!(hit_expanded(Tab::Agents, false, &[], 0, false, false, p(300.0, 20.0)), Some(ExpandedHit::Tab(Tab::Agents)));
@@ -960,9 +964,9 @@ mod tests {
     #[test]
     fn usage_strip_hit() {
         let p = Point { x: 100.0, y: 200.0 };
-        assert_eq!(hit_expanded(Tab::Agents, false, &[1; 2], 0, false, true, p), Some(ExpandedHit::Usage));
-        assert_eq!(hit_expanded(Tab::Agents, false, &[1; 2], 0, false, false, p), None);
-        assert_eq!(hit_expanded(Tab::Media, true, &[1; 2], 0, false, true, p), None);
+        assert_eq!(hit_expanded(Tab::Agents, false, &[const { CardKind::Agent }; 2], 0, false, true, p), Some(ExpandedHit::Usage));
+        assert_eq!(hit_expanded(Tab::Agents, false, &[const { CardKind::Agent }; 2], 0, false, false, p), None);
+        assert_eq!(hit_expanded(Tab::Media, true, &[const { CardKind::Agent }; 2], 0, false, true, p), None);
     }
 
     fn approval(can_always: bool) -> CardKind {
@@ -971,7 +975,7 @@ mod tests {
 
     #[test]
     fn approval_cards_span_two_slots() {
-        let hit = |scroll, y| hit_expanded(Tab::Agents, false, &[2, 1, 1], scroll, false, false, Point { x: 100.0, y });
+        let hit = |scroll, y| hit_expanded(Tab::Agents, false, &[approval(true), CardKind::Agent, CardKind::Agent], scroll, false, false, Point { x: 100.0, y });
         assert_eq!(hit(0, 50.0), Some(ExpandedHit::Row(0)));
         assert_eq!(hit(0, 100.0), Some(ExpandedHit::Row(0)));
         assert_eq!(hit(0, 150.0), Some(ExpandedHit::Row(1)));
@@ -1006,8 +1010,27 @@ mod tests {
         let band = layout::card_band(card);
         let allow = layout::buttons(&approval(true), band)[3].1;
         let p = Point { x: allow.x + allow.w / 2.0, y: allow.y + allow.h / 2.0 };
-        assert_eq!(hit_expanded(Tab::Agents, false, &[2, 1], 0, false, false, p), Some(ExpandedHit::Button(0, Action::Allow)));
-        assert_eq!(hit_expanded(Tab::Agents, false, &[2, 1], 0, false, false, Point { x: 100.0, y: 60.0 }), Some(ExpandedHit::Row(0)));
+        assert_eq!(hit_expanded(Tab::Agents, false, &[approval(true), CardKind::Agent], 0, false, false, p), Some(ExpandedHit::Button(0, Action::Allow)));
+        assert_eq!(hit_expanded(Tab::Agents, false, &[approval(true), CardKind::Agent], 0, false, false, Point { x: 100.0, y: 60.0 }), Some(ExpandedHit::Row(0)));
+    }
+
+    #[test]
+    fn question_and_needs_you_buttons_hit() {
+        let band = layout::card_band(layout::slot_rect(0));
+        let centre = |r: Rect| Point { x: r.x + r.w / 2.0, y: r.y + r.h / 2.0 };
+        let hit = |k: CardKind, p| hit_expanded(Tab::Agents, false, &[k], 0, false, false, p);
+        let q = layout::buttons(&CardKind::Question, band);
+        assert_eq!(hit(CardKind::Question, centre(q[0].1)), Some(ExpandedHit::Button(0, Action::Later)));
+        assert_eq!(hit(CardKind::Question, centre(q[1].1)), Some(ExpandedHit::Button(0, Action::OpenTerminal)));
+        let n = layout::buttons(&CardKind::NeedsYou { hook_missing: false }, band);
+        assert_eq!(hit(CardKind::NeedsYou { hook_missing: true }, centre(n[0].1)), Some(ExpandedHit::Button(0, Action::OpenTerminal)));
+        assert_eq!(hit(CardKind::Agent, centre(n[0].1)), Some(ExpandedHit::Row(0)));
+        // an approval without Always: where Always would sit is the card body
+        let card = layout::card_rect(0, 2);
+        let always = layout::buttons(&approval(true), layout::card_band(card))[2].1;
+        let p = centre(always);
+        assert_eq!(hit_expanded(Tab::Agents, false, &[approval(true)], 0, false, false, p), Some(ExpandedHit::Button(0, Action::Always)));
+        assert_eq!(hit_expanded(Tab::Agents, false, &[approval(false)], 0, false, false, p), Some(ExpandedHit::Row(0)));
     }
 
     #[test]

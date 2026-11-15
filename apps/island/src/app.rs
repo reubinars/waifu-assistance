@@ -22,7 +22,7 @@ use island_core::ticker::Ticker;
 use island_core::usage::{CliUsage, strip_runs};
 use island_core::view::layout::{self, SEEK};
 use island_core::view::{
-    COLLAPSED, Collapsed, Dot, DisplayMode, ExpandedHit, Shown, Spot, Tab, block_rect, block_size, choose_collapsed, clock_label,
+    COLLAPSED, CardKind, Collapsed, Dot, DisplayMode, ExpandedHit, Shown, Spot, Tab, block_rect, block_size, choose_collapsed, clock_label,
     corner_radii, expanded_size, fullscreen_jump_target, hit_expanded, is_drag, island_rect,
     jump_target, max_scroll, pet_cell, scroll_by, second_pet_cell, shown, spot_at,
 };
@@ -410,7 +410,7 @@ impl App {
         let rows = self.session.agents.rows(usize::MAX).len();
         let seekable = present && self.clock.seekable();
         let usage = !self.usage.is_empty();
-        hit_expanded(self.tab, present, &vec![1; rows], self.scroll, seekable, usage, Point { x: p.x - o.x, y: p.y - o.y })
+        hit_expanded(self.tab, present, &vec![CardKind::Agent; rows], self.scroll, seekable, usage, Point { x: p.x - o.x, y: p.y - o.y })
     }
 
     fn cursor(&self) -> Option<Point> {
