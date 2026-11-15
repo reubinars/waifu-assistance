@@ -71,7 +71,7 @@ fn rel(path: &str, cwd: Option<&str>) -> String {
 
 /// Replaces control characters, and bidi and format characters that can disguise a name, with '?'.
 /// With `command` set (text shown as a command) newlines survive, a tab becomes a space and a CR is dropped.
-fn sanitize(s: &str, command: bool) -> String {
+pub(crate) fn sanitize(s: &str, command: bool) -> String {
     s.chars()
         .filter(|&c| !(command && c == '\r'))
         .map(|c| {
@@ -100,7 +100,7 @@ fn cap(s: &str) -> String {
 }
 
 /// Keeps the first `max` characters, ending with an ellipsis when cut.
-fn cap_to(s: &str, max: usize) -> String {
+pub(crate) fn cap_to(s: &str, max: usize) -> String {
     if s.chars().count() <= max {
         return s.to_owned();
     }
