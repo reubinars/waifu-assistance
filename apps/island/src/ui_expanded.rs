@@ -7,7 +7,7 @@ use island_core::Rect;
 use island_core::anim::{Fade, breathe};
 use island_core::herdr::AgentStatus;
 use island_core::ticker;
-use island_core::usage::{Level, Run, Tone};
+use island_core::usage::{Level, Run, Tone, level};
 use island_core::view::layout::{self, MAX_ROWS};
 use island_core::view::{EXPANDED, ExpandedHit, Tab, max_scroll, status_word};
 use std::cell::Cell;
@@ -275,7 +275,14 @@ fn tone_color(t: Tone) -> Color {
         Tone::Percent(Level::Low) => DONE,
         Tone::Percent(Level::Mid) => BLOCKED,
         Tone::Percent(Level::High) => HIGH,
+        Tone::Bar(pct) => tone_color(Tone::Percent(level(pct as f32))),
     }
+}
+
+/// A strip run, laid out: text, or a bar filled to a fraction.
+enum Piece {
+    Text(IDWriteTextLayout),
+    Bar(f32),
 }
 
 /// The laid-out text's advance, trailing spaces included (`Painter::width` drops them, and the
@@ -294,13 +301,22 @@ fn draw_usage(p: &mut Painter, ox: f32, oy: f32, k: f32, s: &Scene) -> Result<()
     const FADE_BANDS: [f32; 4] = [0.8, 0.6, 0.4, 0.2];
     const BAND_W: f32 = 3.0;
     let strip = off(layout::USAGE, ox, oy);
+    const BAR_W: f32 = 26.0;
+    const BAR_H: f32 = 4.0;
+    const BAR_GAP: f32 = 5.0;
     let mut runs = Vec::with_capacity(s.usage.len());
     let mut total = 0.0;
     for run in &s.usage {
-        let weight = if run.tone == Tone::Name { 600 } else { 400 };
-        let l = p.layout(&run.text, Rect { w: 4000.0, ..strip }, 11.0, weight, Align::Left)?;
-        let w = advance(&l);
-        runs.push((l, w, tone_color(run.tone).fade(k)));
+        let (piece, w, c) = match run.tone {
+            Tone::Bar(pct) => (Piece::Bar(pct.min(100) as f32 / 100.0), BAR_W + BAR_GAP, tone_color(run.tone)),
+            tone => {
+                let weight = if tone == Tone::Name { 600 } else { 400 };
+                let l = p.layout(&run.text, Rect { w: 4000.0, ..strip }, 11.0, weight, Align::Left)?;
+                let w = advance(&l);
+                (Piece::Text(l), w, tone_color(tone))
+            }
+        };
+        runs.push((piece, w, c.fade(k)));
         total += w;
     }
     s.usage_width.set(total);
@@ -313,9 +329,20 @@ fn draw_usage(p: &mut Painter, ox: f32, oy: f32, k: f32, s: &Scene) -> Result<()
     let starts: &[f32] = if scrolls { &[0.0, total + ticker::GAP] } else { &[0.0] };
     for start in starts {
         let mut x = strip.x - offset + start;
-        for (l, w, c) in &runs {
+        for (piece, w, c) in &runs {
             if x < strip.x + strip.w && x + w > strip.x {
-                p.draw_layout(l, x, strip.y, *c);
+                match piece {
+                    Piece::Text(l) => p.draw_layout(l, x, strip.y, *c),
+                    Piece::Bar(fill) => {
+                        let track = Rect { x, y: strip.y + (strip.h - BAR_H) / 2.0, w: BAR_W, h: BAR_H };
+                        p.round_rect(track, BAR_H / 2.0, Color::white(0.14).fade(k));
+                        if *fill > 0.0 {
+                            // at least a dot, so a sliver of use still shows
+                            let w = (BAR_W * fill).max(BAR_H);
+                            p.round_rect(Rect { w, ..track }, BAR_H / 2.0, *c);
+                        }
+                    }
+                }
             }
             x += w;
         }

@@ -27,6 +27,8 @@ pub enum Tone {
     Name,
     Dim,
     Percent(Level),
+    /// A small bar filled to this percent (0..=100), coloured by its level; the run's text is empty.
+    Bar(u8),
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -107,7 +109,7 @@ pub fn effective(w: &UsageWindow, now_unix: i64) -> (f32, Option<i64>) {
     }
 }
 
-/// The strip text: one name run per CLI, then its windows, each with a percent and a countdown.
+/// The strip text: one name run per CLI, then its windows, each with a bar, a percent and a countdown.
 pub fn strip_runs(snapshot: &[CliUsage], now_unix: i64) -> Vec<Run> {
     let mut runs = Vec::new();
     for (i, cli) in snapshot.iter().enumerate() {
@@ -119,6 +121,7 @@ pub fn strip_runs(snapshot: &[CliUsage], now_unix: i64) -> Vec<Run> {
             let (pct, secs) = effective(w, now_unix);
             // Colour and text both use the rounded percent, so the colour matches the number shown.
             let shown = pct.round();
+            runs.push(Run { text: String::new(), tone: Tone::Bar(shown as u8) });
             runs.push(Run { text: format!("{shown:.0}%"), tone: Tone::Percent(level(shown)) });
             if let Some(secs) = secs {
                 runs.push(Run { text: format!(" · {}", countdown(secs)), tone: Tone::Dim });
@@ -149,11 +152,11 @@ mod tests {
     fn level_follows_shown_percent() {
         let w = |p| UsageWindow { minutes: 300, used_percent: p, resets_at: None };
         assert_eq!(
-            strip_runs(&[CliUsage { cli: "claude".into(), windows: vec![w(79.6)] }], 0)[2],
+            strip_runs(&[CliUsage { cli: "claude".into(), windows: vec![w(79.6)] }], 0)[3],
             Run { text: "80%".into(), tone: Tone::Percent(Level::High) }
         );
         assert_eq!(
-            strip_runs(&[CliUsage { cli: "claude".into(), windows: vec![w(49.6)] }], 0)[2],
+            strip_runs(&[CliUsage { cli: "claude".into(), windows: vec![w(49.6)] }], 0)[3],
             Run { text: "50%".into(), tone: Tone::Percent(Level::Mid) }
         );
     }
@@ -208,12 +211,15 @@ mod tests {
             vec![
                 r("Claude", Tone::Name),
                 r(" 5h ", Tone::Dim),
+                r("", Tone::Bar(42)),
                 r("42%", Tone::Percent(Level::Low)),
                 r(" · 2h10m", Tone::Dim),
                 r("  7d ", Tone::Dim),
+                r("", Tone::Bar(85)),
                 r("85%", Tone::Percent(Level::High)),
                 r("   Codex", Tone::Name),
                 r(" 5h ", Tone::Dim),
+                r("", Tone::Bar(0)),
                 r("0%", Tone::Percent(Level::Low)),
             ]
         );
