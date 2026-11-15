@@ -265,6 +265,13 @@ fn edit_json(path: &Path, create: bool, edit: impl FnOnce(&mut Value) -> Result<
 /// Replaces `path` with `bytes` (or deletes it on `None`), backing up the old bytes first.
 /// Returns false when the file already holds `bytes`.
 fn replace_file(path: &Path, bytes: Option<&[u8]>) -> Result<bool, String> {
+    // a symlinked config (a dotfiles repo) is written through, so the link survives
+    let resolved = if fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_symlink()) {
+        fs::canonicalize(path).map_err(|e| at(path, e))?
+    } else {
+        path.to_path_buf()
+    };
+    let path = resolved.as_path();
     let existing = read_opt(path)?;
     if existing.as_deref() == bytes {
         return Ok(false);
@@ -287,11 +294,13 @@ fn replace_file(path: &Path, bytes: Option<&[u8]>) -> Result<bool, String> {
     Ok(true)
 }
 
-/// Writes `bytes` to `path` and sets the mode even when the file already existed.
+/// Writes `bytes` to `path` with `mode`, also when the file already existed. The mode is set
+/// before any content is written, so the bytes are never readable under an older, wider mode.
 fn write_with_mode(path: &Path, bytes: &[u8], mode: u32) -> io::Result<()> {
-    let mut file = fs::OpenOptions::new().write(true).create(true).truncate(true).mode(mode).open(path)?;
-    file.write_all(bytes)?;
-    file.set_permissions(fs::Permissions::from_mode(mode))
+    let mut file = fs::OpenOptions::new().write(true).create(true).truncate(false).mode(mode).open(path)?;
+    file.set_permissions(fs::Permissions::from_mode(mode))?;
+    file.set_len(0)?;
+    file.write_all(bytes)
 }
 
 fn read_opt(path: &Path) -> Result<Option<Vec<u8>>, String> {
@@ -511,6 +520,49 @@ mod tests {
         assert_eq!(mode(&claude), 0o600);
         assert_eq!(mode(&claude.with_extension("json.bak")), 0o600);
         assert_eq!(mode(&home.join(".codex/hooks.json")), 0o600);
+    }
+
+    #[test]
+    fn a_wider_old_backup_is_narrowed_before_new_content() {
+        let dir = home("wide-bak");
+        let f = dir.join("f.bak");
+        write(&f, "old secret");
+        fs::set_permissions(&f, fs::Permissions::from_mode(0o644)).unwrap();
+        write_with_mode(&f, b"new", 0o600).unwrap();
+        assert_eq!((mode(&f), fs::read_to_string(&f).unwrap().as_str()), (0o600, "new"));
+
+        // through install: a stale world-readable .bak ends up with the original's mode
+        let home = home("wide-bak-install");
+        let claude = home.join(".claude/settings.json");
+        write(&claude, CLAUDE);
+        fs::set_permissions(&claude, fs::Permissions::from_mode(0o600)).unwrap();
+        let bak = home.join(".claude/settings.json.bak");
+        write(&bak, "stale");
+        fs::set_permissions(&bak, fs::Permissions::from_mode(0o644)).unwrap();
+        install_with(&home, Path::new(EXE), false).unwrap();
+        assert_eq!(mode(&bak), 0o600);
+        assert_eq!(fs::read_to_string(&bak).unwrap(), CLAUDE);
+    }
+
+    #[test]
+    fn symlinked_settings_survive_install_and_remove() {
+        let home = home("symlink");
+        let real = home.join("dotfiles/settings.json");
+        write(&real, CLAUDE);
+        fs::create_dir_all(home.join(".claude")).unwrap();
+        let link = home.join(".claude/settings.json");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+
+        install_with(&home, Path::new(EXE), false).unwrap();
+        assert!(fs::symlink_metadata(&link).unwrap().file_type().is_symlink());
+        assert!(has_ours(&parse(&real), "PermissionRequest", None, "claude"));
+        assert_eq!(fs::read_to_string(home.join("dotfiles/settings.json.bak")).unwrap(), CLAUDE);
+        assert!(!home.join(".claude/settings.json.bak").exists());
+        assert!(!home.join(".claude/settings.json.tmp").exists());
+
+        remove(&home).unwrap();
+        assert!(fs::symlink_metadata(&link).unwrap().file_type().is_symlink());
+        assert_eq!(parse(&real), serde_json::from_str::<Value>(CLAUDE).unwrap());
     }
 
     #[test]
