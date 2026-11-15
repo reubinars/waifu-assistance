@@ -22,6 +22,7 @@ pub struct Rect {
 
 pub mod anim;
 pub mod agents;
+pub mod approvals;
 pub mod color;
 pub mod config;
 pub mod herdr;
