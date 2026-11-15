@@ -26,6 +26,7 @@ pub mod approvals;
 pub mod color;
 pub mod config;
 pub mod herdr;
+pub mod hooks;
 pub mod media;
 pub mod platform;
 pub mod pet;
