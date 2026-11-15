@@ -1,7 +1,7 @@
 //! The collapsed island's status dot and media ring.
 
 use crate::animator::Face;
-use crate::draw::{Color, Painter, TEXT_PRIMARY};
+use crate::draw::{Align, Color, Painter, TEXT_PRIMARY};
 use island_core::Rect;
 use island_core::anim::{BLOCKED_PULSE_PERIOD, pulse};
 use island_core::view::Dot;
@@ -20,7 +20,11 @@ pub struct Scene {
     pub playing: bool,
     /// The album-art tint for the orbiting arc (white when there is none).
     pub accent: Color,
+    /// Requests waiting on the user; above 0 a badge shows top-right.
+    pub badge: u8,
 }
+
+const BADGE_R: f32 = 9.0;
 
 /// Draws `face` inside `r` at opacity `k` (the caller clips to the island shape).
 pub fn draw(p: &mut Painter, face: &Face, r: Rect, k: f32, s: &Scene) -> Result<()> {
@@ -46,6 +50,13 @@ pub fn draw(p: &mut Painter, face: &Face, r: Rect, k: f32, s: &Scene) -> Result<
             p.shadow(&dot, 0.0, 0.0, 6.0, DONE.fade(k))?;
             p.fill(&dot, DONE.fade(k));
         }
+    }
+    if s.badge > 0 {
+        let (bx, by) = (r.x + r.w - BADGE_R, r.y + BADGE_R);
+        p.circle(bx, by, 2.0 * BADGE_R, BLOCKED.fade(k));
+        let label = if s.badge > 9 { "9+".to_string() } else { s.badge.to_string() };
+        let box_ = Rect { x: bx - BADGE_R, y: by - BADGE_R, w: 2.0 * BADGE_R, h: 2.0 * BADGE_R };
+        p.text(&label, box_, 11.0, 700, Color::BLACK.fade(k), Align::Center)?;
     }
     Ok(())
 }

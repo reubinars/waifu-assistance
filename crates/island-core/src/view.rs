@@ -442,6 +442,22 @@ pub fn cards(pending: &[Pending], agents: &AgentTable) -> Vec<Card> {
     out
 }
 
+/// The compact detail line of a 2-slot card: the first file as `path +a −r` and `· +N more`, or
+/// the first line of the command.
+pub fn detail_line(d: &Detail) -> Option<String> {
+    match d {
+        Detail::Files(files) => {
+            let first = files.first()?;
+            let mut s = format!("{} +{} \u{2212}{}", first.path, first.added, first.removed);
+            if files.len() > 1 {
+                s.push_str(&format!(" \u{b7} +{} more", files.len() - 1));
+            }
+            Some(s)
+        }
+        Detail::Command(c) => c.lines().map(str::trim).find(|l| !l.is_empty()).map(str::to_owned),
+    }
+}
+
 /// The one-request popup (spec 6.3), relative to its top-left.
 #[derive(Clone, Debug, PartialEq)]
 pub struct PopupLayout {
@@ -1047,6 +1063,19 @@ mod tests {
         let p = Point { x: allow.x + 1.0, y: allow.y + 1.0 };
         assert_eq!(hit_popup(&l, &approval(true), p), Some(Action::Allow));
         assert_eq!(hit_popup(&l, &approval(true), Point { x: 0.0, y: 0.0 }), None);
+    }
+
+    #[test]
+    fn detail_line_is_compact() {
+        let f = |p: &str, a, r| FileChange { path: p.into(), added: a, removed: r };
+        assert_eq!(detail_line(&Detail::Files(vec![f("src/a.rs", 3, 1)])).as_deref(), Some("src/a.rs +3 \u{2212}1"));
+        assert_eq!(
+            detail_line(&Detail::Files(vec![f("a", 1, 0), f("b", 2, 2), f("c", 0, 5)])).as_deref(),
+            Some("a +1 \u{2212}0 \u{b7} +2 more")
+        );
+        assert_eq!(detail_line(&Detail::Files(vec![])), None);
+        assert_eq!(detail_line(&Detail::Command("\n git push\nsecond".into())).as_deref(), Some("git push"));
+        assert_eq!(detail_line(&Detail::Command("  ".into())), None);
     }
 
     #[test]

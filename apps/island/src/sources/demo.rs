@@ -2,6 +2,7 @@
 
 use super::{AgentSource, ArtImage, DemoAction, MediaCommand, MediaSource, SourceEvent, UiSender};
 use crate::log;
+use island_core::approvals::{ApprovalRequest, Detail, FileChange};
 use island_core::herdr::{AgentInfo, AgentStatus, Incoming};
 use island_core::media::{MediaSnapshot, Playback};
 use island_core::view::{DisplayMode, Tab};
@@ -106,6 +107,38 @@ fn script(tx: UiSender) {
         list.push(agent("w1:p4", "claude", AgentStatus::Blocked, &long_title, long_dir));
         list.push(agent("w1:p5", "codex", AgentStatus::Blocked, "Allow edit to Cargo.toml?", proj));
         agents(&tx, list);
+        thread::sleep(STEP);
+        // requests: an approval, a question and a Blocked pane with neither, in the Agents tab
+        let blocked = vec![
+            agent("w1:p7", "codex", AgentStatus::Blocked, "Waiting", "/home/demo/projects/nil"),
+            agent("w1:p5", "claude", AgentStatus::Blocked, "Which branch?", proj),
+            agent("w1:p4", "claude", AgentStatus::Blocked, "Editing the parser", proj),
+            agent("w1:p1", "opencode", AgentStatus::Working, "Writing tests", "/home/demo/projects/nil"),
+        ];
+        agents(&tx, blocked);
+        tx.send(SourceEvent::Herdr(Incoming::Approval {
+            id: "demo-a1".into(),
+            pane_id: "w1:p4".into(),
+            req: ApprovalRequest {
+                agent: "claude".into(),
+                tool: "Edit".into(),
+                summary: "Edit 2 files".into(),
+                detail: Some(Detail::Files(vec![
+                    FileChange { path: "src/parser.rs".into(), added: 12, removed: 3 },
+                    FileChange { path: "src/lib.rs".into(), added: 1, removed: 0 },
+                ])),
+                can_always: true,
+            },
+            timeout_ms: 45_000,
+        }));
+        tx.send(SourceEvent::Herdr(Incoming::Question { pane_id: "w1:p5".into(), text: "Which branch should I base this on?".into() }));
+        demo(&tx, DemoAction::Expand(Tab::Agents));
+        thread::sleep(STEP * 2);
+        demo(&tx, DemoAction::Collapse);
+        tx.send(SourceEvent::Herdr(Incoming::ApprovalClosed { id: "demo-a1".into() }));
+        for pane in ["w1:p4", "w1:p5", "w1:p7"] {
+            tx.send(SourceEvent::Herdr(Incoming::Closed { pane_id: pane.into() }));
+        }
         thread::sleep(STEP);
         // expanded: agents tab (5 agents, 4 rows), then media tab; then attached mode
         let rows = vec![

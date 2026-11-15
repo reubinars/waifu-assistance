@@ -9,7 +9,7 @@ use island_core::herdr::AgentStatus;
 use island_core::ticker;
 use island_core::usage::{Level, Run, Tone, level};
 use island_core::view::layout::{self, MAX_ROWS};
-use island_core::view::{EXPANDED, ExpandedHit, Tab, max_scroll, status_word};
+use island_core::view::{Action, CardKind, EXPANDED, ExpandedHit, Tab, max_scroll, status_word};
 use std::cell::Cell;
 use windows::Win32::Graphics::Direct2D::ID2D1Bitmap1;
 use windows::Win32::Graphics::DirectWrite::{DWRITE_TEXT_METRICS, IDWriteTextLayout};
@@ -26,6 +26,8 @@ const BUTTON_FADE: f32 = 0.12;
 pub enum Hot {
     Tab(Tab),
     Row(usize),
+    /// A card's button, by card index.
+    Button(usize, Action),
     Prev,
     Play,
     Next,
@@ -34,7 +36,9 @@ pub enum Hot {
     Usage,
 }
 
-const HOT_COUNT: usize = 8 + MAX_ROWS;
+const ACTIONS: usize = 5;
+const BUTTONS_AT: usize = 8 + MAX_ROWS;
+const HOT_COUNT: usize = BUTTONS_AT + (MAX_ROWS + 1) * ACTIONS;
 
 impl Hot {
     pub fn of(hit: ExpandedHit) -> Hot {
@@ -46,7 +50,7 @@ impl Hot {
             ExpandedHit::Next => Hot::Next,
             ExpandedHit::Seek(_) => Hot::Seek,
             ExpandedHit::Usage => Hot::Usage,
-            ExpandedHit::Button(i, _) => Hot::Row(i),
+            ExpandedHit::Button(i, a) => Hot::Button(i, a),
         }
     }
 
@@ -60,6 +64,7 @@ impl Hot {
             Hot::Seek => 5,
             Hot::Row(i) => 6 + i % (MAX_ROWS + 1),
             Hot::Usage => 7 + MAX_ROWS,
+            Hot::Button(i, a) => BUTTONS_AT + i % (MAX_ROWS + 1) * ACTIONS + a as usize,
         }
     }
 }
@@ -122,12 +127,17 @@ impl Hover {
     }
 }
 
-pub struct Row {
+pub struct Card {
     pub status: AgentStatus,
     pub name: String,
     pub folder: String,
     /// The agent's title, or None when there is nothing to show beyond the name.
     pub subtitle: Option<String>,
+    pub kind: CardKind,
+    /// A request card's text: the approval's summary, the question, or the missing-hook hint.
+    pub summary: Option<String>,
+    /// An approval's compact detail: the first file or command line.
+    pub line: Option<String>,
 }
 
 pub struct Media {
@@ -144,7 +154,7 @@ pub struct Media {
 pub struct Scene<'a> {
     pub t: f64,
     pub media_present: bool,
-    pub rows: Vec<Row>,
+    pub cards: Vec<Card>,
     pub scroll: f32,
     pub media: Option<Media>,
     pub art: Option<&'a ID2D1Bitmap1>,
@@ -193,14 +203,37 @@ fn status_color(s: AgentStatus) -> Color {
     }
 }
 
-/// One two-line card per agent. Line 1: dot, name, folder, and the status word on the right.
-/// Line 2: the title, when there is one; without it line 1 is centred in the card.
+const ORANGE: Color = BLOCKED;
+
+fn button_label(kind: &CardKind, a: Action) -> &'static str {
+    match (kind, a) {
+        (CardKind::Question, Action::OpenTerminal) => "Reply in terminal",
+        (_, Action::OpenTerminal) => "Open terminal",
+        (_, Action::Allow) => "Allow",
+        (_, Action::Deny) => "Deny",
+        (_, Action::Always) => "Always allow",
+        (_, Action::Later) => "Later",
+    }
+}
+
+fn header_label(kind: &CardKind) -> &'static str {
+    match kind {
+        CardKind::Approval { .. } => "approval",
+        CardKind::Question => "asks",
+        CardKind::NeedsYou { .. } => "needs you",
+        CardKind::Agent => "",
+    }
+}
+
+/// One card per agent or request. Agent: dot, name, folder and status word, then the title.
+/// Request cards are tinted orange and carry buttons; approvals take two slots (header, summary,
+/// detail, buttons), the one-slot kinds put name and text between their buttons.
 fn draw_rows(p: &mut Painter, ox: f32, oy: f32, k: f32, s: &Scene) -> Result<()> {
     const DOT_X: f32 = 14.0;
     const NAME_X: f32 = 26.0;
     const NAME_MAX: f32 = 110.0;
     const FOLDER_MAX: f32 = 90.0;
-    const STATUS_BOX: f32 = 60.0;
+    const STATUS_BOX: f32 = 80.0;
     const SPACE: f32 = 8.0;
     const RIGHT: f32 = 10.0;
     const MIN_FOLDER: f32 = 12.0;
@@ -208,7 +241,8 @@ fn draw_rows(p: &mut Painter, ox: f32, oy: f32, k: f32, s: &Scene) -> Result<()>
     const LINE1_H: f32 = 18.0;
     const LINE2_Y: f32 = 22.0;
     const LINE2_H: f32 = 16.0;
-    if s.rows.is_empty() {
+    const BUTTON_R: f32 = 14.0;
+    if s.cards.is_empty() {
         let row = off(layout::slot_rect(0), ox, oy);
         return p.text("No agents", Rect { x: row.x + NAME_X, w: row.w - NAME_X, ..row }, 14.0, 600, TEXT_SECONDARY.fade(k), Align::Left);
     }
@@ -216,31 +250,57 @@ fn draw_rows(p: &mut Painter, ox: f32, oy: f32, k: f32, s: &Scene) -> Result<()>
     let mask = p.rect_geometry(list)?;
     p.push_layer(Some(&mask), 1.0);
     let drawn = (|| -> Result<()> {
-        for (i, row) in s.rows.iter().enumerate() {
-            let r = off(layout::slot_rect(i), ox, oy - s.scroll * layout::ROW_STEP);
+        let mut top = 0;
+        for (i, row) in s.cards.iter().enumerate() {
+            let n = row.kind.slots();
+            let base = layout::card_rect(0, n);
+            let card = Rect { y: base.y + layout::ROW_STEP * (top as f32 - s.scroll), ..base };
+            top += n;
+            let r = off(card, ox, oy);
             if r.y + r.h <= list.y || r.y >= list.y + list.h {
                 continue;
             }
-            p.round_rect(r, layout::ROW_RADIUS, Color::white(0.06).fade(k));
+            let request = row.kind != CardKind::Agent;
+            if request {
+                p.round_rect(r, layout::ROW_RADIUS, ORANGE.with_alpha(0.08).fade(k));
+                p.round_rect_outline(r, layout::ROW_RADIUS, ORANGE.with_alpha(0.35).fade(k), 1.0);
+            } else {
+                p.round_rect(r, layout::ROW_RADIUS, Color::white(0.06).fade(k));
+            }
             let h = s.hover.hover(Hot::Row(i), s.t);
             if h > 0.0 {
                 p.round_rect(r, layout::ROW_RADIUS, Color::white(0.10 * h).fade(k));
             }
-            let (y1, h1) = match row.subtitle {
-                Some(_) => (r.y + LINE1_Y, LINE1_H),
-                None => (r.y + (r.h - LINE1_H) / 2.0, LINE1_H),
+            let color = if request { ORANGE } else { status_color(row.status) };
+            let buttons = layout::buttons(&row.kind, layout::card_band(r));
+            let one_slot = request && n == 1;
+            // the area for text on a one-slot request card: between its two button groups
+            let (mid_l, mid_r) = if one_slot {
+                let centre = r.x + r.w / 2.0;
+                let l = buttons.iter().filter(|(_, b)| b.x + b.w / 2.0 < centre).map(|(_, b)| b.x + b.w).fold(r.x + NAME_X, f32::max) + SPACE;
+                let rt = buttons.iter().filter(|(_, b)| b.x + b.w / 2.0 >= centre).map(|(_, b)| b.x).fold(r.x + r.w - RIGHT + SPACE, f32::min) - SPACE;
+                (l, rt)
+            } else {
+                (r.x + NAME_X, r.x + r.w - RIGHT)
+            };
+            let (y1, h1) = match (&row.subtitle, request) {
+                (_, true) => (r.y + LINE1_Y, LINE1_H),
+                (Some(_), false) => (r.y + LINE1_Y, LINE1_H),
+                (None, false) => (r.y + (r.h - LINE1_H) / 2.0, LINE1_H),
             };
             let band = |x: f32, w: f32| Rect { x, y: y1, w: w.max(0.0), h: h1 };
-            let color = status_color(row.status);
-            p.circle(r.x + DOT_X, y1 + h1 / 2.0, 6.0, color.fade(k));
+            p.circle(r.x + DOT_X, if one_slot { r.y + r.h / 2.0 } else { y1 + h1 / 2.0 }, 6.0, color.fade(k));
 
-            let right = r.x + r.w - RIGHT;
-            let status = p.layout(status_word(row.status), band(right - STATUS_BOX, STATUS_BOX), 11.0, 600, Align::Right)?;
+            let right = if one_slot { mid_r } else { r.x + r.w - RIGHT };
+            let status_text = if request { header_label(&row.kind) } else { status_word(row.status) };
+            let status_w = if one_slot && matches!(row.kind, CardKind::Question) { 36.0 } else { STATUS_BOX };
+            let status = p.layout(status_text, band(right - status_w, status_w), 11.0, 600, Align::Right)?;
             let status_left = right - Painter::width(&status);
-            p.draw_layout(&status, right - STATUS_BOX, y1, color.fade(k));
+            p.draw_layout(&status, right - status_w, y1, color.fade(k));
 
-            let name_x = r.x + NAME_X;
-            let name = p.layout(&row.name, band(name_x, NAME_MAX), 12.0, 600, Align::Left)?;
+            let name_x = if one_slot { mid_l } else { r.x + NAME_X };
+            let name_max = if one_slot { (status_left - SPACE - name_x).clamp(0.0, NAME_MAX) } else { NAME_MAX };
+            let name = p.layout(&row.name, band(name_x, name_max), 12.0, 600, Align::Left)?;
             let name_w = Painter::width(&name);
             p.draw_layout(&name, name_x, y1, TEXT_PRIMARY.fade(k));
 
@@ -250,19 +310,51 @@ fn draw_rows(p: &mut Painter, ox: f32, oy: f32, k: f32, s: &Scene) -> Result<()>
                 p.text(&row.folder, band(folder_x, folder_w), 11.0, 400, TEXT_TERTIARY.fade(k), Align::Left)?;
             }
 
-            if let Some(title) = &row.subtitle {
+            if one_slot {
+                if let Some(text) = &row.summary {
+                    let hint = matches!(row.kind, CardKind::NeedsYou { .. });
+                    let rect = Rect { x: name_x, y: r.y + LINE2_Y, w: (mid_r - name_x).max(0.0), h: LINE2_H };
+                    let (size, c) = if hint { (10.0, TEXT_TERTIARY) } else { (11.0, TEXT_SECONDARY) };
+                    p.text(text, rect, size, 400, c.fade(k), Align::Left)?;
+                }
+            } else if request {
+                let x = r.x + NAME_X;
+                let w = r.x + r.w - RIGHT - x;
+                if let Some(text) = &row.summary {
+                    p.text(text, Rect { x, y: r.y + 24.0, w, h: LINE2_H }, 11.0, 400, TEXT_SECONDARY.fade(k), Align::Left)?;
+                }
+                if let Some(line) = &row.line {
+                    p.text(line, Rect { x, y: r.y + 40.0, w, h: LINE2_H }, 11.0, 400, TEXT_TERTIARY.fade(k), Align::Left)?;
+                }
+            } else if let Some(title) = &row.subtitle {
                 let x = r.x + NAME_X;
                 let rect = Rect { x, y: r.y + LINE2_Y, w: r.x + r.w - RIGHT - x, h: LINE2_H };
                 p.text(title, rect, 11.0, 400, TEXT_SECONDARY.fade(k), Align::Left)?;
+            }
+
+            for (a, b) in buttons {
+                let hot = Hot::Button(i, a);
+                let (hv, pr) = (s.hover.hover(hot, s.t), s.hover.press(hot, s.t));
+                let primary = a == Action::Allow || (a == Action::OpenTerminal && row.kind == CardKind::Question);
+                let restore = p.scale_about(1.0 - 0.04 * pr, b.x + b.w / 2.0, b.y + b.h / 2.0);
+                let (bg, ink) = if primary {
+                    (TEXT_PRIMARY.lerp(Color::white(1.0), hv), Color::BLACK)
+                } else {
+                    (Color::white(0.12 + 0.10 * hv + 0.08 * pr), TEXT_PRIMARY)
+                };
+                p.round_rect(b, BUTTON_R, bg.fade(k));
+                p.text(button_label(&row.kind, a), b, 11.0, if primary { 700 } else { 600 }, ink.fade(k), Align::Center)?;
+                p.set_transform(restore);
             }
         }
         Ok(())
     })();
     p.pop_layer();
     drawn?;
-    let max = max_scroll(s.rows.len());
+    let total: usize = s.cards.iter().map(|c| c.kind.slots()).sum();
+    let max = max_scroll(total);
     if max > 0 {
-        let h = list.h * MAX_ROWS as f32 / s.rows.len() as f32;
+        let h = list.h * MAX_ROWS as f32 / total as f32;
         let y = list.y + (list.h - h) * (s.scroll / max as f32).clamp(0.0, 1.0);
         p.round_rect(Rect { x: ox + EXPANDED.w - 5.0, y, w: 2.5, h }, 1.25, Color::white(0.25).fade(k));
     }

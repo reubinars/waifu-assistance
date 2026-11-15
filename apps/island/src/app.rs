@@ -14,7 +14,8 @@ use crate::ui_expanded::{self, Hot, Hover};
 use crate::window::{self, Event, VK_ESCAPE, Windows};
 use island_core::anim::Fade;
 use island_core::config::Config;
-use island_core::herdr::Incoming;
+use island_core::approvals::{Decision, Pending, PendingKind};
+use island_core::herdr::{Incoming, req_decide};
 use island_core::media::MediaClock;
 use island_core::pet::{PetClock, PetState, Sheet, pet_state, second_pet_state};
 use island_core::session::HerdrSession;
@@ -22,7 +23,7 @@ use island_core::ticker::Ticker;
 use island_core::usage::{CliUsage, strip_runs};
 use island_core::view::layout::{self, SEEK};
 use island_core::view::{
-    COLLAPSED, CardKind, Collapsed, Dot, DisplayMode, ExpandedHit, Shown, Spot, Tab, block_rect, block_size, choose_collapsed, clock_label,
+    Action, COLLAPSED, Card, CardKind, Collapsed, Dot, DisplayMode, ExpandedHit, Shown, Spot, Tab, block_rect, block_size, cards, choose_collapsed, clock_label, detail_line,
     corner_radii, expanded_size, fullscreen_jump_target, hit_expanded, is_drag, island_rect,
     jump_target, max_scroll, pet_cell, scroll_by, second_pet_cell, shown, spot_at,
 };
@@ -404,13 +405,39 @@ impl App {
         Point { x: r.x, y: r.y }
     }
 
+    /// What is waiting on the user, and the Agents tab's cards (requests first).
+    fn cards(&self) -> (Vec<Pending>, Vec<Card>) {
+        let pending = self.session.approvals.pending(&self.session.agents, &self.session.hooks);
+        let list = cards(&pending, &self.session.agents);
+        (pending, list)
+    }
+
+    fn slots(&self) -> usize {
+        self.cards().1.iter().map(Card::slots).sum()
+    }
+
+    fn badge(&self) -> u8 {
+        self.session.approvals.badge(&self.session.agents)
+    }
+
+    fn has_approval(&self) -> bool {
+        self.cards().0.iter().any(|p| matches!(p.kind, PendingKind::Approval(_)))
+    }
+
+    /// Answers approval `id`; nothing is sent when it is already gone (closed or timed out).
+    fn decide(&mut self, id: &str, d: Decision) {
+        if self.session.approvals.take(id).is_some() {
+            self.agent_src.send(&req_decide(id, d));
+        }
+    }
+
     fn expanded_hit(&mut self, p: Point) -> Option<ExpandedHit> {
         let o = self.expanded_origin();
         let present = self.clock.is_present(Instant::now());
-        let rows = self.session.agents.rows(usize::MAX).len();
+        let kinds: Vec<CardKind> = self.cards().1.into_iter().map(|c| c.kind).collect();
         let seekable = present && self.clock.seekable();
         let usage = !self.usage.is_empty();
-        hit_expanded(self.tab, present, &vec![CardKind::Agent; rows], self.scroll, seekable, usage, Point { x: p.x - o.x, y: p.y - o.y })
+        hit_expanded(self.tab, present, &kinds, self.scroll, seekable, usage, Point { x: p.x - o.x, y: p.y - o.y })
     }
 
     fn cursor(&self) -> Option<Point> {
@@ -452,8 +479,8 @@ impl App {
             self.dirty = true;
             return;
         }
-        let rows = self.session.agents.rows(usize::MAX).len();
-        self.set_scroll(scroll_by(self.scroll, notches, rows), self.secs(now));
+        let slots = self.slots();
+        self.set_scroll(scroll_by(self.scroll, notches, slots), self.secs(now));
     }
 
     fn seek_fraction(&self, p: Point) -> f32 {
@@ -577,15 +604,33 @@ impl App {
                 self.retarget(Instant::now());
             }
             ExpandedHit::Row(i) => {
-                let pane = self.session.agents.rows(usize::MAX).get(i).map(|a| a.info.pane_id.clone());
-                if let Some(pane) = pane {
-                    self.jump(&pane);
+                if let Some(card) = self.cards().1.get(i) {
+                    self.jump(&card.pane_id.clone());
                 }
+            }
+            ExpandedHit::Button(i, action) => {
+                let Some(card) = self.cards().1.into_iter().nth(i) else { return };
+                let now = Instant::now();
+                match (action, card.kind) {
+                    (Action::Allow, CardKind::Approval { id, .. }) => self.decide(&id, Decision::Allow),
+                    (Action::Deny, CardKind::Approval { id, .. }) => self.decide(&id, Decision::Deny),
+                    (Action::Always, CardKind::Approval { id, can_always: true }) => self.decide(&id, Decision::Always),
+                    (Action::OpenTerminal, kind) => {
+                        if let CardKind::Approval { id, .. } = kind {
+                            self.decide(&id, Decision::None);
+                        }
+                        self.jump(&card.pane_id);
+                    }
+                    (Action::Later, CardKind::Question) => self.session.approvals.later(&card.pane_id),
+                    _ => return,
+                }
+                self.retarget(now);
+                self.apply_visibility();
             }
             ExpandedHit::Prev => self.media.command(MediaCommand::Previous),
             ExpandedHit::PlayPause => self.media.command(MediaCommand::PlayPause),
             ExpandedHit::Next => self.media.command(MediaCommand::Next),
-            ExpandedHit::Seek(_) | ExpandedHit::Usage | ExpandedHit::Button(..) => {}
+            ExpandedHit::Seek(_) | ExpandedHit::Usage => {}
         }
     }
 
@@ -680,12 +725,12 @@ impl App {
     /// Recomputes what the island should show and sets the animation targets.
     fn retarget(&mut self, now: Instant) {
         let t = self.secs(now);
-        let rows = self.session.agents.rows(usize::MAX).len();
-        self.set_scroll(self.scroll.min(max_scroll(rows)), t);
+        let slots = self.slots();
+        self.set_scroll(self.scroll.min(max_scroll(slots)), t);
         self.pet.set(pet_state(&self.session.agents), t);
         self.pet2.set(second_pet_state(&self.session.agents, self.clock.is_playing()), t);
         let present = self.clock.is_present(now);
-        let collapsed = choose_collapsed(&self.session.agents, present, 0);
+        let collapsed = choose_collapsed(&self.session.agents, present, self.badge());
         if collapsed != self.collapsed {
             log::debug!("collapsed {collapsed:?}");
             self.collapsed = collapsed;
@@ -757,13 +802,18 @@ impl App {
         match self.anim.face {
             Face::Dot { dot: Dot::Blocked, .. } => true,
             Face::Dot { media: true, .. } | Face::Expanded(Tab::Media) => self.clock.is_playing(),
-            Face::Expanded(Tab::Agents) => self.ticker_running(),
+            // approvals pending: their countdowns tick
+            Face::Expanded(Tab::Agents) => self.ticker_running() || self.has_approval(),
             _ => false,
         }
     }
 
     /// Draws and presents one frame; returns whether to keep animating.
     pub fn frame(&mut self, now: Instant) -> bool {
+        if self.session.approvals.expire(now) {
+            self.retarget(now);
+            self.apply_visibility();
+        }
         let t = self.secs(now);
         // clamped so a slow frame doesn't jump; zero on the first running frame after a pause
         let running = self.ticker_running();
@@ -896,24 +946,47 @@ impl App {
                 })
             }
         };
-        let rows: Vec<_> = self
-            .session
-            .agents
-            .rows(usize::MAX)
-            .into_iter()
-            .map(|a| ui_expanded::Row {
-                status: a.info.status,
-                name: a.display_name().to_string(),
-                folder: a.folder().to_string(),
-                subtitle: a.subtitle().map(str::to_owned),
+        let (pending, list) = self.cards();
+        let agents = self.session.agents.rows(usize::MAX);
+        let cards: Vec<ui_expanded::Card> = list
+            .iter()
+            .map(|c| {
+                let agent = agents.iter().find(|a| a.info.pane_id == c.pane_id);
+                let request = pending.iter().find(|p| p.pane_id == c.pane_id).map(|p| &p.kind);
+                let name = match (agent, request) {
+                    (Some(a), _) => a.display_name().to_string(),
+                    (None, Some(PendingKind::Approval(r))) => r.req.agent.clone(),
+                    _ => "agent".to_string(),
+                };
+                let (summary, line) = match (&c.kind, request) {
+                    (CardKind::Approval { .. }, Some(PendingKind::Approval(r))) => {
+                        (Some(r.req.summary.clone()), r.req.detail.as_ref().and_then(detail_line))
+                    }
+                    (CardKind::Question, Some(PendingKind::Question(text))) => (Some(text.clone()), None),
+                    (CardKind::NeedsYou { hook_missing: true }, _) => {
+                        let who = agent.and_then(|a| a.info.agent.as_deref()).unwrap_or("the agent");
+                        (Some(format!("Run install.sh to answer {who} from here")), None)
+                    }
+                    _ => (None, None),
+                };
+                ui_expanded::Card {
+                    status: agent.map_or(island_core::herdr::AgentStatus::Blocked, |a| a.info.status),
+                    name,
+                    folder: agent.map(|a| a.folder().to_string()).unwrap_or_default(),
+                    subtitle: agent.and_then(|a| a.subtitle().map(str::to_owned)),
+                    kind: c.kind.clone(),
+                    summary,
+                    line,
+                }
             })
             .collect();
-        let collapsed = Scene { t, playing: self.clock.is_playing(), accent: arc_accent(self.art.as_ref().and_then(|a| a.accent)) };
+        let slots: usize = list.iter().map(Card::slots).sum();
+        let collapsed = Scene { t, playing: self.clock.is_playing(), accent: arc_accent(self.art.as_ref().and_then(|a| a.accent)), badge: self.collapsed.badge };
         let expanded = ui_expanded::Scene {
             t,
-            scroll: self.scroll_fade.value_at(t).min(max_scroll(rows.len()) as f32),
+            scroll: self.scroll_fade.value_at(t).min(max_scroll(slots) as f32),
             media_present: present,
-            rows,
+            cards,
             media,
             art: self.art_bmp.as_ref(),
             accent: self.art.as_ref().and_then(|a| a.accent).map(|[r, g, b]| Color::rgba(r, g, b, 1.0)),

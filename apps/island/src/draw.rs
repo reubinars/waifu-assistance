@@ -345,6 +345,17 @@ impl Painter {
         unsafe { self.dc.FillRoundedRectangle(&rr, self.brush(c)) }
     }
 
+    /// A stroked rounded rectangle lying inside `r`.
+    pub fn round_rect_outline(&self, r: Rect, radius: f32, c: Color, width: f32) {
+        let h = width / 2.0;
+        let rr = D2D1_ROUNDED_RECT {
+            rect: rect_f(Rect { x: r.x + h, y: r.y + h, w: r.w - width, h: r.h - width }),
+            radiusX: (radius - h).max(0.0),
+            radiusY: (radius - h).max(0.0),
+        };
+        unsafe { self.dc.DrawRoundedRectangle(&rr, self.brush(c), width, None) }
+    }
+
     pub fn line(&self, x0: f32, y0: f32, x1: f32, y1: f32, c: Color, width: f32) {
         unsafe { self.dc.DrawLine(v2(x0, y0), v2(x1, y1), self.brush(c), width, None) }
     }
