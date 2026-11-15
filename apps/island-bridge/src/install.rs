@@ -2,19 +2,22 @@
 //! Code, Codex and OpenCode config, and reports which of them are wired.
 //!
 //! Only entries whose command is `<...>/island-bridge hook <agent>` are ever touched. Other
-//! entries keep their bytes and order. Each file is copied to `<file>.bak` before its first
-//! change and written through `<file>.tmp`.
+//! entries keep their bytes and order. Each change copies the file's previous bytes to
+//! `<file>.bak`, then writes the new bytes through `<file>.tmp`. Modes are kept (new files are 0600).
 
 use island_core::approvals::HookStatus;
 use serde_json::{json, Map, Value};
 use std::collections::BTreeMap;
 use std::fs;
-use std::io;
+use std::io::{self, Write};
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
 const PLUGIN: &str = include_str!("opencode-plugin.js");
 const HOOK_TIMEOUT_SECS: u64 = 60;
 const AGENTS: [&str; 3] = ["claude", "codex", "opencode"];
+/// Mode for files we create (a user's config is private).
+const PRIVATE: u32 = 0o600;
 
 /// Adds or refreshes the island's hooks. Returns one line per file changed or in error.
 pub fn install(home: &Path, exe: &Path) -> io::Result<Vec<String>> {
@@ -64,11 +67,14 @@ pub fn remove(home: &Path) -> io::Result<Vec<String>> {
 pub fn status(home: &Path) -> HookStatus {
     let mut map = BTreeMap::new();
     if home.join(".claude").is_dir() {
-        let ours = read_json(&home.join(".claude/settings.json")).is_some_and(|v| has_ours(&v, "claude"));
+        let ours = read_json(&home.join(".claude/settings.json")).is_some_and(|v| {
+            has_ours(&v, "PermissionRequest", None, "claude")
+                && has_ours(&v, "PreToolUse", Some("AskUserQuestion"), "claude")
+        });
         map.insert("claude".to_string(), ours);
     }
     if home.join(".codex").is_dir() {
-        let ours = read_json(&home.join(".codex/hooks.json")).is_some_and(|v| has_ours(&v, "codex"));
+        let ours = read_json(&home.join(".codex/hooks.json")).is_some_and(|v| has_ours(&v, "PermissionRequest", None, "codex"));
         map.insert("codex".to_string(), ours);
     }
     if home.join(".config/opencode").is_dir() {
@@ -98,14 +104,25 @@ fn install_plugin(path: &Path, exe: &Path) -> Result<bool, String> {
     replace_file(path, Some(source.as_bytes()))
 }
 
-/// `<exe> hook <agent>`, the command every island entry runs.
+/// `"<exe>" hook <agent>`, the command every island entry runs. The path is double-quoted for
+/// the shell, with `"`, `\`, `$` and backticks escaped.
 fn command(exe: &Path, agent: &str) -> String {
-    format!("{} hook {agent}", exe.display())
+    let mut cmd = String::from("\"");
+    for c in exe.display().to_string().chars() {
+        if matches!(c, '"' | '\\' | '$' | '`') {
+            cmd.push('\\');
+        }
+        cmd.push(c);
+    }
+    cmd.push_str(&format!("\" hook {agent}"));
+    cmd
 }
 
 /// Whether `cmd` is one of ours: `<exe ending in island-bridge> hook <agent>`.
 fn is_ours(cmd: &str, agent: Option<&str>) -> bool {
     let Some((exe, cmd_agent)) = cmd.rsplit_once(" hook ") else { return false };
+    // quoted (current form) or bare (form from before quoting)
+    let exe = exe.strip_prefix('"').and_then(|e| e.strip_suffix('"')).unwrap_or(exe);
     let agent_ok = match agent {
         Some(a) => cmd_agent == a,
         None => AGENTS.contains(&cmd_agent),
@@ -129,16 +146,15 @@ fn group(exe: &Path, agent: &str, matcher: Option<&str>) -> Value {
     Value::Object(g)
 }
 
-/// Whether the event's groups hold our command for `agent`.
-fn has_ours(root: &Value, agent: &str) -> bool {
-    let groups = root.get("hooks").and_then(|h| h.get("PermissionRequest")).and_then(Value::as_array);
+/// Whether `event` has a group with this `matcher` that runs our command for `agent`.
+fn has_ours(root: &Value, event: &str, matcher: Option<&str>, agent: &str) -> bool {
+    let groups = root.get("hooks").and_then(|h| h.get(event)).and_then(Value::as_array);
     groups.is_some_and(|groups| {
         groups.iter().any(|g| {
-            g.get("hooks").and_then(Value::as_array).is_some_and(|hs| {
-                hs.iter().any(|h| {
-                    h.get("command").and_then(Value::as_str).is_some_and(|c| is_ours(c, Some(agent)))
+            g.get("matcher").and_then(Value::as_str) == matcher
+                && g.get("hooks").and_then(Value::as_array).is_some_and(|hs| {
+                    hs.iter().any(|h| h.get("command").and_then(Value::as_str).is_some_and(|c| is_ours(c, Some(agent))))
                 })
-            })
         })
     })
 }
@@ -241,17 +257,29 @@ fn replace_file(path: &Path, bytes: Option<&[u8]>) -> Result<bool, String> {
     if existing.as_deref() == bytes {
         return Ok(false);
     }
+    // the backup and the new file keep the original's mode; a new file is private
+    let mode = match fs::metadata(path) {
+        Ok(m) if existing.is_some() => m.permissions().mode() & 0o777,
+        _ => PRIVATE,
+    };
     if let Some(old) = &existing {
-        fs::write(with_suffix(path, ".bak"), old).map_err(|e| at(path, e))?;
+        write_with_mode(&with_suffix(path, ".bak"), old, mode).map_err(|e| at(path, e))?;
     }
     match bytes {
         Some(b) => {
             let tmp = with_suffix(path, ".tmp");
-            fs::write(&tmp, b).and_then(|()| fs::rename(&tmp, path)).map_err(|e| at(path, e))?;
+            write_with_mode(&tmp, b, mode).and_then(|()| fs::rename(&tmp, path)).map_err(|e| at(path, e))?;
         }
         None => fs::remove_file(path).map_err(|e| at(path, e))?,
     }
     Ok(true)
+}
+
+/// Writes `bytes` to `path` and sets the mode even when the file already existed.
+fn write_with_mode(path: &Path, bytes: &[u8], mode: u32) -> io::Result<()> {
+    let mut file = fs::OpenOptions::new().write(true).create(true).truncate(true).mode(mode).open(path)?;
+    file.write_all(bytes)?;
+    file.set_permissions(fs::Permissions::from_mode(mode))
 }
 
 fn read_opt(path: &Path) -> Result<Option<Vec<u8>>, String> {
@@ -334,11 +362,11 @@ mod tests {
         let original: Value = serde_json::from_str(CLAUDE).unwrap();
         assert_eq!(v["hooks"]["SessionStart"], original["hooks"]["SessionStart"]);
         assert_eq!(v["model"], "opus");
-        assert_eq!(v["hooks"]["PermissionRequest"][0]["hooks"][0]["command"], format!("{EXE} hook claude"));
+        assert_eq!(v["hooks"]["PermissionRequest"][0]["hooks"][0]["command"], format!("\"{EXE}\" hook claude"));
         assert_eq!(v["hooks"]["PreToolUse"][0]["matcher"], "AskUserQuestion");
         let codex_original: Value = serde_json::from_str(CODEX).unwrap();
         assert_eq!(parse(&codex)["hooks"]["SessionStart"], codex_original["hooks"]["SessionStart"]);
-        assert_eq!(parse(&codex)["hooks"]["PermissionRequest"][0]["hooks"][0]["command"], format!("{EXE} hook codex"));
+        assert_eq!(parse(&codex)["hooks"]["PermissionRequest"][0]["hooks"][0]["command"], format!("\"{EXE}\" hook codex"));
         assert!(String::from_utf8_lossy(&p1).contains(&format!("const EXE = \"{EXE}\";")));
 
         // a different exe replaces our entry rather than adding a second one
@@ -346,7 +374,7 @@ mod tests {
         let v = parse(&claude);
         let groups = v["hooks"]["PermissionRequest"].as_array().unwrap();
         assert_eq!(groups.len(), 1);
-        assert_eq!(groups[0]["hooks"][0]["command"], "/other/island-bridge hook claude");
+        assert_eq!(groups[0]["hooks"][0]["command"], "\"/other/island-bridge\" hook claude");
     }
 
     #[test]
@@ -431,5 +459,99 @@ mod tests {
         let lines = remove(&home).unwrap();
         assert!(lines.iter().any(|l| l.starts_with("claude:") && l.contains("settings.json")), "{lines:?}");
         assert_eq!(fs::read_to_string(home.join(".claude/settings.json")).unwrap(), "{ not json");
+    }
+    fn mode(path: &Path) -> u32 {
+        fs::metadata(path).unwrap().permissions().mode() & 0o777
+    }
+
+    #[test]
+    fn install_keeps_file_modes() {
+        let home = home("modes");
+        let claude = home.join(".claude/settings.json");
+        write(&claude, CLAUDE);
+        fs::set_permissions(&claude, fs::Permissions::from_mode(0o600)).unwrap();
+        fs::create_dir_all(home.join(".codex")).unwrap();
+
+        install(&home, Path::new(EXE)).unwrap();
+        assert_eq!(mode(&claude), 0o600);
+        assert_eq!(mode(&claude.with_extension("json.bak")), 0o600);
+        assert_eq!(mode(&home.join(".codex/hooks.json")), 0o600);
+    }
+
+    #[test]
+    fn upgrade_replaces_bare_entry() {
+        let home = home("upgrade");
+        let claude = home.join(".claude/settings.json");
+        let bare = json!({"hooks": {
+            "PermissionRequest": [{"hooks": [{"type": "command", "command": format!("{EXE} hook claude"), "timeout": 60}]}]
+        }});
+        write(&claude, &bare.to_string());
+
+        install(&home, Path::new(EXE)).unwrap();
+        let v = parse(&claude);
+        let groups = v["hooks"]["PermissionRequest"].as_array().unwrap();
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0]["hooks"][0]["command"], format!("\"{EXE}\" hook claude"));
+        assert_eq!(status(&home).0.get("claude"), Some(&true));
+    }
+
+    #[test]
+    fn claude_needs_both_entries() {
+        let home = home("both");
+        let bare = json!({"hooks": {
+            "PermissionRequest": [{"hooks": [{"type": "command", "command": format!("\"{EXE}\" hook claude")}]}]
+        }});
+        write(&home.join(".claude/settings.json"), &bare.to_string());
+        assert_eq!(status(&home).0.get("claude"), Some(&false));
+    }
+
+    #[test]
+    fn command_quotes_the_exe() {
+        assert_eq!(command(Path::new("/a\"b$c/island-bridge"), "claude"), r#""/a\"b\$c/island-bridge" hook claude"#);
+    }
+
+    const THIRD_PARTY: &str = r#"{
+  "hooks": {
+    "PermissionRequest": [
+      { "hooks": [ { "type": "command", "command": "/usr/local/bin/guard check", "timeout": 30 } ] },
+      { "hooks": [
+          { "type": "command", "command": "/opt/test/bin/island-bridge hook claude", "timeout": 60 },
+          { "type": "command", "command": "/usr/local/bin/audit log", "timeout": 5 }
+        ] },
+      { "hooks": [ { "type": "command", "command": "/usr/local/bin/notify ask", "timeout": 15 } ] }
+    ]
+  }
+}
+"#;
+
+    #[test]
+    fn third_party_entries_survive_install_and_remove() {
+        let home = home("third-party");
+        let claude = home.join(".claude/settings.json");
+        write(&claude, THIRD_PARTY);
+        let exe = Path::new(EXE);
+
+        install(&home, exe).unwrap();
+        let once = fs::read(&claude).unwrap();
+        install(&home, exe).unwrap();
+        assert_eq!(fs::read(&claude).unwrap(), once, "install is byte-idempotent");
+
+        let v = parse(&claude);
+        let list = v["hooks"]["PermissionRequest"].as_array().unwrap();
+        let commands: Vec<&str> = list
+            .iter()
+            .flat_map(|g| g["hooks"].as_array().unwrap().iter())
+            .filter_map(|h| h["command"].as_str())
+            .filter(|c| !c.contains("island-bridge"))
+            .collect();
+        assert_eq!(commands, ["/usr/local/bin/guard check", "/usr/local/bin/audit log", "/usr/local/bin/notify ask"]);
+        // the mixed group keeps its third-party hook and loses ours
+        assert_eq!(list[2]["hooks"], json!([{"type": "command", "command": "/usr/local/bin/audit log", "timeout": 5}]));
+
+        remove(&home).unwrap();
+        let mut expected: Value = serde_json::from_str(THIRD_PARTY).unwrap();
+        expected["hooks"]["PermissionRequest"][1]["hooks"] =
+            json!([{"type": "command", "command": "/usr/local/bin/audit log", "timeout": 5}]);
+        assert_eq!(parse(&claude), expected);
     }
 }

@@ -17,7 +17,7 @@ sleep 0.5
 
 install -D -m 755 target/release/island-bridge "$HOME/.local/bin/island-bridge"
 echo "bridge  -> $HOME/.local/bin/island-bridge"
-"$HOME/.local/bin/island-bridge" hooks install
+"$HOME/.local/bin/island-bridge" hooks install || echo "island: hooks install failed"
 if [ -d "$HOME/.codex" ]; then
     echo "codex: trust the new hook with /hooks on next start"
 fi
