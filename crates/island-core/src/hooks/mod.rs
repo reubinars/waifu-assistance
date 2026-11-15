@@ -6,6 +6,9 @@ use crate::approvals::{ApprovalRequest, Decision};
 use serde_json::Value;
 use std::path::Path;
 
+/// Longest text shown from an agent's input, ellipsis included.
+const MAX_CHARS: usize = 300;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Agent {
     Claude,
@@ -46,11 +49,28 @@ pub fn output(agent: Agent, decision: Decision, input: &Value) -> Option<String>
     }
 }
 
-/// `path` relative to `cwd` when it lies inside it, otherwise unchanged.
+/// `path` relative to `cwd` when it lies inside it, otherwise unchanged. Sanitized for display.
 fn rel(path: &str, cwd: Option<&str>) -> String {
-    cwd.and_then(|c| Path::new(path).strip_prefix(c).ok())
-        .map(|r| r.to_string_lossy().into_owned())
-        .unwrap_or_else(|| path.to_owned())
+    let shown = cwd
+        .and_then(|c| Path::new(path).strip_prefix(c).ok())
+        .map(|r| if r.as_os_str().is_empty() { ".".to_owned() } else { r.to_string_lossy().into_owned() })
+        .unwrap_or_else(|| path.to_owned());
+    sanitize(&shown, false)
+}
+
+/// Replaces control characters, and bidi and format characters that can disguise a name, with '?'.
+/// Newlines survive only when `keep_newlines` is set.
+fn sanitize(s: &str, keep_newlines: bool) -> String {
+    s.chars()
+        .map(|c| {
+            let control = c.is_control() && !(keep_newlines && c == '\n');
+            let format = matches!(
+                c,
+                '\u{200B}'..='\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}' | '\u{FEFF}'
+            );
+            if control || format { '?' } else { c }
+        })
+        .collect()
 }
 
 /// Newline-terminated lines: a trailing partial line counts too, empty text is 0.
@@ -59,16 +79,27 @@ fn lines(s: &str) -> u32 {
     (if s.is_empty() || s.ends_with('\n') { n } else { n + 1 }) as u32
 }
 
-/// The first two lines, with an ellipsis after them if the command was cut.
+/// Keeps the first `MAX_CHARS` characters, ending with an ellipsis when cut. Cuts on a char boundary.
+fn cap(s: &str) -> String {
+    if s.chars().count() <= MAX_CHARS {
+        return s.to_owned();
+    }
+    let mut out: String = s.chars().take(MAX_CHARS - 1).collect();
+    out.push('…');
+    out
+}
+
+/// The first two lines, capped at `MAX_CHARS`, with an ellipsis whenever anything was cut.
 fn trim_command(s: &str) -> String {
+    let s = sanitize(s, true);
     let mut it = s.lines();
     let first: Vec<&str> = it.by_ref().take(2).collect();
-    let cut = it.next().is_some();
+    let cut_lines = it.next().is_some();
     let mut out = first.join("\n");
-    if cut {
+    if cut_lines {
         out.push('…');
     }
-    out
+    cap(&out)
 }
 
 #[cfg(test)]
@@ -90,5 +121,40 @@ mod tests {
         assert_eq!(rel("/etc/hosts", Some("/home/u/p")), "/etc/hosts");
         assert_eq!(rel("/home/u/p/a.rs", None), "/home/u/p/a.rs");
         assert_eq!(rel("/home/u/pq/a.rs", Some("/home/u/p")), "/home/u/pq/a.rs"); // prefix is not a parent
+    }
+
+    #[test]
+    fn path_equal_to_cwd_is_dot() {
+        assert_eq!(rel("/home/u/p", Some("/home/u/p")), ".");
+    }
+
+    #[test]
+    fn sanitize_replaces_controls_and_format_chars() {
+        assert_eq!(sanitize("evil\u{202E}hs.sh", false), "evil?hs.sh");
+        assert_eq!(sanitize("a\rb", false), "a?b");
+        assert_eq!(sanitize("a\nb", false), "a?b");
+        assert_eq!(sanitize("a\nb", true), "a\nb");
+        assert_eq!(sanitize("x\u{200B}\u{2066}\u{FEFF}é", false), "x???é");
+    }
+
+    #[test]
+    fn huge_single_line_is_capped() {
+        let cmd = "y".repeat(100_000);
+        let t = trim_command(&cmd);
+        assert_eq!(t.chars().count(), MAX_CHARS);
+        assert!(t.ends_with('…'));
+    }
+
+    #[test]
+    fn multibyte_cut_lands_on_a_char_boundary() {
+        let t = trim_command(&"é".repeat(400));
+        assert_eq!(t.chars().count(), MAX_CHARS);
+        assert_eq!(t, format!("{}…", "é".repeat(MAX_CHARS - 1)));
+    }
+
+    #[test]
+    fn short_text_is_untouched() {
+        assert_eq!(trim_command("ls -la\necho hi"), "ls -la\necho hi");
+        assert_eq!(trim_command("ls\n"), "ls");
     }
 }
