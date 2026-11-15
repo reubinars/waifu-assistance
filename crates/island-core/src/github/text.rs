@@ -2,6 +2,7 @@
 
 use super::{Ci, GhEvent, GhEventKind, GhState, PullRequest, Review, Role};
 
+#[derive(Clone, Debug, PartialEq)]
 pub enum GhRow {
     Message(String),
     Pr { pr: PullRequest, dim: bool },
@@ -18,6 +19,15 @@ pub fn rows(s: &GhState) -> Vec<GhRow> {
         out.extend(s.prs.iter().map(|p| GhRow::Pr { pr: p.clone(), dim: p.draft }));
     }
     out
+}
+
+/// `rows(s).len()`, without cloning the list.
+pub fn row_count(s: &GhState) -> usize {
+    match (&s.error, s.prs.len()) {
+        (Some(_), n) => n + 1,
+        (None, 0) => 1,
+        (None, n) => n,
+    }
 }
 
 pub fn error_text(e: &str) -> String {
@@ -41,18 +51,21 @@ pub fn head(pr: &PullRequest) -> String {
     format!("{}#{}  {}", short_repo(&pr.repo), pr.number, pr.title)
 }
 
+/// The review chip and draft tag; empty for a non-draft PR of yours in a repo that needs no review.
 pub fn chip(pr: &PullRequest) -> String {
-    let mut s = match (pr.role, pr.review) {
-        (Role::ReviewRequested, _) => "Your review",
-        (Role::Mine, Review::Approved) => "Approved",
-        (Role::Mine, Review::ChangesRequested) => "Changes requested",
-        (Role::Mine, Review::Needed | Review::None) => "Review needed",
+    let review = match (pr.role, pr.review) {
+        (Role::ReviewRequested, _) => Some("Your review"),
+        (Role::Mine, Review::Approved) => Some("Approved"),
+        (Role::Mine, Review::ChangesRequested) => Some("Changes requested"),
+        (Role::Mine, Review::Needed) => Some("Review needed"),
+        (Role::Mine, Review::None) => None,
+    };
+    match (review, pr.draft) {
+        (Some(r), true) => format!("{r} · Draft"),
+        (Some(r), false) => r.to_owned(),
+        (None, true) => "Draft".to_owned(),
+        (None, false) => String::new(),
     }
-    .to_owned();
-    if pr.draft {
-        s.push_str(" · Draft");
-    }
-    s
 }
 
 pub fn pop_text(e: &GhEvent) -> String {
@@ -66,9 +79,12 @@ pub fn pop_text(e: &GhEvent) -> String {
     format!("{lead} · {} #{}", short_repo(&e.repo), e.number)
 }
 
-/// Only these URLs may reach the shell: GitHub over https, no whitespace or control characters.
+/// Only these URLs may reach the shell: GitHub over https, ASCII only, no whitespace, control
+/// characters, or characters a URL never carries unescaped.
 pub fn is_safe_url(url: &str) -> bool {
-    url.starts_with("https://github.com/") && !url.chars().any(|c| c.is_whitespace() || c.is_control())
+    url.starts_with("https://github.com/")
+        && url.is_ascii()
+        && !url.chars().any(|c| c.is_whitespace() || c.is_control() || "\"<>\\^`{|}".contains(c))
 }
 
 #[cfg(test)]
@@ -99,6 +115,21 @@ mod tests {
     }
 
     #[test]
+    fn row_count_matches_rows() {
+        let mut s = GhState::default();
+        assert_eq!(row_count(&s), rows(&s).len());
+        s.apply(Ok(vec![]));
+        assert_eq!(row_count(&s), rows(&s).len());
+        let list = vec![pr("o/a", 1, Role::Mine, Ci::None, Review::None), pr("o/a", 2, Role::Mine, Ci::None, Review::None)];
+        s.apply(Ok(list));
+        assert_eq!(row_count(&s), 2);
+        assert_eq!(row_count(&s), rows(&s).len());
+        s.apply(Err("GitHub unreachable".into()));
+        assert_eq!(row_count(&s), 3);
+        assert_eq!(row_count(&s), rows(&s).len());
+    }
+
+    #[test]
     fn chip_copy() {
         let c = |role, review, draft| {
             let mut p = pr("o/a", 1, role, Ci::None, review);
@@ -109,7 +140,8 @@ mod tests {
         assert_eq!(c(Role::Mine, Review::Approved, false), "Approved");
         assert_eq!(c(Role::Mine, Review::ChangesRequested, false), "Changes requested");
         assert_eq!(c(Role::Mine, Review::Needed, false), "Review needed");
-        assert_eq!(c(Role::Mine, Review::None, false), "Review needed");
+        assert_eq!(c(Role::Mine, Review::None, false), "");
+        assert_eq!(c(Role::Mine, Review::None, true), "Draft");
         assert_eq!(c(Role::Mine, Review::Approved, true), "Approved · Draft");
     }
 
@@ -147,6 +179,10 @@ mod tests {
             "C:\\Windows\\calc.exe",
             "https://github.com/a b",
             "https://github.com/a\n",
+            "https://github.com/a\"b",
+            "https://github.com/\u{202E}x",
+            "https://github.com/a<b",
+            "https://github.com/a|b",
         ] {
             assert!(!is_safe_url(u), "{u}");
         }

@@ -89,7 +89,7 @@ pub fn parse_github(v: &serde_json::Value) -> Option<Result<Vec<PullRequest>, St
     if let Some(items) = v.get("prs").and_then(|p| p.as_array()) {
         let prs = items
             .iter()
-            .filter_map(|i| serde_json::from_value::<PullRequest>(i.clone()).ok())
+            .filter_map(|i| PullRequest::deserialize(i).ok())
             .map(|mut p| {
                 p.title = cap_to(&sanitize(&p.title, false), MAX_TEXT);
                 p.repo = cap_to(&sanitize(&p.repo, false), MAX_TEXT);
@@ -98,7 +98,7 @@ pub fn parse_github(v: &serde_json::Value) -> Option<Result<Vec<PullRequest>, St
             .collect();
         return Some(Ok(prs));
     }
-    v.get("error").and_then(|e| e.as_str()).map(|e| Err(e.to_owned()))
+    v.get("error").and_then(|e| e.as_str()).map(|e| Err(cap_to(&sanitize(e, false), MAX_TEXT)))
 }
 
 pub fn needs_you(pr: &PullRequest) -> bool {
@@ -134,11 +134,8 @@ pub(crate) fn test_pr(repo: &str, n: u32, role: Role, ci: Ci, review: Review) ->
 
 #[cfg(test)]
 mod tests {
+    use super::test_pr as pr;
     use super::*;
-
-    fn pr(repo: &str, n: u32, role: Role, ci: Ci, review: Review) -> PullRequest {
-        test_pr(repo, n, role, ci, review)
-    }
 
     #[test]
     fn sort_puts_needs_you_first_then_newest() {
@@ -207,5 +204,27 @@ mod tests {
         assert!(parsed[1].title.ends_with('…'));
         v["prs"] = serde_json::json!([]);
         assert_eq!(parse_github(&v), Some(Ok(vec![])));
+    }
+
+    #[test]
+    fn parse_sanitizes_and_caps_repo() {
+        let mut a = pr("o/a\u{202E}b", 1, Role::Mine, Ci::None, Review::None);
+        a.url = "https://github.com/o/a/pull/1".into();
+        let mut b = pr(&"r".repeat(200), 2, Role::Mine, Ci::None, Review::None);
+        b.url = "https://github.com/o/b/pull/2".into();
+        let parsed = parse_github(&serde_json::json!({ "prs": [a, b] })).unwrap().unwrap();
+        assert_eq!(parsed[0].repo, "o/a?b");
+        assert_eq!(parsed[1].repo, cap_to(&"r".repeat(200), 120));
+        assert!(parsed[1].repo.ends_with('…'));
+    }
+
+    #[test]
+    fn parse_sanitizes_and_caps_error() {
+        let long = format!("bad\u{1b}[31m{}", "e".repeat(200));
+        let got = parse_github(&serde_json::json!({ "error": long })).unwrap();
+        assert_eq!(got, Err(cap_to(&sanitize(&long, false), 120)));
+        let e = got.unwrap_err();
+        assert!(!e.chars().any(char::is_control));
+        assert!(e.ends_with('…'));
     }
 }

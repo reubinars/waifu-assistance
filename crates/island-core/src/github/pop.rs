@@ -74,6 +74,12 @@ impl PopSlot {
         self.close(now);
     }
 
+    /// The event was seen on the GitHub tab: a held pop does not come back. No gap follows.
+    pub fn forget(&mut self) {
+        self.event = None;
+        self.shown_at = None;
+    }
+
     fn close(&mut self, now: Instant) {
         self.event = None;
         self.shown_at = None;
@@ -213,6 +219,20 @@ mod tests {
         assert!(!p.tick(Some(&mut gh), IDLE, t + Duration::from_secs(1)));
         assert!(p.tick(Some(&mut gh), IDLE, t + Duration::from_secs(1) + POP_GAP));
         assert_eq!(shown_number(&p), Some(2));
+    }
+
+    #[test]
+    fn seen_drops_the_held_pop_and_the_queue() {
+        let (mut gh, mut p, t) = (queued(2), PopSlot::default(), Instant::now());
+        p.tick(Some(&mut gh), IDLE, t);
+        // the user expands onto the GitHub tab: the pop is held, then seen
+        p.tick(Some(&mut gh), HELD, t + Duration::from_secs(1));
+        gh.seen();
+        p.forget();
+        assert_eq!(p.wake(false, t + Duration::from_secs(1)), None);
+        // collapsing brings nothing back
+        assert!(!p.tick(Some(&mut gh), IDLE, t + Duration::from_secs(2)));
+        assert_eq!(p.showing(), None);
     }
 
     #[test]

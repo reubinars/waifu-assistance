@@ -116,4 +116,10 @@ mod tests {
         let old = [pr("a", 1, Role::Mine, Ci::Failing, Review::None)];
         assert_eq!(diff(&old, &[]), vec![]);
     }
+
+    #[test]
+    fn new_pr_already_approved_fires() {
+        let new = [pr("a", 1, Role::Mine, Ci::None, Review::Approved)];
+        assert_eq!(diff(&[], &new), vec![ev(GhEventKind::Approved, "a", 1)]);
+    }
 }

@@ -42,8 +42,10 @@ impl GhState {
         self.pops.clear();
     }
 
+    /// The tab is in view: nothing is unseen, and nothing queued needs to pop.
     pub fn seen(&mut self) {
         self.unseen = 0;
+        self.pops.clear();
     }
 
     pub fn next_pop(&mut self) -> Option<GhEvent> {
@@ -116,6 +118,8 @@ mod tests {
         s.apply(Ok(vec![mine(1, Ci::Failing)]));
         s.seen();
         assert_eq!(s.unseen, 0);
+        // what the tab shows needs no pop either
+        assert_eq!(s.next_pop(), None);
     }
 
     #[test]
