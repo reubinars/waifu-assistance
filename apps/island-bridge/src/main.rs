@@ -24,6 +24,8 @@ mod usage;
 
 const MIN_BACKOFF: Duration = Duration::from_secs(1);
 const MAX_BACKOFF: Duration = Duration::from_secs(10);
+/// How often the hook status is re-read from the agents' config.
+const HOOK_STATUS_INTERVAL: Duration = Duration::from_secs(5);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 
 enum Msg {
@@ -226,10 +228,39 @@ fn hooks_command(action: Option<&str>) -> i32 {
     }
 }
 
-/// Tells the island which agent CLIs have our hook in place.
-fn emit_hook_status() {
-    let status = home_dir().map(|h| install::status(&h)).unwrap_or_default();
+fn emit_hooks(status: &island_core::approvals::HookStatus) {
     emit(&json!({"hooks": status.0}).to_string());
+}
+
+fn current_hook_status() -> island_core::approvals::HookStatus {
+    home_dir().map(|h| install::status(&h)).unwrap_or_default()
+}
+
+#[cfg(debug_assertions)]
+fn hook_status_interval() -> Duration {
+    std::env::var("ISLAND_HOOK_STATUS_MS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .map_or(HOOK_STATUS_INTERVAL, |ms: u64| Duration::from_millis(ms.max(1)))
+}
+
+#[cfg(not(debug_assertions))]
+fn hook_status_interval() -> Duration {
+    HOOK_STATUS_INTERVAL
+}
+
+/// Tells the island which agent CLIs have our hook in place, now and again whenever that changes.
+fn spawn_hook_status() {
+    let mut last = current_hook_status();
+    emit_hooks(&last);
+    std::thread::spawn(move || loop {
+        std::thread::sleep(hook_status_interval());
+        let now = current_hook_status();
+        if now != last {
+            emit_hooks(&now);
+            last = now;
+        }
+    });
 }
 
 fn main() {
@@ -243,7 +274,7 @@ fn main() {
     if let Err(e) = socket::spawn() {
         eprintln!("island-bridge: approvals disabled, cannot serve {}: {e}", socket::socket_path().display());
     }
-    emit_hook_status();
+    spawn_hook_status();
     let home = std::env::var_os("HOME").filter(|h| !h.is_empty()).map(PathBuf::from);
     usage::spawn(home);
 

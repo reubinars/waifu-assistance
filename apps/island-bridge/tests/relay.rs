@@ -272,6 +272,34 @@ fn hook_status_is_reported_on_start() {
 }
 
 #[test]
+fn hook_status_is_re_emitted_when_it_changes() {
+    let sock = sock_path("hooks-change");
+    let home = home_for(&sock);
+    let mut child = Command::new(env!("CARGO_BIN_EXE_island-bridge"))
+        .env("HERDR_SOCKET_PATH", &sock)
+        .env("HOME", &home)
+        .env("XDG_RUNTIME_DIR", &home)
+        .env("ISLAND_HOOK_STATUS_MS", "50")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut lines = BufReader::new(child.stdout.take().unwrap()).lines();
+    let mut next_hooks = move || loop {
+        let l = lines.next().expect("bridge stdout closed").unwrap();
+        if l.starts_with(r#"{"hooks""#) {
+            return l;
+        }
+    };
+    assert_eq!(next_hooks(), r#"{"hooks":{}}"#);
+    // a CLI appears after start: the island hears about it
+    std::fs::create_dir_all(home.join(".claude")).unwrap();
+    assert_eq!(next_hooks(), r#"{"hooks":{"claude":false}}"#);
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
+#[test]
 fn exits_on_stdin_eof() {
     let (_sock, _herdr, mut b) = connected("eof");
     drop(b.stdin.take());
