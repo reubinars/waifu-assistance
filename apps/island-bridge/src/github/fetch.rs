@@ -2,7 +2,7 @@
 
 use std::ffi::OsStr;
 use std::io::{ErrorKind, Read};
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, Stdio};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
@@ -34,15 +34,31 @@ impl Failure {
     }
 }
 
+/// Starts `gh`. "Text file busy" means the binary is still open for writing somewhere (an upgrade
+/// replacing it, or another thread's fork that has not yet exec'd), so it is retried briefly.
+fn spawn(program: &OsStr) -> std::io::Result<Child> {
+    let mut tries = 0;
+    loop {
+        let r = Command::new(program)
+            .args(["api", "graphql", "-f"])
+            .arg(format!("query={QUERY}"))
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn();
+        match r {
+            Err(e) if e.kind() == ErrorKind::ExecutableFileBusy && tries < 20 => {
+                tries += 1;
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            r => return r,
+        }
+    }
+}
+
 pub fn fetch(program: &OsStr, timeout: Duration) -> Result<String, Failure> {
     let unreachable = || Failure::bare("GitHub unreachable");
-    let mut child = Command::new(program)
-        .args(["api", "graphql", "-f"])
-        .arg(format!("query={QUERY}"))
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
+    let mut child = spawn(program)
         .map_err(|e| if e.kind() == ErrorKind::NotFound { Failure::bare("gh not installed") } else { unreachable() })?;
     let out = drain(child.stdout.take().ok_or_else(unreachable)?);
     let err = drain(child.stderr.take().ok_or_else(unreachable)?);

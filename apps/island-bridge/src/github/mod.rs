@@ -20,13 +20,21 @@ pub fn program() -> OsString {
 }
 
 /// One poll. A failed `gh` that still printed usable data (a partial GraphQL result) counts as a
-/// list, unless it was rate limited.
+/// list, unless it was rate limited or either search came back null: a missing half would read as
+/// every PR in it closing, and their events would fire again when it returns.
 pub fn snapshot(program: &OsStr, timeout: Duration) -> Result<Vec<PullRequest>, String> {
     match fetch::fetch(program, timeout) {
         Ok(json) => parse::parse_response(&json),
         Err(f) if f.reason == fetch::RATE_LIMITED => Err(f.reason),
+        Err(f) if !both_searches(&f.stdout) => Err(f.reason),
         Err(f) => parse::parse_response(&f.stdout).map_err(|_| f.reason),
     }
+}
+
+/// Whether `json` holds a non-null `data.mine` and `data.review`.
+fn both_searches(json: &str) -> bool {
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(json) else { return false };
+    ["mine", "review"].iter().all(|k| v.pointer(&format!("/data/{k}")).is_some_and(|s| s.is_object()))
 }
 
 /// Remembers the last printed line so that only the first one and the changes get printed.
@@ -74,10 +82,18 @@ mod tests {
 
     #[test]
     fn partial_data_on_failure_is_used() {
-        let json = format!(r#"{{"data":{{"mine":{{"nodes":[{NODE}]}},"review":null}},"errors":[{{"message":"Something went wrong"}}]}}"#);
+        let json = format!(r#"{{"data":{{"mine":{{"nodes":[{NODE},null]}},"review":{{"nodes":[]}}}},"errors":[{{"message":"Something went wrong"}}]}}"#);
         let prs = snap("gh-partial", &format!("printf '%s' '{json}'; exit 1")).unwrap();
         assert_eq!(prs.len(), 1);
         assert_eq!(prs[0].number, 1);
+    }
+
+    #[test]
+    fn failure_with_a_null_search_is_an_error() {
+        let json = format!(r#"{{"data":{{"mine":{{"nodes":[{NODE}]}},"review":null}},"errors":[{{"message":"Something went wrong"}}]}}"#);
+        assert_eq!(snap("gh-half", &format!("printf '%s' '{json}'; exit 1")), Err("GitHub unreachable".to_string()));
+        let json = r#"{"data":{"mine":null,"review":null},"errors":[{"message":"Something went wrong"}]}"#;
+        assert_eq!(snap("gh-none", &format!("printf '%s' '{json}'; exit 1")), Err("GitHub unreachable".to_string()));
     }
 
     #[test]
