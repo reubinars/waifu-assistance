@@ -5,11 +5,12 @@
 use crate::draw::{Align, Color, Painter, TEXT_PRIMARY, TEXT_SECONDARY, TEXT_TERTIARY};
 use island_core::Rect;
 use island_core::anim::{Fade, breathe};
+use island_core::approvals::Detail;
 use island_core::herdr::AgentStatus;
 use island_core::ticker;
 use island_core::usage::{Level, Run, Tone, level};
 use island_core::view::layout::{self, MAX_ROWS};
-use island_core::view::{Action, CardKind, EXPANDED, ExpandedHit, Tab, max_scroll, status_word};
+use island_core::view::{Action, CardKind, EXPANDED, ExpandedHit, PopupLayout, Tab, max_scroll, status_word};
 use std::cell::Cell;
 use windows::Win32::Graphics::Direct2D::ID2D1Bitmap1;
 use windows::Win32::Graphics::DirectWrite::{DWRITE_TEXT_METRICS, IDWriteTextLayout};
@@ -17,6 +18,8 @@ use windows::core::Result;
 
 const DONE: Color = Color::rgba(0x34, 0xc7, 0x59, 1.0);
 const BLOCKED: Color = Color::rgba(0xff, 0x95, 0x00, 1.0);
+/// A removed-lines count in the popup's detail box.
+const MINUS: Color = Color::rgba(0xff, 0x69, 0x61, 1.0);
 const HIGH: Color = Color::rgba(0xff, 0x3b, 0x30, 1.0);
 const TAB_FADE: f32 = 0.2;
 const BUTTON_FADE: f32 = 0.12;
@@ -140,6 +143,20 @@ pub struct Card {
     pub line: Option<String>,
 }
 
+/// The one-request popup (spec 6.3), drawn in place of the tabs.
+pub struct Popup {
+    pub name: String,
+    pub folder: String,
+    /// Pending approvals; the popup shows the first ("1 of N").
+    pub count: usize,
+    pub summary: String,
+    pub detail: Option<Detail>,
+    pub layout: PopupLayout,
+    pub kind: CardKind,
+    /// Countdown bar fill, 0..=1.
+    pub fraction: f32,
+}
+
 pub struct Media {
     pub title: String,
     pub artist: String,
@@ -157,6 +174,8 @@ pub struct Scene<'a> {
     pub cards: Vec<Card>,
     pub scroll: f32,
     pub media: Option<Media>,
+    /// Replaces the tabs while set.
+    pub popup: Option<Popup>,
     pub art: Option<&'a ID2D1Bitmap1>,
     pub accent: Option<Color>,
     pub hover: &'a Hover,
@@ -174,6 +193,9 @@ fn off(r: Rect, ox: f32, oy: f32) -> Rect {
 
 /// Draws `tab` with the expanded island's top-left at (ox, oy), at opacity `k`.
 pub fn draw(p: &mut Painter, tab: Tab, ox: f32, oy: f32, k: f32, s: &Scene) -> Result<()> {
+    if let Some(pop) = &s.popup {
+        return draw_popup(p, ox, oy, k, s, pop);
+    }
     for (t, r) in layout::tabs(s.media_present) {
         let label = match t { Tab::Agents => "Agents", Tab::Media => "Media" };
         let r = off(r, ox, oy);
@@ -225,6 +247,93 @@ fn header_label(kind: &CardKind) -> &'static str {
     }
 }
 
+const BUTTON_R: f32 = 14.0;
+
+/// A card or popup button; `(hv, pr)` are its hover and press amounts.
+fn draw_button(p: &mut Painter, kind: &CardKind, a: Action, b: Rect, (hv, pr): (f32, f32), k: f32) -> Result<()> {
+    let primary = a == Action::Allow || (a == Action::OpenTerminal && *kind == CardKind::Question);
+    let restore = p.scale_about(1.0 - 0.04 * pr, b.x + b.w / 2.0, b.y + b.h / 2.0);
+    let (bg, ink) = if primary {
+        (TEXT_PRIMARY.lerp(Color::white(1.0), hv), Color::BLACK)
+    } else {
+        (Color::white(0.12 + 0.10 * hv + 0.08 * pr), TEXT_PRIMARY)
+    };
+    p.round_rect(b, BUTTON_R, bg.fade(k));
+    p.text(button_label(kind, a), b, 11.0, if primary { 700 } else { 600 }, ink.fade(k), Align::Center)?;
+    p.set_transform(restore);
+    Ok(())
+}
+
+/// The popup: header (agent, folder, "1 of N"), summary, detail box, buttons and the countdown bar.
+fn draw_popup(p: &mut Painter, ox: f32, oy: f32, k: f32, s: &Scene, pop: &Popup) -> Result<()> {
+    const X: f32 = 36.0;
+    const RIGHT: f32 = 340.0;
+    const GAP: f32 = 8.0;
+    let l = &pop.layout;
+    let head_y = oy + 14.0;
+    p.circle(ox + 22.0, head_y + 9.0, 12.0, ORANGE.fade(k));
+    let head = |x: f32, w: f32| Rect { x, y: head_y, w: w.max(0.0), h: 18.0 };
+    let count = format!("{} of {}", 1, pop.count);
+    let counter = p.layout(&count, head(ox + RIGHT - 60.0, 60.0), 11.0, 600, Align::Right)?;
+    let counter_left = ox + RIGHT - Painter::width(&counter);
+    p.draw_layout(&counter, ox + RIGHT - 60.0, head_y, TEXT_SECONDARY.fade(k));
+    let name_x = ox + X;
+    let name = p.layout(&pop.name, head(name_x, 110.0), 12.0, 600, Align::Left)?;
+    p.draw_layout(&name, name_x, head_y, TEXT_PRIMARY.fade(k));
+    let folder_x = name_x + Painter::width(&name) + GAP;
+    let folder_w = counter_left - GAP - folder_x;
+    if !pop.folder.is_empty() && folder_w >= 12.0 {
+        p.text(&pop.folder, head(folder_x, folder_w), 11.0, 400, TEXT_TERTIARY.fade(k), Align::Left)?;
+    }
+    p.text(&pop.summary, Rect { x: ox + X, y: oy + 41.0, w: RIGHT - X, h: 18.0 }, 13.0, 600, TEXT_PRIMARY.fade(k), Align::Left)?;
+
+    if let (Some(box_), Some(detail)) = (l.detail, &pop.detail) {
+        let b = off(box_, ox, oy);
+        p.round_rect(b, 8.0, Color::white(0.07).fade(k));
+        let (x, w) = (b.x + 9.0, b.w - 18.0);
+        let line = |i: usize| Rect { x, y: b.y + 7.0 + 16.0 * i as f32, w, h: 16.0 };
+        match detail {
+            Detail::Files(files) => {
+                for (i, f) in files.iter().take(3).enumerate() {
+                    let r = line(i);
+                    let minus = p.layout_mono(&format!("\u{2212}{}", f.removed), r, 11.0, 400, Align::Right)?;
+                    let minus_w = Painter::width(&minus);
+                    p.draw_layout(&minus, r.x, r.y, MINUS.fade(k));
+                    let plus = p.layout_mono(&format!("+{}", f.added), Rect { w: r.w - minus_w - GAP, ..r }, 11.0, 400, Align::Right)?;
+                    let plus_w = Painter::width(&plus);
+                    p.draw_layout(&plus, r.x, r.y, DONE.fade(k));
+                    let path_w = r.w - minus_w - plus_w - 2.0 * GAP;
+                    p.layout_mono(&f.path, Rect { w: path_w.max(0.0), ..r }, 11.0, 400, Align::Left).map(|l| p.draw_layout(&l, r.x, r.y, TEXT_PRIMARY.fade(k)))?;
+                }
+                if files.len() > 3 {
+                    let more = p.layout_mono(&format!("+{} more", files.len() - 3), line(3), 11.0, 400, Align::Left)?;
+                    p.draw_layout(&more, x, line(3).y, TEXT_TERTIARY.fade(k));
+                }
+            }
+            Detail::Command(c) => {
+                for (i, text) in c.lines().take(2).enumerate() {
+                    let r = line(i);
+                    let t = p.layout_mono(text, r, 11.0, 400, Align::Left)?;
+                    p.draw_layout(&t, r.x, r.y, TEXT_PRIMARY.fade(k));
+                }
+            }
+        }
+    }
+
+    for (a, b) in layout::buttons(&pop.kind, off(l.band, ox, oy)) {
+        let hot = Hot::Button(0, a);
+        draw_button(p, &pop.kind, a, b, (s.hover.hover(hot, s.t), s.hover.press(hot, s.t)), k)?;
+    }
+
+    let bar = off(l.bar, ox, oy);
+    p.round_rect(bar, 1.5, Color::white(0.10).fade(k));
+    let fill = bar.w * pop.fraction.clamp(0.0, 1.0);
+    if fill > 0.0 {
+        p.round_rect(Rect { w: fill, ..bar }, 1.5_f32.min(fill / 2.0), BLOCKED.with_alpha(0.8).fade(k));
+    }
+    Ok(())
+}
+
 /// One card per agent or request. Agent: dot, name, folder and status word, then the title.
 /// Request cards are tinted orange and carry buttons; approvals take two slots (header, summary,
 /// detail, buttons), the one-slot kinds put name and text between their buttons.
@@ -241,7 +350,6 @@ fn draw_rows(p: &mut Painter, ox: f32, oy: f32, k: f32, s: &Scene) -> Result<()>
     const LINE1_H: f32 = 18.0;
     const LINE2_Y: f32 = 22.0;
     const LINE2_H: f32 = 16.0;
-    const BUTTON_R: f32 = 14.0;
     if s.cards.is_empty() {
         let row = off(layout::slot_rect(0), ox, oy);
         return p.text("No agents", Rect { x: row.x + NAME_X, w: row.w - NAME_X, ..row }, 14.0, 600, TEXT_SECONDARY.fade(k), Align::Left);
@@ -333,18 +441,7 @@ fn draw_rows(p: &mut Painter, ox: f32, oy: f32, k: f32, s: &Scene) -> Result<()>
             }
 
             for (a, b) in buttons {
-                let hot = Hot::Button(i, a);
-                let (hv, pr) = (s.hover.hover(hot, s.t), s.hover.press(hot, s.t));
-                let primary = a == Action::Allow || (a == Action::OpenTerminal && row.kind == CardKind::Question);
-                let restore = p.scale_about(1.0 - 0.04 * pr, b.x + b.w / 2.0, b.y + b.h / 2.0);
-                let (bg, ink) = if primary {
-                    (TEXT_PRIMARY.lerp(Color::white(1.0), hv), Color::BLACK)
-                } else {
-                    (Color::white(0.12 + 0.10 * hv + 0.08 * pr), TEXT_PRIMARY)
-                };
-                p.round_rect(b, BUTTON_R, bg.fade(k));
-                p.text(button_label(&row.kind, a), b, 11.0, if primary { 700 } else { 600 }, ink.fade(k), Align::Center)?;
-                p.set_transform(restore);
+                draw_button(p, &row.kind, a, b, (s.hover.hover(Hot::Button(i, a), s.t), s.hover.press(Hot::Button(i, a), s.t)), k)?;
             }
         }
         Ok(())

@@ -45,6 +45,8 @@ pub struct Request {
     pub pane_id: String,
     pub req: ApprovalRequest,
     pub expires: Instant,
+    /// The wire timeout the countdown is measured against.
+    pub timeout_ms: u64,
 }
 
 /// Whether each agent CLI's hook is installed, by herdr agent name. A missing key means the CLI isn't installed.
@@ -85,7 +87,7 @@ pub struct ApprovalQueue {
 impl ApprovalQueue {
     pub fn insert(&mut self, id: String, pane_id: String, req: ApprovalRequest, timeout_ms: u64, now: Instant) {
         let expires = now + Duration::from_millis(timeout_ms);
-        self.approvals.push(Request { id, pane_id, req, expires });
+        self.approvals.push(Request { id, pane_id, req, expires, timeout_ms });
     }
 
     /// Replaces the pane's earlier question, if any.

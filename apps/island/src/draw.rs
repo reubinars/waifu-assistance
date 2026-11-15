@@ -28,7 +28,7 @@ use windows::Win32::Graphics::DirectWrite::{
 };
 use windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_B8G8R8A8_UNORM;
 use windows::Win32::Foundation::E_INVALIDARG;
-use windows::core::{Error, HSTRING, Interface, Result, w};
+use windows::core::{Error, HSTRING, Interface, PCWSTR, Result, w};
 use windows_numerics::{Matrix3x2, Vector2};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -93,9 +93,8 @@ const IDENTITY: Matrix3x2 = Matrix3x2 { M11: 1.0, M12: 0.0, M21: 0.0, M22: 1.0, 
 /// The whole of a text layout.
 const ALL_TEXT: DWRITE_TEXT_RANGE = DWRITE_TEXT_RANGE { startPosition: 0, length: u32::MAX };
 
-/// The first installed of Inter, Segoe UI Variable Text, Segoe UI.
-fn pick_family(dwrite: &IDWriteFactory) -> HSTRING {
-    let names = [w!("Inter"), w!("Segoe UI Variable Text"), w!("Segoe UI")];
+/// The first installed of `names`, else `fallback`.
+fn pick_family(dwrite: &IDWriteFactory, names: &[PCWSTR], fallback: &str) -> HSTRING {
     let mut fonts: Option<IDWriteFontCollection> = None;
     unsafe {
         if dwrite.GetSystemFontCollection(&mut fonts, false).is_ok()
@@ -103,13 +102,13 @@ fn pick_family(dwrite: &IDWriteFactory) -> HSTRING {
         {
             for name in names {
                 let (mut index, mut exists) = (0u32, Default::default());
-                if fonts.FindFamilyName(name, &mut index, &mut exists).is_ok() && exists.as_bool() {
+                if fonts.FindFamilyName(*name, &mut index, &mut exists).is_ok() && exists.as_bool() {
                     return HSTRING::from_wide(name.as_wide());
                 }
             }
         }
     }
-    HSTRING::from("Segoe UI")
+    HSTRING::from(fallback)
 }
 
 pub struct Painter {
@@ -119,8 +118,10 @@ pub struct Painter {
     brush: ID2D1SolidColorBrush,
     round_caps: ID2D1StrokeStyle1,
     family: HSTRING,
+    /// Cascadia Mono, else Consolas.
+    mono: HSTRING,
     tabular: IDWriteTypography,
-    formats: HashMap<(u32, u16), IDWriteTextFormat>,
+    formats: HashMap<(bool, u32, u16), IDWriteTextFormat>,
     /// Shadow effects; one per shadow drawn this frame, reused across frames.
     shadows: Vec<ID2D1Effect>,
     shadows_used: usize,
@@ -137,8 +138,9 @@ impl Painter {
                 ..Default::default()
             }, None)?;
             dc.SetTextAntialiasMode(D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE);
-            let family = pick_family(&dwrite);
-            log::info!("font family {family}");
+            let family = pick_family(&dwrite, &[w!("Inter"), w!("Segoe UI Variable Text"), w!("Segoe UI")], "Segoe UI");
+            let mono = pick_family(&dwrite, &[w!("Cascadia Mono"), w!("Consolas")], "Consolas");
+            log::info!("font family {family}, mono {mono}");
             let tabular = dwrite.CreateTypography()?;
             tabular.AddFontFeature(DWRITE_FONT_FEATURE { nameTag: DWRITE_FONT_FEATURE_TAG_TABULAR_FIGURES, parameter: 1 })?;
             Ok(Painter {
@@ -148,6 +150,7 @@ impl Painter {
                 brush,
                 round_caps,
                 family,
+                mono,
                 tabular,
                 formats: HashMap::new(),
                 shadows: Vec::new(),
@@ -360,14 +363,14 @@ impl Painter {
         unsafe { self.dc.DrawLine(v2(x0, y0), v2(x1, y1), self.brush(c), width, None) }
     }
 
-    fn format(&mut self, size: f32, weight: u16) -> Result<IDWriteTextFormat> {
-        let key = ((size * 100.0) as u32, weight);
+    fn format(&mut self, mono: bool, size: f32, weight: u16) -> Result<IDWriteTextFormat> {
+        let key = (mono, (size * 100.0) as u32, weight);
         if let Some(f) = self.formats.get(&key) {
             return Ok(f.clone());
         }
         unsafe {
             let f = self.dwrite.CreateTextFormat(
-                &self.family,
+                if mono { &self.mono } else { &self.family },
                 None,
                 DWRITE_FONT_WEIGHT(weight as i32),
                 DWRITE_FONT_STYLE_NORMAL,
@@ -391,7 +394,16 @@ impl Painter {
 
     /// One line of text in `r`, vertically centred, ellipsised when it doesn't fit.
     pub fn layout(&mut self, s: &str, r: Rect, size: f32, weight: u16, align: Align) -> Result<IDWriteTextLayout> {
-        let f = self.format(size, weight)?;
+        self.layout_in(false, s, r, size, weight, align)
+    }
+
+    /// `layout` in the monospace family.
+    pub fn layout_mono(&mut self, s: &str, r: Rect, size: f32, weight: u16, align: Align) -> Result<IDWriteTextLayout> {
+        self.layout_in(true, s, r, size, weight, align)
+    }
+
+    fn layout_in(&mut self, mono: bool, s: &str, r: Rect, size: f32, weight: u16, align: Align) -> Result<IDWriteTextLayout> {
+        let f = self.format(mono, size, weight)?;
         let text: Vec<u16> = s.encode_utf16().collect();
         unsafe {
             let l = self.dwrite.CreateTextLayout(&text, &f, r.w.max(0.0), r.h.max(0.0))?;

@@ -14,7 +14,7 @@ use crate::ui_expanded::{self, Hot, Hover};
 use crate::window::{self, Event, VK_ESCAPE, Windows};
 use island_core::anim::Fade;
 use island_core::config::Config;
-use island_core::approvals::{Decision, Pending, PendingKind};
+use island_core::approvals::{Decision, Pending, PendingKind, Request};
 use island_core::herdr::{Incoming, req_decide};
 use island_core::media::MediaClock;
 use island_core::pet::{PetClock, PetState, Sheet, pet_state, second_pet_state};
@@ -23,8 +23,8 @@ use island_core::ticker::Ticker;
 use island_core::usage::{CliUsage, strip_runs};
 use island_core::view::layout::{self, SEEK};
 use island_core::view::{
-    Action, COLLAPSED, Card, CardKind, Collapsed, Dot, DisplayMode, ExpandedHit, Shown, Spot, Tab, block_rect, block_size, card_identity, cards, choose_collapsed, clock_label, detail_line,
-    corner_radii, expanded_size, fullscreen_jump_target, hit_expanded, is_drag, island_rect,
+    Action, COLLAPSED, Card, PopupExit, CardKind, Collapsed, Dot, DisplayMode, ExpandedHit, Shown, Spot, Tab, block_rect, block_size, card_identity, cards, choose_collapsed, clock_label, detail_line,
+    corner_radii, countdown_fraction, expanded_size, hit_popup, popup_exit, popup_layout, popup_request, fullscreen_jump_target, hit_expanded, is_drag, island_rect,
     jump_target, max_scroll, pet_cell, scroll_by, second_pet_cell, shown, spot_at,
 };
 use island_core::{Point, Rect, Size};
@@ -104,6 +104,12 @@ pub struct App {
     pet2: PetClock,
     collapsed: Collapsed,
     expanded: bool,
+    /// The expanded island shows the one-request popup instead of the tabs.
+    popup: bool,
+    /// Size of the popup's current request; kept while it closes so the exit rule can test the pointer.
+    popup_size: Size,
+    /// The pointer left the popup: coming back switches to the tabs.
+    popup_left: bool,
     expanded_at: Option<Instant>,
     tab: Tab,
     hover: Hover,
@@ -175,6 +181,9 @@ impl App {
             pet2: PetClock::new(PetState::Sleep, 0.0),
             collapsed,
             expanded: false,
+            popup: false,
+            popup_size: Size { w: 0.0, h: 0.0 },
+            popup_left: false,
             expanded_at: None,
             tab: Tab::Agents,
             hover: Hover::default(),
@@ -231,6 +240,9 @@ impl App {
 
     /// The expanded island's size: taller while there is a usage strip.
     fn expanded_size(&self) -> Size {
+        if self.popup {
+            return self.popup_size;
+        }
         expanded_size(!self.usage.is_empty())
     }
 
@@ -251,13 +263,21 @@ impl App {
                 }
             }
             SourceEvent::Herdr(msg) => {
+                let arrived = matches!(msg, Incoming::Approval { .. });
                 for line in self.session.handle(msg, now) {
                     self.agent_src.send(&line);
+                }
+                // an approval pops a collapsed island open, without focus; never over fullscreen
+                if arrived && !self.expanded && !self.fullscreen && !self.user_hidden && self.popup_info().is_some() {
+                    self.popup = true;
+                    self.popup_left = false;
+                    self.expand(false, now);
                 }
             }
             SourceEvent::BridgeDown => self.session.bridge_down(),
             SourceEvent::Demo(a) => match a {
                 DemoAction::Expand(tab) => {
+                    self.leave_popup();
                     if !self.expanded {
                         self.expand(false, now);
                     }
@@ -267,6 +287,7 @@ impl App {
                 DemoAction::Mode(m) => self.set_mode(m),
             },
         }
+        self.sync_popup();
         // a press must not land on a card that has since changed
         if self.hover.pressed.is_some() && self.cards().1.iter().map(card_identity).collect::<Vec<_>>() != before {
             self.hover.set_pressed(None, self.secs(now));
@@ -440,8 +461,58 @@ impl App {
         }
     }
 
+    /// The popup's request (the first approval) and how many approvals are pending.
+    fn popup_info(&self) -> Option<(Request, usize)> {
+        let (pending, _) = self.cards();
+        popup_request(&pending).map(|(r, n)| (r.clone(), n))
+    }
+
+    fn approval_kind(r: &Request) -> CardKind {
+        CardKind::Approval { id: r.id.clone(), can_always: r.req.can_always }
+    }
+
+    /// The card a hit index means: the popup's request while it shows, else the Agents tab's card.
+    fn card_at(&self, i: usize) -> Option<Card> {
+        if self.popup {
+            let (r, _) = self.popup_info()?;
+            return (i == 0).then(|| Card { pane_id: r.pane_id.clone(), kind: Self::approval_kind(&r) });
+        }
+        self.cards().1.into_iter().nth(i)
+    }
+
+    fn pointer_inside(&self) -> bool {
+        let Some(p) = self.cursor() else { return false };
+        let (o, size) = (self.expanded_origin(), self.expanded_size());
+        p.x >= o.x && p.x <= o.x + size.w && p.y >= o.y && p.y <= o.y + size.h
+    }
+
+    /// Back to the normal tabs, where the request is a card.
+    fn leave_popup(&mut self) {
+        self.popup = false;
+        self.popup_left = false;
+        self.hover.reset();
+        self.pressed_card = None;
+    }
+
+    /// Once no approval is left the popup collapses, or shows the Agents tab if the pointer is on it.
+    fn sync_popup(&mut self) {
+        if !self.popup {
+            return;
+        }
+        match popup_exit(self.has_approval(), self.pointer_inside()) {
+            PopupExit::Stay => {}
+            PopupExit::Agents => self.leave_popup(),
+            PopupExit::Collapse => self.collapse(),
+        }
+    }
+
     fn expanded_hit(&mut self, p: Point) -> Option<ExpandedHit> {
         let o = self.expanded_origin();
+        if self.popup {
+            let (r, _) = self.popup_info()?;
+            let local = Point { x: p.x - o.x, y: p.y - o.y };
+            return hit_popup(&popup_layout(&r.req), &Self::approval_kind(&r), local).map(|a| ExpandedHit::Button(0, a));
+        }
         let present = self.clock.is_present(Instant::now());
         let kinds: Vec<CardKind> = self.cards().1.into_iter().map(|c| c.kind).collect();
         let seekable = present && self.clock.seekable();
@@ -471,7 +542,7 @@ impl App {
     }
 
     fn on_wheel(&mut self, delta: i32, now: Instant) {
-        if !self.expanded || self.tab != Tab::Agents {
+        if !self.expanded || self.popup || self.tab != Tab::Agents {
             return;
         }
         let Some(p) = self.cursor() else { return };
@@ -503,6 +574,11 @@ impl App {
             return;
         }
         self.kill_timer(TIMER_LEAVE);
+        if self.expanded && self.popup && self.popup_left {
+            // the pointer came back after leaving: the normal tabs
+            self.leave_popup();
+            self.retarget(Instant::now());
+        }
         if self.expanded {
             let hot = self.expanded_hit(p).map(Hot::of);
             if hot != self.hover.hot {
@@ -518,6 +594,7 @@ impl App {
         }
         let t = self.secs(Instant::now());
         self.hover.set_hot(None, t);
+        self.popup_left = self.popup;
         if self.expanded {
             self.set_timer(TIMER_LEAVE, LEAVE_COLLAPSE);
         }
@@ -588,7 +665,7 @@ impl App {
         }
         self.hover.set_pressed(hit.map(Hot::of), self.secs(now));
         self.pressed_card = match hit {
-            Some(ExpandedHit::Button(i, _) | ExpandedHit::Row(i)) => self.cards().1.get(i).map(card_identity),
+            Some(ExpandedHit::Button(i, _) | ExpandedHit::Row(i)) => self.card_at(i).as_ref().map(card_identity),
             _ => None,
         };
         self.dirty = true;
@@ -613,12 +690,13 @@ impl App {
         }
         // the card under the cursor must still be the one that was pressed
         if let ExpandedHit::Button(i, _) | ExpandedHit::Row(i) = hit
-            && self.cards().1.get(i).map(card_identity) != bound
+            && self.card_at(i).as_ref().map(card_identity) != bound
         {
             return;
         }
         match hit {
             ExpandedHit::Tab(tab) => {
+                self.leave_popup();
                 self.tab = tab;
                 self.hover.reset();
                 self.retarget(Instant::now());
@@ -633,7 +711,7 @@ impl App {
                 }
             }
             ExpandedHit::Button(i, action) => {
-                let Some(card) = self.cards().1.into_iter().nth(i) else { return };
+                let Some(card) = self.card_at(i) else { return };
                 let now = Instant::now();
                 match (action, card.kind) {
                     (Action::Allow, CardKind::Approval { id, .. }) => self.decide(&id, Decision::Allow),
@@ -648,6 +726,7 @@ impl App {
                     (Action::Later, CardKind::Question) => self.session.approvals.later(&card.pane_id),
                     _ => return,
                 }
+                self.sync_popup();
                 self.retarget(now);
                 self.apply_visibility();
             }
@@ -665,7 +744,7 @@ impl App {
     }
 
     pub fn on_deactivate(&mut self, now: Instant) {
-        if self.expanded && self.expanded_at.is_some_and(|at| now.saturating_duration_since(at) > DEACTIVATE_ARM) {
+        if self.expanded && !self.popup && self.expanded_at.is_some_and(|at| now.saturating_duration_since(at) > DEACTIVATE_ARM) {
             self.collapse();
         }
     }
@@ -714,6 +793,8 @@ impl App {
             return;
         }
         self.expanded = false;
+        self.popup = false;
+        self.popup_left = false;
         self.expanded_at = None;
         self.scroll = 0;
         self.wheel_acc = 0;
@@ -749,6 +830,11 @@ impl App {
     /// Recomputes what the island should show and sets the animation targets.
     fn retarget(&mut self, now: Instant) {
         let t = self.secs(now);
+        if self.popup
+            && let Some((r, _)) = self.popup_info()
+        {
+            self.popup_size = popup_layout(&r.req).size;
+        }
         let slots = self.slots();
         self.set_scroll(self.scroll.min(max_scroll(slots)), t);
         self.pet.set(pet_state(&self.session.agents), t);
@@ -816,6 +902,7 @@ impl App {
     /// Whether the usage strip is auto-scrolling: shown, wider than its strip, and not hovered.
     fn ticker_running(&self) -> bool {
         self.anim.face == Face::Expanded(Tab::Agents)
+            && !self.popup
             && !self.usage.is_empty()
             && self.ticker.scrolls()
             && self.hover.hot != Some(Hot::Usage)
@@ -835,6 +922,7 @@ impl App {
     /// Draws and presents one frame; returns whether to keep animating.
     pub fn frame(&mut self, now: Instant) -> bool {
         if self.session.approvals.expire(now) {
+            self.sync_popup();
             self.retarget(now);
             self.apply_visibility();
         }
@@ -1004,6 +1092,22 @@ impl App {
                 }
             })
             .collect();
+        let popup = self.popup.then(|| pending.iter().find_map(|p| match &p.kind {
+            PendingKind::Approval(r) => Some(r),
+            _ => None,
+        })).flatten().map(|r| {
+            let agent = agents.iter().find(|a| a.info.pane_id == r.pane_id);
+            ui_expanded::Popup {
+                name: agent.map_or_else(|| r.req.agent.clone(), |a| a.display_name().to_string()),
+                folder: agent.map(|a| a.folder().to_string()).unwrap_or_default(),
+                count: popup_request(&pending).map_or(1, |(_, n)| n),
+                summary: r.req.summary.clone(),
+                detail: r.req.detail.clone(),
+                layout: popup_layout(&r.req),
+                kind: Self::approval_kind(r),
+                fraction: countdown_fraction(r.expires, now, r.timeout_ms),
+            }
+        });
         let slots: usize = list.iter().map(Card::slots).sum();
         let collapsed = Scene { t, playing: self.clock.is_playing(), accent: arc_accent(self.art.as_ref().and_then(|a| a.accent)), badge: self.collapsed.badge };
         let expanded = ui_expanded::Scene {
@@ -1012,6 +1116,7 @@ impl App {
             media_present: present,
             cards,
             media,
+            popup,
             art: self.art_bmp.as_ref(),
             accent: self.art.as_ref().and_then(|a| a.accent).map(|[r, g, b]| Color::rgba(r, g, b, 1.0)),
             hover: &self.hover,
@@ -1090,7 +1195,7 @@ fn draw_island(
     if mode == DisplayMode::Attached {
         p.line(rect.x, rect.y + 0.5, rect.x + rect.w, rect.y + 0.5, Color::white(0.04), 1.0);
     }
-    let ex_size = expanded_size(!ex.usage.is_empty());
+    let ex_size = ex.popup.as_ref().map_or_else(|| expanded_size(!ex.usage.is_empty()), |p| p.layout.size);
     let (k_new, k_old) = anim.face_opacity(t);
     let mut drawn = Ok(());
     if let Some(old) = &anim.old {

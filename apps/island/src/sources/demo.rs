@@ -131,11 +131,26 @@ fn script(tx: UiSender) {
             },
             timeout_ms: 45_000,
         }));
+        // the first approval pops the collapsed island open; the second makes it "1 of 2"
+        tx.send(SourceEvent::Herdr(Incoming::Approval {
+            id: "demo-a2".into(),
+            pane_id: "w1:p7".into(),
+            req: ApprovalRequest {
+                agent: "codex".into(),
+                tool: "Bash".into(),
+                summary: "Run a command".into(),
+                detail: Some(Detail::Command("cargo test -p island-core".into())),
+                can_always: false,
+            },
+            timeout_ms: 45_000,
+        }));
         tx.send(SourceEvent::Herdr(Incoming::Question { pane_id: "w1:p5".into(), text: "Which branch should I base this on?".into() }));
+        thread::sleep(STEP * 3);
         demo(&tx, DemoAction::Expand(Tab::Agents));
         thread::sleep(STEP * 2);
         demo(&tx, DemoAction::Collapse);
         tx.send(SourceEvent::Herdr(Incoming::ApprovalClosed { id: "demo-a1".into() }));
+        tx.send(SourceEvent::Herdr(Incoming::ApprovalClosed { id: "demo-a2".into() }));
         for pane in ["w1:p4", "w1:p5", "w1:p7"] {
             tx.send(SourceEvent::Herdr(Incoming::Closed { pane_id: pane.into() }));
         }

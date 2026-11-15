@@ -1,7 +1,8 @@
 //! What the island shows, where it sits, and what a click hit.
 
 use crate::agents::AgentTable;
-use crate::approvals::{ApprovalRequest, Detail, Pending, PendingKind};
+use crate::approvals::{ApprovalRequest, Detail, Pending, PendingKind, Request};
+use std::time::Instant;
 use crate::herdr::AgentStatus;
 use crate::{Point, Rect, Size};
 use serde::{Deserialize, Serialize};
@@ -502,6 +503,42 @@ pub fn popup_layout(req: &ApprovalRequest) -> PopupLayout {
 /// The popup button under `p`, if any.
 pub fn hit_popup(l: &PopupLayout, kind: &CardKind, p: Point) -> Option<Action> {
     layout::buttons(kind, l.band).into_iter().find(|(_, r)| inside(*r, p)).map(|(a, _)| a)
+}
+
+/// The request the popup shows (the first approval) and how many approvals are pending ("1 of N").
+pub fn popup_request(pending: &[Pending]) -> Option<(&Request, usize)> {
+    let mut all = pending.iter().filter_map(|p| match &p.kind {
+        PendingKind::Approval(r) => Some(r),
+        _ => None,
+    });
+    let first = all.next()?;
+    Some((first, 1 + all.count()))
+}
+
+/// How full the countdown bar is: time left over the request's timeout, 0..=1.
+pub fn countdown_fraction(expires: Instant, now: Instant, timeout_ms: u64) -> f32 {
+    if timeout_ms == 0 {
+        return 0.0;
+    }
+    let left = expires.saturating_duration_since(now).as_secs_f32();
+    (left / (timeout_ms as f32 / 1000.0)).clamp(0.0, 1.0)
+}
+
+/// What the popup does once no approval is left.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PopupExit {
+    Stay,
+    Collapse,
+    /// Show the normal Agents tab.
+    Agents,
+}
+
+pub fn popup_exit(has_approval: bool, pointer_inside: bool) -> PopupExit {
+    match (has_approval, pointer_inside) {
+        (true, _) => PopupExit::Stay,
+        (false, true) => PopupExit::Agents,
+        (false, false) => PopupExit::Collapse,
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -1113,7 +1150,7 @@ mod tests {
         t.upsert(test_info("w1:p2", Blocked), t0);
         let req = ApprovalRequest { agent: "claude".into(), tool: "Bash".into(), summary: "s".into(), detail: None, can_always: false };
         let pending = [
-            Pending { pane_id: "w1:p2".into(), kind: PendingKind::Approval(crate::approvals::Request { id: "r1".into(), pane_id: "w1:p2".into(), req, expires: t0 }) },
+            Pending { pane_id: "w1:p2".into(), kind: PendingKind::Approval(crate::approvals::Request { id: "r1".into(), pane_id: "w1:p2".into(), req, expires: t0, timeout_ms: 45_000 }) },
             Pending { pane_id: "w1:p2".into(), kind: PendingKind::Question("q".into()) },
             Pending { pane_id: "w1:p9".into(), kind: PendingKind::NeedsYou { hook_missing: true } },
         ];
@@ -1258,5 +1295,61 @@ mod tests {
         assert!(is_drag(3, 3, 1.0));
         assert!(!is_drag(6, 0, 1.5));
         assert!(is_drag(7, 0, 1.5));
+    }
+
+    #[test]
+    fn popup_picks_the_first_approval_and_counts() {
+        let t0 = Instant::now();
+        let req = |id: &str| Request {
+            id: id.into(),
+            pane_id: format!("p-{id}"),
+            req: ApprovalRequest { agent: "claude".into(), tool: "Edit".into(), summary: "s".into(), detail: None, can_always: false },
+            expires: t0,
+            timeout_ms: 45_000,
+        };
+        let ap = |id: &str| Pending { pane_id: format!("p-{id}"), kind: PendingKind::Approval(req(id)) };
+        assert!(popup_request(&[]).is_none());
+        assert!(popup_request(&[Pending { pane_id: "p".into(), kind: PendingKind::Question("q".into()) }]).is_none());
+        let pending = [
+            Pending { pane_id: "p".into(), kind: PendingKind::Question("q".into()) },
+            ap("a"),
+            ap("b"),
+        ];
+        let (first, n) = popup_request(&pending).unwrap();
+        assert_eq!((first.id.as_str(), n), ("a", 2));
+        assert_eq!(popup_request(&pending[1..2]).map(|(r, n)| (r.id.as_str(), n)), Some(("a", 1)));
+    }
+
+    #[test]
+    fn countdown_runs_down_and_clamps() {
+        let t0 = Instant::now();
+        let end = t0 + Duration::from_millis(45_000);
+        assert_eq!(countdown_fraction(end, t0, 45_000), 1.0);
+        assert!((countdown_fraction(end, t0 + Duration::from_millis(22_500), 45_000) - 0.5).abs() < 1e-4);
+        assert_eq!(countdown_fraction(end, end, 45_000), 0.0);
+        assert_eq!(countdown_fraction(end, end + Duration::from_secs(5), 45_000), 0.0);
+        assert_eq!(countdown_fraction(end, t0 - Duration::from_secs(5), 45_000), 1.0);
+        assert_eq!(countdown_fraction(end, t0, 0), 0.0);
+    }
+
+    #[test]
+    fn popup_exit_rule() {
+        assert_eq!(popup_exit(true, true), PopupExit::Stay);
+        assert_eq!(popup_exit(true, false), PopupExit::Stay);
+        assert_eq!(popup_exit(false, true), PopupExit::Agents);
+        assert_eq!(popup_exit(false, false), PopupExit::Collapse);
+    }
+
+    #[test]
+    fn popup_fits_the_window() {
+        let req = ApprovalRequest {
+            agent: "a".into(),
+            tool: "t".into(),
+            summary: "s".into(),
+            detail: Some(Detail::Files((0..9).map(|i| FileChange { path: format!("f{i}"), added: 1, removed: 1 }).collect())),
+            can_always: true,
+        };
+        let size = popup_layout(&req).size;
+        assert!(size.w <= EXPANDED.w && size.h <= EXPANDED_USAGE.h);
     }
 }
