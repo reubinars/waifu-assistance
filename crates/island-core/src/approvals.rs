@@ -66,6 +66,9 @@ pub struct Pending {
     pub kind: PendingKind,
 }
 
+/// How long before the advertised timeout the island stops offering an approval.
+pub const EXPIRY_MARGIN_MS: u64 = 1000;
+
 struct Asked {
     pane_id: String,
     text: String,
@@ -121,8 +124,7 @@ impl ApprovalQueue {
             if self.blocked.insert(pane_id.to_owned()) {
                 self.later.remove(pane_id);
             }
-        } else {
-            self.blocked.remove(pane_id);
+        } else if self.blocked.remove(pane_id) {
             self.questions.retain(|q| q.pane_id != pane_id);
         }
     }
@@ -134,10 +136,12 @@ impl ApprovalQueue {
         self.blocked.remove(pane_id);
     }
 
-    /// Drops approvals whose timeout has passed. True if any were removed.
+    /// Drops approvals that are within `EXPIRY_MARGIN_MS` of their timeout, so a click can't
+    /// arrive after the hook gave up. True if any were removed.
     pub fn expire(&mut self, now: Instant) -> bool {
         let before = self.approvals.len();
-        self.approvals.retain(|r| r.expires > now);
+        let margin = Duration::from_millis(EXPIRY_MARGIN_MS);
+        self.approvals.retain(|r| r.expires > now + margin);
         self.approvals.len() != before
     }
 
@@ -280,8 +284,9 @@ mod tests {
         let mut q = ApprovalQueue::default();
         q.insert("a1".into(), "p1".into(), req("claude"), 45000, t0);
         q.insert("a2".into(), "p2".into(), req("claude"), 45000, t0);
-        assert!(!q.expire(t0 + Duration::from_millis(44999)));
-        assert!(q.expire(t0 + Duration::from_millis(45001)));
+        assert!(!q.expire(t0 + Duration::from_millis(43999)));
+        // gone a second early, so a late click can't reach a hook that has given up
+        assert!(q.expire(t0 + Duration::from_millis(44001)));
         assert!(q.take("a1").is_none() && q.take("a2").is_none());
         q.insert("a3".into(), "p3".into(), req("claude"), 45000, t0);
         q.close("a3");
@@ -300,6 +305,19 @@ mod tests {
         q.on_status("p", Working);
         assert!(pending(&q, &table(&[("p", Working)], t0)).is_empty());
         assert_eq!(q.badge(&table(&[("p", Working)], t0)), 0);
+    }
+
+    #[test]
+    fn repeated_non_blocked_status_keeps_a_question() {
+        let t0 = Instant::now();
+        let mut q = ApprovalQueue::default();
+        q.on_status("p", Working);
+        q.question("p".into(), "Which?".into());
+        q.on_status("p", Working);
+        assert_eq!(q.badge(&table(&[("p", Working)], t0)), 1);
+        q.on_status("p", Blocked);
+        q.on_status("p", Idle);
+        assert_eq!(q.badge(&table(&[("p", Idle)], t0)), 0);
     }
 
     #[test]
@@ -350,6 +368,8 @@ mod tests {
         q.insert("a2".into(), "p2".into(), req("claude"), 45000, t0);
         q.remove_pane("p1");
         assert!(q.take("a1").is_none());
+        assert!(!q.has_prompt("p1"));
+        assert!(!q.later.contains("p1"));
         // the agents table is what herdr closes for p1 too; without it, nothing is left for p1
         let agents = table(&[("p2", Blocked)], t0);
         assert_eq!(pending(&q, &agents), vec![("p2".to_string(), PendingKind::Approval(q.approvals[0].clone()))]);
