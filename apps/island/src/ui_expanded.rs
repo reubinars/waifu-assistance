@@ -46,6 +46,7 @@ impl Hot {
             ExpandedHit::Next => Hot::Next,
             ExpandedHit::Seek(_) => Hot::Seek,
             ExpandedHit::Usage => Hot::Usage,
+            ExpandedHit::Button(i, _) => Hot::Row(i),
         }
     }
 
@@ -208,7 +209,7 @@ fn draw_rows(p: &mut Painter, ox: f32, oy: f32, k: f32, s: &Scene) -> Result<()>
     const LINE2_Y: f32 = 22.0;
     const LINE2_H: f32 = 16.0;
     if s.rows.is_empty() {
-        let row = off(layout::row(0), ox, oy);
+        let row = off(layout::slot_rect(0), ox, oy);
         return p.text("No agents", Rect { x: row.x + NAME_X, w: row.w - NAME_X, ..row }, 14.0, 600, TEXT_SECONDARY.fade(k), Align::Left);
     }
     let list = off(layout::LIST, ox, oy);
@@ -216,7 +217,7 @@ fn draw_rows(p: &mut Painter, ox: f32, oy: f32, k: f32, s: &Scene) -> Result<()>
     p.push_layer(Some(&mask), 1.0);
     let drawn = (|| -> Result<()> {
         for (i, row) in s.rows.iter().enumerate() {
-            let r = off(layout::row(i), ox, oy - s.scroll * layout::ROW_STEP);
+            let r = off(layout::slot_rect(i), ox, oy - s.scroll * layout::ROW_STEP);
             if r.y + r.h <= list.y || r.y >= list.y + list.h {
                 continue;
             }

@@ -147,7 +147,7 @@ impl App {
         media: Box<dyn MediaSource>,
         agent_src: Box<dyn AgentSource>,
     ) -> App {
-        let collapsed = Collapsed { dot: Dot::Idle, media: false };
+        let collapsed = Collapsed { dot: Dot::Idle, media: false, badge: 0 };
         let anim = Animator::new(COLLAPSED, COLLAPSED_RADIUS, Face::Dot { dot: collapsed.dot, media: collapsed.media });
         let pet_sheet = pet::load();
         let pet2_sheet = if pet_sheet.is_some() { pet::load_second() } else { None };
@@ -410,7 +410,7 @@ impl App {
         let rows = self.session.agents.rows(usize::MAX).len();
         let seekable = present && self.clock.seekable();
         let usage = !self.usage.is_empty();
-        hit_expanded(self.tab, present, rows, self.scroll, seekable, usage, Point { x: p.x - o.x, y: p.y - o.y })
+        hit_expanded(self.tab, present, &vec![1; rows], self.scroll, seekable, usage, Point { x: p.x - o.x, y: p.y - o.y })
     }
 
     fn cursor(&self) -> Option<Point> {
@@ -585,7 +585,7 @@ impl App {
             ExpandedHit::Prev => self.media.command(MediaCommand::Previous),
             ExpandedHit::PlayPause => self.media.command(MediaCommand::PlayPause),
             ExpandedHit::Next => self.media.command(MediaCommand::Next),
-            ExpandedHit::Seek(_) | ExpandedHit::Usage => {}
+            ExpandedHit::Seek(_) | ExpandedHit::Usage | ExpandedHit::Button(..) => {}
         }
     }
 
@@ -685,7 +685,7 @@ impl App {
         self.pet.set(pet_state(&self.session.agents), t);
         self.pet2.set(second_pet_state(&self.session.agents, self.clock.is_playing()), t);
         let present = self.clock.is_present(now);
-        let collapsed = choose_collapsed(&self.session.agents, present);
+        let collapsed = choose_collapsed(&self.session.agents, present, 0);
         if collapsed != self.collapsed {
             log::debug!("collapsed {collapsed:?}");
             self.collapsed = collapsed;

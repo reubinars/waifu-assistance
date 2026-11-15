@@ -1,6 +1,7 @@
 //! What the island shows, where it sits, and what a click hit.
 
 use crate::agents::AgentTable;
+use crate::approvals::{ApprovalRequest, Detail, Pending, PendingKind};
 use crate::herdr::AgentStatus;
 use crate::{Point, Rect, Size};
 use serde::{Deserialize, Serialize};
@@ -17,7 +18,7 @@ pub enum DisplayMode {
 pub enum Dot { Idle, Working, Done, Blocked }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Collapsed { pub dot: Dot, pub media: bool }
+pub struct Collapsed { pub dot: Dot, pub media: bool, pub badge: u8 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Tab {
@@ -53,9 +54,9 @@ pub const COLLAPSED: Size = Size { w: 32.0, h: 32.0 };
 /// How far the pill keeps off the edges of the screen (the work area).
 const PILL_MARGIN: f32 = 4.0;
 
-/// Priority: blocked > done > working > idle; media is independent.
-pub fn choose_collapsed(agents: &AgentTable, media_present: bool) -> Collapsed {
-    let dot = if agents.count(AgentStatus::Blocked) > 0 {
+/// Priority: blocked > done > working > idle; media is independent. A badge forces blocked.
+pub fn choose_collapsed(agents: &AgentTable, media_present: bool, badge: u8) -> Collapsed {
+    let dot = if badge > 0 || agents.count(AgentStatus::Blocked) > 0 {
         Dot::Blocked
     } else if agents.count(AgentStatus::Done) > 0 {
         Dot::Done
@@ -64,7 +65,7 @@ pub fn choose_collapsed(agents: &AgentTable, media_present: bool) -> Collapsed {
     } else {
         Dot::Idle
     };
-    Collapsed { dot, media: media_present }
+    Collapsed { dot, media: media_present, badge }
 }
 
 /// How much of the island is on screen.
@@ -291,7 +292,7 @@ pub fn clock_label(secs: f64) -> String {
 /// Expanded-island layout, relative to the expanded island's top-left (DIPs).
 pub mod layout {
     use crate::Rect;
-    use super::Tab;
+    use super::{Action, CardKind, Tab};
 
     pub const PAD_Y: f32 = 14.0;
     pub const PAD_X: f32 = 16.0;
@@ -327,15 +328,156 @@ pub mod layout {
     pub const PLAY: (f32, f32, f32) = (180.0, 160.0, 22.0);
     pub const NEXT: (f32, f32, f32) = (230.0, 160.0, 18.0);
 
-    pub fn row(i: usize) -> Rect {
-        Rect { x: ROW_X, y: ROW_Y + ROW_STEP * i as f32, w: ROW_W, h: ROW_H }
+    pub fn slot_rect(slot: usize) -> Rect {
+        Rect { x: ROW_X, y: ROW_Y + ROW_STEP * slot as f32, w: ROW_W, h: ROW_H }
     }
+
+    /// A card spanning `slots` row slots.
+    pub fn card_rect(top_slot: usize, slots: usize) -> Rect {
+        let r = slot_rect(top_slot);
+        Rect { h: ROW_H * slots as f32 + (ROW_STEP - ROW_H) * (slots - 1) as f32, ..r }
+    }
+
+    pub const BUTTON_H: f32 = 28.0;
+    const BUTTON_GAP: f32 = 6.0;
+
+    /// The 28-high button strip at the bottom of a card.
+    pub fn card_band(card: Rect) -> Rect {
+        Rect { x: card.x + 28.0, y: card.y + card.h - 36.0, w: card.w - 36.0, h: BUTTON_H }
+    }
+
+    fn width(a: Action) -> f32 {
+        match a {
+            Action::Deny => 52.0,
+            Action::OpenTerminal => 96.0,
+            Action::Always => 92.0,
+            Action::Allow => 60.0,
+            Action::Later => 56.0,
+        }
+    }
+
+    /// A card's buttons, left group then right group, laid out inside `band`.
+    pub fn buttons(kind: &CardKind, band: Rect) -> Vec<(Action, Rect)> {
+        let (left, right): (Vec<Action>, Vec<Action>) = match kind {
+            CardKind::Approval { can_always, .. } => (
+                vec![Action::Deny, Action::OpenTerminal],
+                if *can_always { vec![Action::Always, Action::Allow] } else { vec![Action::Allow] },
+            ),
+            CardKind::Question => (vec![Action::Later], vec![Action::OpenTerminal]),
+            CardKind::NeedsYou { .. } => (vec![Action::OpenTerminal], vec![]),
+            CardKind::Agent => return Vec::new(),
+        };
+        let w = |a: Action| match (kind, a) {
+            (CardKind::Question, Action::OpenTerminal) => 128.0,
+            _ => width(a),
+        };
+        let mut out = Vec::new();
+        let mut x = band.x;
+        for a in left {
+            out.push((a, Rect { x, y: band.y, w: w(a), h: BUTTON_H }));
+            x += w(a) + BUTTON_GAP;
+        }
+        let total: f32 = right.iter().map(|&a| w(a)).sum::<f32>() + BUTTON_GAP * right.len().saturating_sub(1) as f32;
+        let mut x = band.x + band.w - total;
+        for a in right {
+            out.push((a, Rect { x, y: band.y, w: w(a), h: BUTTON_H }));
+            x += w(a) + BUTTON_GAP;
+        }
+        out
+    }
+}
+
+/// What a card button does.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Action { Allow, Deny, Always, OpenTerminal, Later }
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum CardKind {
+    Approval { id: String, can_always: bool },
+    Question,
+    NeedsYou { hook_missing: bool },
+    Agent,
+}
+
+/// One card in the Agents tab.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Card {
+    pub pane_id: String,
+    pub kind: CardKind,
+}
+
+impl Card {
+    /// Row slots the card takes.
+    pub fn slots(&self) -> usize {
+        if matches!(self.kind, CardKind::Approval { .. }) { 2 } else { 1 }
+    }
+}
+
+/// Pending entries first, then the remaining agent rows in their usual order; each pane once.
+pub fn cards(pending: &[Pending], agents: &AgentTable) -> Vec<Card> {
+    let mut out: Vec<Card> = Vec::new();
+    for p in pending {
+        if out.iter().any(|c| c.pane_id == p.pane_id) {
+            continue;
+        }
+        let kind = match &p.kind {
+            PendingKind::Approval(r) => CardKind::Approval { id: r.id.clone(), can_always: r.req.can_always },
+            PendingKind::Question(_) => CardKind::Question,
+            PendingKind::NeedsYou { hook_missing } => CardKind::NeedsYou { hook_missing: *hook_missing },
+        };
+        out.push(Card { pane_id: p.pane_id.clone(), kind });
+    }
+    for a in agents.rows(usize::MAX) {
+        if !out.iter().any(|c| c.pane_id == a.info.pane_id) {
+            out.push(Card { pane_id: a.info.pane_id.clone(), kind: CardKind::Agent });
+        }
+    }
+    out
+}
+
+/// The one-request popup (spec 6.3), relative to its top-left.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PopupLayout {
+    pub size: Size,
+    pub detail: Option<Rect>,
+    pub band: Rect,
+    pub bar: Rect,
+}
+
+pub fn popup_layout(req: &ApprovalRequest) -> PopupLayout {
+    const W: f32 = 360.0;
+    const X: f32 = 36.0;
+    let inner = W - X - 20.0;
+    // padding 14, header 18, gap 9, summary 18, gap 9
+    let mut y = 14.0 + 18.0 + 9.0 + 18.0 + 9.0;
+    let lines = match &req.detail {
+        Some(Detail::Files(f)) => Some(f.len().min(3) + usize::from(f.len() > 3)),
+        Some(Detail::Command(c)) => Some(c.lines().count().clamp(1, 2)),
+        None => None,
+    };
+    let detail = lines.map(|n| {
+        let r = Rect { x: X, y, w: inner, h: 7.0 + 16.0 * n as f32 + 7.0 };
+        y += r.h + 9.0;
+        r
+    });
+    let band = Rect { x: X, y, w: inner, h: layout::BUTTON_H };
+    y += layout::BUTTON_H + 9.0;
+    let bar = Rect { x: X, y, w: inner, h: 3.0 };
+    y += 3.0 + 14.0;
+    PopupLayout { size: Size { w: W, h: y }, detail, band, bar }
+}
+
+/// The popup button under `p`, if any.
+pub fn hit_popup(l: &PopupLayout, kind: &CardKind, p: Point) -> Option<Action> {
+    layout::buttons(kind, l.band).into_iter().find(|(_, r)| inside(*r, p)).map(|(a, _)| a)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum ExpandedHit {
     Tab(Tab),
+    /// A card, by index.
     Row(usize),
+    Button(usize, Action),
     Usage,
     Prev,
     PlayPause,
@@ -352,6 +494,7 @@ fn in_circle((cx, cy, r): (f32, f32, f32), p: Point) -> bool {
     (p.x - cx).powi(2) + (p.y - cy).powi(2) <= r * r
 }
 
+/// `rows` is the total number of row slots.
 pub fn max_scroll(rows: usize) -> usize {
     rows.saturating_sub(layout::MAX_ROWS)
 }
@@ -367,7 +510,7 @@ pub fn scroll_by(offset: usize, notches: i32, rows: usize) -> usize {
 }
 
 /// What a click at `p` (relative to the expanded island's top-left) hit, if anything.
-pub fn hit_expanded(tab: Tab, media_present: bool, rows: usize, scroll: usize, seekable: bool, usage: bool, p: Point) -> Option<ExpandedHit> {
+pub fn hit_expanded(tab: Tab, media_present: bool, spans: &[usize], scroll: usize, seekable: bool, usage: bool, p: Point) -> Option<ExpandedHit> {
     use layout::*;
     for (tab, r) in tabs(media_present) {
         if inside(r, p) {
@@ -382,10 +525,31 @@ pub fn hit_expanded(tab: Tab, media_present: bool, rows: usize, scroll: usize, s
             if !inside(LIST, p) {
                 return None;
             }
-            let scroll = scroll.min(max_scroll(rows));
-            (scroll..rows.min(scroll.saturating_add(MAX_ROWS)))
-                .find(|&i| inside(row(i - scroll), p))
-                .map(ExpandedHit::Row)
+            let scroll = scroll.min(max_scroll(spans.iter().sum()));
+            // A card partly above the list still hits on its visible part; the list clips the rest.
+            let mut start = 0;
+            let mut row = None;
+            for (i, &n) in spans.iter().enumerate() {
+                let top = start;
+                start += n;
+                if top >= scroll + MAX_ROWS || start <= scroll {
+                    continue;
+                }
+                let card = Rect { y: card_rect(0, n).y + ROW_STEP * (top as f32 - scroll as f32), ..card_rect(0, n) };
+                if !inside(card, p) {
+                    continue;
+                }
+                // Only approvals span two slots, so that is all the spans can tell apart.
+                if n == 2 {
+                    let kind = CardKind::Approval { id: String::new(), can_always: true };
+                    if let Some((a, _)) = layout::buttons(&kind, card_band(card)).into_iter().find(|(_, r)| inside(*r, p)) {
+                        return Some(ExpandedHit::Button(i, a));
+                    }
+                }
+                row = Some(i);
+                break;
+            }
+            row.map(ExpandedHit::Row)
         }
         Tab::Media => {
             let seek_hit = Rect {
@@ -409,6 +573,7 @@ pub fn hit_expanded(tab: Tab, media_present: bool, rows: usize, scroll: usize, s
 mod tests {
     use super::*;
     use crate::agents::test_info;
+    use crate::approvals::FileChange;
     use crate::herdr::AgentStatus::*;
     use std::time::{Duration, Instant};
 
@@ -421,17 +586,17 @@ mod tests {
         let t0 = Instant::now();
         for media in [false, true] {
             let mut t = AgentTable::default();
-            assert_eq!(choose_collapsed(&t, media), Collapsed { dot: Dot::Idle, media });
+            assert_eq!(choose_collapsed(&t, media, 0), Collapsed { dot: Dot::Idle, media, badge: 0 });
             t.upsert(test_info("w1:p1", Working), t0);
-            assert_eq!(choose_collapsed(&t, media), Collapsed { dot: Dot::Working, media });
+            assert_eq!(choose_collapsed(&t, media, 0), Collapsed { dot: Dot::Working, media, badge: 0 });
             t.upsert(test_info("w1:p2", Done), t0);
-            assert_eq!(choose_collapsed(&t, media), Collapsed { dot: Dot::Done, media });
+            assert_eq!(choose_collapsed(&t, media, 0), Collapsed { dot: Dot::Done, media, badge: 0 });
             t.upsert(test_info("w1:p3", Blocked), t0);
-            assert_eq!(choose_collapsed(&t, media), Collapsed { dot: Dot::Blocked, media });
+            assert_eq!(choose_collapsed(&t, media, 0), Collapsed { dot: Dot::Blocked, media, badge: 0 });
             t.upsert(test_info("w1:p1", Idle), t0);
             t.remove("w1:p2");
             t.remove("w1:p3");
-            assert_eq!(choose_collapsed(&t, media), Collapsed { dot: Dot::Idle, media });
+            assert_eq!(choose_collapsed(&t, media, 0), Collapsed { dot: Dot::Idle, media, badge: 0 });
         }
     }
 
@@ -442,7 +607,7 @@ mod tests {
             (Tab::Agents, rect(232.0, 10.0, 60.0, 24.0)),
             (Tab::Media, rect(296.0, 10.0, 54.0, 24.0)),
         ]);
-        let hit = |media, x| hit_expanded(Tab::Agents, media, 0, 0, false, false, Point { x, y: 20.0 });
+        let hit = |media, x| hit_expanded(Tab::Agents, media, &[], 0, false, false, Point { x, y: 20.0 });
         assert_eq!(hit(false, 291.0), Some(ExpandedHit::Tab(Tab::Agents)));
         assert_eq!(hit(false, 345.0), Some(ExpandedHit::Tab(Tab::Agents)));
         assert_eq!(hit(false, 250.0), None);
@@ -721,14 +886,14 @@ mod tests {
     #[test]
     fn rows_span_the_panel() {
         for i in 0..layout::MAX_ROWS {
-            let r = layout::row(i);
+            let r = layout::slot_rect(i);
             assert_eq!(r.x, 8.0);
             assert_eq!(r.x + r.w, EXPANDED.w - 8.0);
             let p = Point { x: r.x + r.w / 2.0, y: r.y + r.h / 2.0 };
-            assert_eq!(hit_expanded(Tab::Agents, false, 5, 1, false, false, p), Some(ExpandedHit::Row(i + 1)));
+            assert_eq!(hit_expanded(Tab::Agents, false, &[1; 5], 1, false, false, p), Some(ExpandedHit::Row(i + 1)));
         }
-        assert_eq!(layout::row(0).h, 44.0);
-        assert_eq!(layout::row(1).y - layout::row(0).y, 50.0);
+        assert_eq!(layout::slot_rect(0).h, 44.0);
+        assert_eq!(layout::slot_rect(1).y - layout::slot_rect(0).y, 50.0);
         assert_eq!(layout::LIST.y + layout::LIST.h, 188.0);
         const { assert!(layout::LIST.y + layout::LIST.h <= EXPANDED.h) };
     }
@@ -754,7 +919,7 @@ mod tests {
 
     #[test]
     fn scrolled_hits_use_absolute_rows_inside_the_list() {
-        let hit = |rows, scroll, x, y| hit_expanded(Tab::Agents, false, rows, scroll, false, false, Point { x, y });
+        let hit = |rows, scroll, x, y| hit_expanded(Tab::Agents, false, &vec![1; rows], scroll, false, false, Point { x, y });
         assert_eq!(hit(5, 1, 100.0, 50.0), Some(ExpandedHit::Row(1)));
         assert_eq!(hit(5, 1, 100.0, 175.0), Some(ExpandedHit::Row(3)));
         assert_eq!(hit(2, 0, 100.0, 150.0), None);
@@ -769,18 +934,18 @@ mod tests {
     #[test]
     fn expanded_hits() {
         let p = |x, y| Point { x, y };
-        assert_eq!(hit_expanded(Tab::Media, true, 0, 0, true, false, p(180.0, 160.0)), Some(ExpandedHit::PlayPause));
-        assert_eq!(hit_expanded(Tab::Media, true, 0, 0, true, false, p(130.0, 160.0)), Some(ExpandedHit::Prev));
-        assert_eq!(hit_expanded(Tab::Media, true, 0, 0, true, false, p(230.0, 160.0)), Some(ExpandedHit::Next));
-        assert_eq!(hit_expanded(Tab::Media, true, 0, 0, true, false, p(180.0, 110.0)), Some(ExpandedHit::Seek(0.5)));
-        assert_eq!(hit_expanded(Tab::Media, true, 0, 0, false, false, p(180.0, 110.0)), None);
-        assert_eq!(hit_expanded(Tab::Agents, true, 2, 0, false, false, p(100.0, 120.0)), Some(ExpandedHit::Row(1)));
-        assert_eq!(hit_expanded(Tab::Agents, true, 1, 0, false, false, p(100.0, 120.0)), None);
-        assert_eq!(hit_expanded(Tab::Agents, true, 0, 0, false, false, p(300.0, 20.0)), Some(ExpandedHit::Tab(Tab::Media)));
-        assert_eq!(hit_expanded(Tab::Media, true, 0, 0, false, false, p(250.0, 20.0)), Some(ExpandedHit::Tab(Tab::Agents)));
-        assert_eq!(hit_expanded(Tab::Agents, false, 0, 0, false, false, p(300.0, 20.0)), Some(ExpandedHit::Tab(Tab::Agents)));
+        assert_eq!(hit_expanded(Tab::Media, true, &[], 0, true, false, p(180.0, 160.0)), Some(ExpandedHit::PlayPause));
+        assert_eq!(hit_expanded(Tab::Media, true, &[], 0, true, false, p(130.0, 160.0)), Some(ExpandedHit::Prev));
+        assert_eq!(hit_expanded(Tab::Media, true, &[], 0, true, false, p(230.0, 160.0)), Some(ExpandedHit::Next));
+        assert_eq!(hit_expanded(Tab::Media, true, &[], 0, true, false, p(180.0, 110.0)), Some(ExpandedHit::Seek(0.5)));
+        assert_eq!(hit_expanded(Tab::Media, true, &[], 0, false, false, p(180.0, 110.0)), None);
+        assert_eq!(hit_expanded(Tab::Agents, true, &[1; 2], 0, false, false, p(100.0, 120.0)), Some(ExpandedHit::Row(1)));
+        assert_eq!(hit_expanded(Tab::Agents, true, &[1; 1], 0, false, false, p(100.0, 120.0)), None);
+        assert_eq!(hit_expanded(Tab::Agents, true, &[], 0, false, false, p(300.0, 20.0)), Some(ExpandedHit::Tab(Tab::Media)));
+        assert_eq!(hit_expanded(Tab::Media, true, &[], 0, false, false, p(250.0, 20.0)), Some(ExpandedHit::Tab(Tab::Agents)));
+        assert_eq!(hit_expanded(Tab::Agents, false, &[], 0, false, false, p(300.0, 20.0)), Some(ExpandedHit::Tab(Tab::Agents)));
         // buttons only exist on the media tab
-        assert_eq!(hit_expanded(Tab::Agents, true, 0, 0, false, false, p(180.0, 160.0)), None);
+        assert_eq!(hit_expanded(Tab::Agents, true, &[], 0, false, false, p(180.0, 160.0)), None);
     }
 
     #[test]
@@ -795,9 +960,100 @@ mod tests {
     #[test]
     fn usage_strip_hit() {
         let p = Point { x: 100.0, y: 200.0 };
-        assert_eq!(hit_expanded(Tab::Agents, false, 2, 0, false, true, p), Some(ExpandedHit::Usage));
-        assert_eq!(hit_expanded(Tab::Agents, false, 2, 0, false, false, p), None);
-        assert_eq!(hit_expanded(Tab::Media, true, 2, 0, false, true, p), None);
+        assert_eq!(hit_expanded(Tab::Agents, false, &[1; 2], 0, false, true, p), Some(ExpandedHit::Usage));
+        assert_eq!(hit_expanded(Tab::Agents, false, &[1; 2], 0, false, false, p), None);
+        assert_eq!(hit_expanded(Tab::Media, true, &[1; 2], 0, false, true, p), None);
+    }
+
+    fn approval(can_always: bool) -> CardKind {
+        CardKind::Approval { id: "a".into(), can_always }
+    }
+
+    #[test]
+    fn approval_cards_span_two_slots() {
+        let hit = |scroll, y| hit_expanded(Tab::Agents, false, &[2, 1, 1], scroll, false, false, Point { x: 100.0, y });
+        assert_eq!(hit(0, 50.0), Some(ExpandedHit::Row(0)));
+        assert_eq!(hit(0, 100.0), Some(ExpandedHit::Row(0)));
+        assert_eq!(hit(0, 150.0), Some(ExpandedHit::Row(1)));
+        assert_eq!(hit(0, 180.0), Some(ExpandedHit::Row(1)));
+        assert_eq!(hit(1, 50.0), Some(ExpandedHit::Row(0)));
+        assert_eq!(hit(1, 100.0), Some(ExpandedHit::Row(1)));
+        assert_eq!(hit(1, 150.0), Some(ExpandedHit::Row(2)));
+        assert_eq!(layout::card_rect(0, 2).h, 94.0);
+    }
+
+    #[test]
+    fn card_buttons_layout() {
+        let band = rect(36.0, 102.0, 308.0, 28.0);
+        let b = layout::buttons(&approval(true), band);
+        let names: Vec<_> = b.iter().map(|(a, _)| *a).collect();
+        assert_eq!(names, [Action::Deny, Action::OpenTerminal, Action::Always, Action::Allow]);
+        assert_eq!(b[3].1.x + b[3].1.w, 344.0);
+        assert_eq!((b[0].1.x, b[0].1.w, b[1].1.x), (36.0, 52.0, 94.0));
+        assert_eq!((b[2].1.x, b[2].1.w, b[3].1.x), (186.0, 92.0, 284.0));
+        assert!(layout::buttons(&approval(false), band).iter().all(|(a, _)| *a != Action::Always));
+        assert_eq!(layout::buttons(&CardKind::NeedsYou { hook_missing: false }, band).len(), 1);
+        let q = layout::buttons(&CardKind::Question, band);
+        assert_eq!(q.iter().map(|(a, _)| *a).collect::<Vec<_>>(), [Action::Later, Action::OpenTerminal]);
+        assert_eq!((q[1].1.w, q[1].1.x + q[1].1.w), (128.0, 344.0));
+        assert!(layout::buttons(&CardKind::Agent, band).is_empty());
+        assert_eq!(layout::card_band(layout::card_rect(0, 2)), rect(36.0, 102.0, 308.0, 28.0));
+    }
+
+    #[test]
+    fn button_hits_beat_row_hits() {
+        let card = layout::card_rect(0, 2);
+        let band = layout::card_band(card);
+        let allow = layout::buttons(&approval(true), band)[3].1;
+        let p = Point { x: allow.x + allow.w / 2.0, y: allow.y + allow.h / 2.0 };
+        assert_eq!(hit_expanded(Tab::Agents, false, &[2, 1], 0, false, false, p), Some(ExpandedHit::Button(0, Action::Allow)));
+        assert_eq!(hit_expanded(Tab::Agents, false, &[2, 1], 0, false, false, Point { x: 100.0, y: 60.0 }), Some(ExpandedHit::Row(0)));
+    }
+
+    #[test]
+    fn popup_heights() {
+        let req = |detail| ApprovalRequest { agent: "claude".into(), tool: "Edit".into(), summary: "s".into(), detail, can_always: true };
+        let file = |n| (0..n).map(|i| FileChange { path: format!("f{i}"), added: 1, removed: 0 }).collect();
+        assert_eq!(popup_layout(&req(None)).size, Size { w: 360.0, h: 122.0 });
+        assert_eq!(popup_layout(&req(Some(Detail::Files(file(1))))).size.h, 161.0);
+        assert_eq!(popup_layout(&req(Some(Detail::Files(file(5))))).size.h, 209.0);
+        assert_eq!(popup_layout(&req(Some(Detail::Command("a\nb\nc".into())))).size.h, 161.0 + 16.0);
+        let l = popup_layout(&req(None));
+        assert_eq!((l.band.x, l.band.y, l.bar.w, l.bar.y), (36.0, 14.0 + 18.0 + 9.0 + 18.0 + 9.0, 304.0, 14.0 + 18.0 + 9.0 + 18.0 + 9.0 + 28.0 + 9.0));
+        let allow = layout::buttons(&approval(true), l.band)[3].1;
+        let p = Point { x: allow.x + 1.0, y: allow.y + 1.0 };
+        assert_eq!(hit_popup(&l, &approval(true), p), Some(Action::Allow));
+        assert_eq!(hit_popup(&l, &approval(true), Point { x: 0.0, y: 0.0 }), None);
+    }
+
+    #[test]
+    fn badge_forces_blocked_dot() {
+        let t0 = Instant::now();
+        let mut t = AgentTable::default();
+        t.upsert(test_info("w1:p1", Working), t0);
+        assert_eq!(choose_collapsed(&t, false, 1), Collapsed { dot: Dot::Blocked, media: false, badge: 1 });
+        assert_eq!(choose_collapsed(&t, false, 0).dot, Dot::Working);
+    }
+
+    #[test]
+    fn cards_list_pending_first_without_duplicates() {
+        let t0 = Instant::now();
+        let mut t = AgentTable::default();
+        t.upsert(test_info("w1:p1", Working), t0);
+        t.upsert(test_info("w1:p2", Blocked), t0);
+        let req = ApprovalRequest { agent: "claude".into(), tool: "Bash".into(), summary: "s".into(), detail: None, can_always: false };
+        let pending = [
+            Pending { pane_id: "w1:p2".into(), kind: PendingKind::Approval(crate::approvals::Request { id: "r1".into(), pane_id: "w1:p2".into(), req, expires: t0 }) },
+            Pending { pane_id: "w1:p2".into(), kind: PendingKind::Question("q".into()) },
+            Pending { pane_id: "w1:p9".into(), kind: PendingKind::NeedsYou { hook_missing: true } },
+        ];
+        let c = cards(&pending, &t);
+        let got: Vec<_> = c.iter().map(|c| (c.pane_id.as_str(), c.kind.clone(), c.slots())).collect();
+        assert_eq!(got, [
+            ("w1:p2", CardKind::Approval { id: "r1".into(), can_always: false }, 2),
+            ("w1:p9", CardKind::NeedsYou { hook_missing: true }, 1),
+            ("w1:p1", CardKind::Agent, 1),
+        ]);
     }
 
     #[test]
@@ -850,7 +1106,7 @@ mod tests {
     fn fullscreen_shows_only_the_blocked_dot() {
         for media in [false, true] {
             for dot in [Dot::Idle, Dot::Working, Dot::Done, Dot::Blocked] {
-                let c = Collapsed { dot, media };
+                let c = Collapsed { dot, media, badge: 0 };
                 assert_eq!(shown(false, false, &c), Shown::All);
                 assert_eq!(shown(false, true, &c), if dot == Dot::Blocked { Shown::CollapsedOnly } else { Shown::Hidden });
                 assert_eq!(shown(true, false, &c), Shown::Hidden);
