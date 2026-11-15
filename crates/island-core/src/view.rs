@@ -349,10 +349,10 @@ pub mod layout {
 
     fn width(a: Action) -> f32 {
         match a {
-            Action::Deny => 52.0,
-            Action::OpenTerminal => 96.0,
-            Action::Always => 92.0,
-            Action::Allow => 60.0,
+            Action::Deny => 48.0,
+            Action::OpenTerminal => 88.0,
+            Action::Always => 84.0,
+            Action::Allow => 54.0,
             Action::Later => 56.0,
         }
     }
@@ -646,6 +646,21 @@ pub fn hit_expanded(tab: Tab, media_present: bool, cards: &[CardKind], scroll: u
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn approval_buttons_never_overlap() {
+        let a = ApprovalRequest { agent: "claude".into(), tool: "Bash".into(), summary: "s".into(), detail: None, can_always: true };
+        let kind = CardKind::Approval { id: "a".into(), can_always: true };
+        for band in [popup_layout(&a).band, layout::card_band(layout::card_rect(0, 2))] {
+            let mut bs = layout::buttons(&kind, band);
+            assert_eq!(bs.len(), 4);
+            bs.sort_by(|x, y| x.1.x.total_cmp(&y.1.x));
+            assert!(bs[0].1.x >= band.x && bs[3].1.x + bs[3].1.w <= band.x + band.w + 0.01);
+            for w in bs.windows(2) {
+                assert!(w[0].1.x + w[0].1.w + 6.0 <= w[1].1.x + 0.01, "{:?} overlaps {:?}", w[0], w[1]);
+            }
+        }
+    }
     use super::*;
     use crate::agents::test_info;
     use crate::approvals::FileChange;
@@ -1064,8 +1079,8 @@ mod tests {
         let names: Vec<_> = b.iter().map(|(a, _)| *a).collect();
         assert_eq!(names, [Action::Deny, Action::OpenTerminal, Action::Always, Action::Allow]);
         assert_eq!(b[3].1.x + b[3].1.w, 344.0);
-        assert_eq!((b[0].1.x, b[0].1.w, b[1].1.x), (36.0, 52.0, 94.0));
-        assert_eq!((b[2].1.x, b[2].1.w, b[3].1.x), (186.0, 92.0, 284.0));
+        assert_eq!((b[0].1.x, b[0].1.w, b[1].1.x), (36.0, 48.0, 90.0));
+        assert_eq!((b[2].1.x, b[2].1.w, b[3].1.x), (200.0, 84.0, 290.0));
         assert!(layout::buttons(&approval(false), band).iter().all(|(a, _)| *a != Action::Always));
         assert_eq!(layout::buttons(&CardKind::NeedsYou { hook_missing: false }, band).len(), 1);
         let q = layout::buttons(&CardKind::Question, band);
