@@ -94,6 +94,7 @@ struct Bridge {
     stdin: Option<ChildStdin>,
     lines: Receiver<String>,
     usage: Receiver<String>,
+    hooks: Receiver<String>,
 }
 
 impl Bridge {
@@ -109,11 +110,14 @@ impl Bridge {
         let stdout = child.stdout.take().unwrap();
         let (tx, lines) = mpsc::channel();
         let (utx, usage) = mpsc::channel();
+        let (htx, hooks) = mpsc::channel();
         std::thread::spawn(move || {
             for line in BufReader::new(stdout).lines() {
                 let Ok(line) = line else { break };
                 let sent = if line.starts_with(r#"{"usage""#) {
                     utx.send(line).is_ok()
+                } else if line.starts_with(r#"{"hooks""#) {
+                    htx.send(line).is_ok()
                 } else {
                     tx.send(line).is_ok()
                 };
@@ -123,7 +127,7 @@ impl Bridge {
             }
         });
         let stdin = child.stdin.take();
-        Bridge { child, stdin, lines, usage }
+        Bridge { child, stdin, lines, usage, hooks }
     }
 
     fn next(&self, secs: u64) -> String {
@@ -256,6 +260,15 @@ fn usage_is_printed_without_herdr() {
     let b = Bridge::spawn(&sock, &home);
     let line = b.usage.recv_timeout(Duration::from_secs(2)).expect("no usage line");
     assert_eq!(line, r#"{"usage":[{"cli":"claude","windows":[{"minutes":300,"used_percent":42.0,"resets_at":null}]}]}"#);
+}
+
+#[test]
+fn hook_status_is_reported_on_start() {
+    // no herdr and an empty HOME: still one status line, with no CLI keys
+    let sock = sock_path("hooks");
+    let b = Bridge::spawn(&sock, &home_for(&sock));
+    let line = b.hooks.recv_timeout(Duration::from_secs(2)).expect("no hooks line");
+    assert_eq!(line, r#"{"hooks":{}}"#);
 }
 
 #[test]

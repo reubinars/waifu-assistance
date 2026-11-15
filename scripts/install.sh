@@ -17,6 +17,10 @@ sleep 0.5
 
 install -D -m 755 target/release/island-bridge "$HOME/.local/bin/island-bridge"
 echo "bridge  -> $HOME/.local/bin/island-bridge"
+"$HOME/.local/bin/island-bridge" hooks install
+if [ -d "$HOME/.codex" ]; then
+    echo "codex: trust the new hook with /hooks on next start"
+fi
 
 mkdir -p "$dest"
 cp target/x86_64-pc-windows-msvc/release/island.exe "$dest/island.exe"

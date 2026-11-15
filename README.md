@@ -13,6 +13,6 @@ island-bridge hooks install   # add the island's hooks (backs up each file first
 island-bridge hooks remove    # remove exactly those entries
 ```
 
-`scripts/install.sh` runs `hooks install` for you. Codex asks you to trust a newly added hook the first time it runs, so approve that prompt once in Codex.
+`scripts/install.sh` runs `hooks install` for you. Codex asks you to trust a newly added hook, so on Codex's next start, trust the new hook with `/hooks`.
 
 <!-- wait-result: filled in after hook capture -->

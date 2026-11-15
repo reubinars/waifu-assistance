@@ -15,7 +15,10 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::time::{Duration, Instant};
 
+use serde_json::json;
+
 mod hook;
+mod install;
 mod socket;
 mod usage;
 
@@ -187,14 +190,60 @@ fn wait(backoff: Duration, rx: &Receiver<Msg>) {
     }
 }
 
+fn home_dir() -> Option<PathBuf> {
+    std::env::var_os("HOME").filter(|h| !h.is_empty()).map(PathBuf::from)
+}
+
+/// `island-bridge hooks install|remove`: prints one line per changed file and returns the exit code.
+fn hooks_command(action: Option<&str>) -> i32 {
+    let Some(home) = home_dir() else {
+        eprintln!("island-bridge: HOME is not set");
+        return 1;
+    };
+    let lines = match action {
+        Some("install") => match std::env::current_exe() {
+            Ok(exe) => install::install(&home, &exe),
+            Err(e) => {
+                eprintln!("island-bridge: cannot find own path: {e}");
+                return 1;
+            }
+        },
+        Some("remove") => install::remove(&home),
+        _ => {
+            eprintln!("usage: island-bridge hooks install|remove");
+            return 2;
+        }
+    };
+    match lines {
+        Ok(lines) => {
+            lines.iter().for_each(|l| emit(l));
+            0
+        }
+        Err(e) => {
+            eprintln!("island-bridge: hooks: {e}");
+            1
+        }
+    }
+}
+
+/// Tells the island which agent CLIs have our hook in place.
+fn emit_hook_status() {
+    let status = home_dir().map(|h| install::status(&h)).unwrap_or_default();
+    emit(&json!({"hooks": status.0}).to_string());
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     if args.get(1).map(String::as_str) == Some("hook") {
         std::process::exit(hook::run(args.get(2).map_or("", String::as_str)));
     }
+    if args.get(1).map(String::as_str) == Some("hooks") {
+        std::process::exit(hooks_command(args.get(2).map(String::as_str)));
+    }
     if let Err(e) = socket::spawn() {
         eprintln!("island-bridge: approvals disabled, cannot serve {}: {e}", socket::socket_path().display());
     }
+    emit_hook_status();
     let home = std::env::var_os("HOME").filter(|h| !h.is_empty()).map(PathBuf::from);
     usage::spawn(home);
 
