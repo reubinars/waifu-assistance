@@ -24,7 +24,7 @@ use island_core::usage::{CliUsage, strip_runs};
 use island_core::view::layout::{self, SEEK};
 use island_core::view::{
     Action, COLLAPSED, Card, PopupExit, CardKind, Collapsed, Dot, DisplayMode, ExpandedHit, Shown, Spot, Tab, block_rect, block_size, card_identity, cards, choose_collapsed, clock_label, detail_line,
-    corner_radii, countdown_fraction, expanded_size, hit_popup, popup_exit, popup_layout, popup_press_guarded, popup_request, fullscreen_jump_target, hit_expanded, is_drag, island_rect,
+    corner_radii, countdown_fraction, expanded_size, hit_popup, popup_exit, popup_layout, popup_press_guarded, card_press_guarded, popup_request, fullscreen_jump_target, hit_expanded, is_drag, island_rect,
     jump_target, max_scroll, pet_cell, scroll_by, second_pet_cell, shown, spot_at,
 };
 use island_core::{Point, Rect, Size};
@@ -112,6 +112,8 @@ pub struct App {
     popup_left: bool,
     /// The request the popup shows and when it appeared there.
     popup_shown: Option<(String, Instant)>,
+    /// When the expanded card list last changed; request and question buttons ignore presses just after.
+    cards_changed: Option<Instant>,
     expanded_at: Option<Instant>,
     tab: Tab,
     hover: Hover,
@@ -187,6 +189,7 @@ impl App {
             popup_size: Size { w: 0.0, h: 0.0 },
             popup_left: false,
             popup_shown: None,
+            cards_changed: None,
             expanded_at: None,
             tab: Tab::Agents,
             hover: Hover::default(),
@@ -251,7 +254,7 @@ impl App {
 
     pub fn on_source_event(&mut self, e: SourceEvent) {
         let now = Instant::now();
-        let before: Vec<String> = self.cards().1.iter().map(card_identity).collect();
+        let before = self.card_ids();
         match e {
             SourceEvent::Media(snap) => self.clock.update(snap, now),
             SourceEvent::Art(art) => {
@@ -292,9 +295,12 @@ impl App {
         }
         self.sync_popup();
         // a press must not land on a card that has since changed
-        if self.hover.pressed.is_some() && self.cards().1.iter().map(card_identity).collect::<Vec<_>>() != before {
-            self.hover.set_pressed(None, self.secs(now));
-            self.pressed_card = None;
+        if self.card_ids() != before {
+            self.cards_changed = Some(now);
+            if self.hover.pressed.is_some() {
+                self.hover.set_pressed(None, self.secs(now));
+                self.pressed_card = None;
+            }
         }
         self.retarget(now);
         self.apply_visibility();
@@ -443,6 +449,17 @@ impl App {
         let pending = self.session.approvals.pending(&self.session.agents, &self.session.hooks);
         let list = cards(&pending, &self.session.agents);
         (pending, list)
+    }
+
+    fn card_ids(&self) -> Vec<String> {
+        self.cards().1.iter().map(card_identity).collect()
+    }
+
+    /// Notes when the card list differs from `before`.
+    fn note_cards(&mut self, before: &[String], now: Instant) {
+        if self.card_ids() != before {
+            self.cards_changed = Some(now);
+        }
     }
 
     fn slots(&self) -> usize {
@@ -667,6 +684,13 @@ impl App {
             return;
         }
         let hit = self.expanded_hit(p);
+        // the same, for a card that slid or appeared under the pointer in the Agents tab
+        if let Some(ExpandedHit::Button(i, _)) = hit
+            && matches!(self.card_at(i).map(|c| c.kind), Some(CardKind::Approval { .. } | CardKind::Question))
+            && card_press_guarded(self.cards_changed, now)
+        {
+            return;
+        }
         if let Some(ExpandedHit::Seek(f)) = hit {
             self.drag = Some(f);
             self.win.capture(true);
@@ -704,7 +728,6 @@ impl App {
         }
         match hit {
             ExpandedHit::Tab(tab) => {
-                self.leave_popup();
                 self.tab = tab;
                 self.hover.reset();
                 self.retarget(Instant::now());
@@ -721,6 +744,7 @@ impl App {
             ExpandedHit::Button(i, action) => {
                 let Some(card) = self.card_at(i) else { return };
                 let now = Instant::now();
+                let before = self.card_ids();
                 match (action, card.kind) {
                     (Action::Allow, CardKind::Approval { id, .. }) => self.decide(&id, Decision::Allow),
                     (Action::Deny, CardKind::Approval { id, .. }) => self.decide(&id, Decision::Deny),
@@ -734,6 +758,7 @@ impl App {
                     (Action::Later, CardKind::Question) => self.session.approvals.later(&card.pane_id),
                     _ => return,
                 }
+                self.note_cards(&before, now);
                 self.sync_popup();
                 self.retarget(now);
                 self.apply_visibility();
@@ -936,6 +961,7 @@ impl App {
     /// Draws and presents one frame; returns whether to keep animating.
     pub fn frame(&mut self, now: Instant) -> bool {
         if self.session.approvals.expire(now) {
+            self.cards_changed = Some(now);
             self.sync_popup();
             self.retarget(now);
             self.apply_visibility();

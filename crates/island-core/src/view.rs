@@ -336,7 +336,7 @@ pub mod layout {
     /// A card spanning `slots` row slots.
     pub fn card_rect(top_slot: usize, slots: usize) -> Rect {
         let r = slot_rect(top_slot);
-        Rect { h: ROW_H * slots as f32 + (ROW_STEP - ROW_H) * (slots - 1) as f32, ..r }
+        Rect { h: ROW_H * slots as f32 + (ROW_STEP - ROW_H) * slots.saturating_sub(1) as f32, ..r }
     }
 
     pub const BUTTON_H: f32 = 28.0;
@@ -531,6 +531,12 @@ pub const POPUP_PRESS_GUARD_MS: u64 = 400;
 /// Whether a press at `now` on a request shown since `shown_at` is ignored.
 pub fn popup_press_guarded(shown_at: Instant, now: Instant) -> bool {
     now.saturating_duration_since(shown_at) < std::time::Duration::from_millis(POPUP_PRESS_GUARD_MS)
+}
+
+/// Whether a press at `now` on a request or question card is ignored because the card list
+/// changed at `changed_at`: a card may have just slid under a still pointer. Same window as the popup's.
+pub fn card_press_guarded(changed_at: Option<Instant>, now: Instant) -> bool {
+    changed_at.is_some_and(|at| popup_press_guarded(at, now))
 }
 
 /// What the popup does once no approval is left.
@@ -1354,6 +1360,20 @@ mod tests {
         assert_eq!(countdown_fraction(end, end + Duration::from_secs(5), 45_000), 0.0);
         assert_eq!(countdown_fraction(end, t0 - Duration::from_secs(5), 45_000), 1.0);
         assert_eq!(countdown_fraction(end, t0, 0), 0.0);
+    }
+
+    #[test]
+    fn card_press_guard_window() {
+        let t0 = Instant::now();
+        assert!(!card_press_guarded(None, t0));
+        assert!(card_press_guarded(Some(t0), t0));
+        assert!(card_press_guarded(Some(t0), t0 + Duration::from_millis(399)));
+        assert!(!card_press_guarded(Some(t0), t0 + Duration::from_millis(400)));
+    }
+
+    #[test]
+    fn card_rect_with_no_slots_does_not_underflow() {
+        assert_eq!(layout::card_rect(0, 0).h, 0.0);
     }
 
     #[test]
