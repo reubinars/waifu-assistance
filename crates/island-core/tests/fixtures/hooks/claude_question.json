@@ -1,0 +1,33 @@
+{
+  "session_id": "8d62ecb3-a447-460d-9931-faf0463ce3a1",
+  "transcript_path": "/home/user/.claude/projects/-home-reubinars-projects-demo/8d62ecb3-a447-460d-9931-faf0463ce3a1.jsonl",
+  "cwd": "/home/reubinars/projects/demo",
+  "scratchpad_dir": "/tmp/claude/scratchpad",
+  "prompt_id": "32daa105-5072-4805-a9b3-a47771881803",
+  "permission_mode": "default",
+  "effort": {
+    "level": "medium"
+  },
+  "hook_event_name": "PreToolUse",
+  "tool_name": "AskUserQuestion",
+  "tool_input": {
+    "questions": [
+      {
+        "question": "Which color do you prefer?",
+        "header": "Color",
+        "options": [
+          {
+            "label": "Red",
+            "description": "Choose red"
+          },
+          {
+            "label": "Blue",
+            "description": "Choose blue"
+          }
+        ],
+        "multiSelect": false
+      }
+    ]
+  },
+  "tool_use_id": "toolu_01ScDwn6BeXsS8g2J4fQkTVH"
+}

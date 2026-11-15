@@ -1,0 +1,32 @@
+{
+  "session_id": "8d62ecb3-a447-460d-9931-faf0463ce3a1",
+  "transcript_path": "/home/user/.claude/projects/-home-reubinars-projects-demo/8d62ecb3-a447-460d-9931-faf0463ce3a1.jsonl",
+  "cwd": "/home/reubinars/projects/demo",
+  "scratchpad_dir": "/tmp/claude/scratchpad",
+  "prompt_id": "38987056-9d6b-4eb3-a283-1dcbf054e5e0",
+  "permission_mode": "default",
+  "agent_id": "ac32d0c6e54a536c5",
+  "agent_type": "web-fetch",
+  "effort": {
+    "level": "medium"
+  },
+  "hook_event_name": "PermissionRequest",
+  "tool_name": "WebFetch",
+  "tool_input": {
+    "url": "https://example.com",
+    "prompt": "Return only the exact text content of the page's <title> element, verbatim, with no other commentary."
+  },
+  "permission_suggestions": [
+    {
+      "type": "addRules",
+      "destination": "localSettings",
+      "rules": [
+        {
+          "toolName": "WebFetch",
+          "ruleContent": "domain:example.com"
+        }
+      ],
+      "behavior": "allow"
+    }
+  ]
+}
