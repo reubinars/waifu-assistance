@@ -17,8 +17,8 @@ island-bridge hooks remove    # remove exactly those entries
 
 ## GitHub status
 
-The island's GitHub tab lists your open pull requests and the ones where your review is requested, with each PR's CI state and review state. Clicking a row opens the PR in your browser.
+The island's GitHub tab lists your open pull requests and the ones where your review is requested, with each PR's CI state and review state. A review chip (Approved, Changes requested, Review needed) shows on your own PRs only when the repo requires reviews; drafts are tagged Draft. Clicking a row opens the PR in your browser.
 
-It uses the `gh` login in WSL, so run `gh auth login` there once. The bridge polls GitHub every 60 s. When a PR's CI fails or passes, a review is requested from you, or a PR of yours is approved or gets changes requested, the collapsed island pops open for 4 s with a one-line note (clicking it opens the PR), and a purple dot stays top-left until you open the GitHub tab. Pops are skipped while a fullscreen window is up or the island is hidden, and wait while an approval is showing.
+It uses the `gh` login in WSL, so run `gh auth login` there once. The bridge polls GitHub every 60 s. When CI on one of your PRs fails or passes, a review is requested from you, or a PR of yours is approved or gets changes requested, the collapsed island pops open for 4 s with a one-line note (clicking it opens the PR), and a purple dot stays top-left until you open the GitHub tab. Pops are skipped while a fullscreen window is up or the island is hidden, and wait while an approval is showing.
 
 The feature is read-only: it only queries GitHub and never changes anything there.
