@@ -271,7 +271,7 @@ fn draw_popup(p: &mut Painter, ox: f32, oy: f32, k: f32, s: &Scene, pop: &Popup)
     const GAP: f32 = 8.0;
     let l = &pop.layout;
     let head_y = oy + 14.0;
-    p.circle(ox + 22.0, head_y + 9.0, 12.0, ORANGE.fade(k));
+    p.circle(ox + 22.0, head_y + 9.0, 6.0, ORANGE.fade(k));
     let head = |x: f32, w: f32| Rect { x, y: head_y, w: w.max(0.0), h: 18.0 };
     let count = format!("{} of {}", 1, pop.count);
     let counter = p.layout(&count, head(ox + RIGHT - 60.0, 60.0), 11.0, 600, Align::Right)?;

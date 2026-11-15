@@ -24,7 +24,7 @@ use island_core::usage::{CliUsage, strip_runs};
 use island_core::view::layout::{self, SEEK};
 use island_core::view::{
     Action, COLLAPSED, Card, PopupExit, CardKind, Collapsed, Dot, DisplayMode, ExpandedHit, Shown, Spot, Tab, block_rect, block_size, card_identity, cards, choose_collapsed, clock_label, detail_line,
-    corner_radii, countdown_fraction, expanded_size, hit_popup, popup_exit, popup_layout, popup_request, fullscreen_jump_target, hit_expanded, is_drag, island_rect,
+    corner_radii, countdown_fraction, expanded_size, hit_popup, popup_exit, popup_layout, popup_press_guarded, popup_request, fullscreen_jump_target, hit_expanded, is_drag, island_rect,
     jump_target, max_scroll, pet_cell, scroll_by, second_pet_cell, shown, spot_at,
 };
 use island_core::{Point, Rect, Size};
@@ -110,6 +110,8 @@ pub struct App {
     popup_size: Size,
     /// The pointer left the popup: coming back switches to the tabs.
     popup_left: bool,
+    /// The request the popup shows and when it appeared there.
+    popup_shown: Option<(String, Instant)>,
     expanded_at: Option<Instant>,
     tab: Tab,
     hover: Hover,
@@ -184,6 +186,7 @@ impl App {
             popup: false,
             popup_size: Size { w: 0.0, h: 0.0 },
             popup_left: false,
+            popup_shown: None,
             expanded_at: None,
             tab: Tab::Agents,
             hover: Hover::default(),
@@ -489,6 +492,7 @@ impl App {
     /// Back to the normal tabs, where the request is a card.
     fn leave_popup(&mut self) {
         self.popup = false;
+        self.popup_shown = None;
         self.popup_left = false;
         self.hover.reset();
         self.pressed_card = None;
@@ -658,6 +662,10 @@ impl App {
 
     pub fn on_mouse_down(&mut self, p: Point) {
         let now = Instant::now();
+        // a fast second click must not answer the request that just replaced the answered one
+        if self.popup && self.popup_shown.as_ref().is_some_and(|(_, at)| popup_press_guarded(*at, now)) {
+            return;
+        }
         let hit = self.expanded_hit(p);
         if let Some(ExpandedHit::Seek(f)) = hit {
             self.drag = Some(f);
@@ -795,6 +803,7 @@ impl App {
         self.expanded = false;
         self.popup = false;
         self.popup_left = false;
+        self.popup_shown = None;
         self.expanded_at = None;
         self.scroll = 0;
         self.wheel_acc = 0;
@@ -834,6 +843,11 @@ impl App {
             && let Some((r, _)) = self.popup_info()
         {
             self.popup_size = popup_layout(&r.req).size;
+            if self.popup_shown.as_ref().map(|(id, _)| id) != Some(&r.id) {
+                self.popup_shown = Some((r.id.clone(), now));
+                // the buttons moved under a still pointer
+                self.refresh_hover(t);
+            }
         }
         let slots = self.slots();
         self.set_scroll(self.scroll.min(max_scroll(slots)), t);

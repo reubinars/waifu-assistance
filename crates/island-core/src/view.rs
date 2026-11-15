@@ -524,6 +524,15 @@ pub fn countdown_fraction(expires: Instant, now: Instant, timeout_ms: u64) -> f3
     (left / (timeout_ms as f32 / 1000.0)).clamp(0.0, 1.0)
 }
 
+/// How long after the popup shows a request its buttons ignore presses, so a double-click meant
+/// for the previous request can't answer this one.
+pub const POPUP_PRESS_GUARD_MS: u64 = 400;
+
+/// Whether a press at `now` on a request shown since `shown_at` is ignored.
+pub fn popup_press_guarded(shown_at: Instant, now: Instant) -> bool {
+    now.saturating_duration_since(shown_at) < std::time::Duration::from_millis(POPUP_PRESS_GUARD_MS)
+}
+
 /// What the popup does once no approval is left.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PopupExit {
@@ -1330,6 +1339,15 @@ mod tests {
         assert_eq!(countdown_fraction(end, end + Duration::from_secs(5), 45_000), 0.0);
         assert_eq!(countdown_fraction(end, t0 - Duration::from_secs(5), 45_000), 1.0);
         assert_eq!(countdown_fraction(end, t0, 0), 0.0);
+    }
+
+    #[test]
+    fn popup_press_guard_window() {
+        let t0 = Instant::now();
+        assert!(popup_press_guarded(t0, t0));
+        assert!(popup_press_guarded(t0, t0 + Duration::from_millis(399)));
+        assert!(!popup_press_guarded(t0, t0 + Duration::from_millis(400)));
+        assert!(!popup_press_guarded(t0, t0 + Duration::from_millis(900)));
     }
 
     #[test]
