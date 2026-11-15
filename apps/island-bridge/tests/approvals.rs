@@ -337,8 +337,12 @@ fn socket_file_without_listener_is_silent() {
 #[test]
 fn unparsed_input_logs_once_and_exits_quietly() {
     let b = Bridge::spawn("log");
+    // the intentional ignore (AskUserQuestion's permission event) is not logged
+    let (code, out) = finish(b.hook("claude", "claude_question_permission.json", Some("p1")));
+    assert_eq!((code, out.as_str()), (0, ""));
+    assert!(!b.dir.join(".local/state/island/hook.log").exists());
     for _ in 0..2 {
-        let (code, out) = finish(b.hook("claude", "claude_question_permission.json", Some("p1")));
+        let (code, out) = finish(b.hook("claude", "claude_other_event.json", Some("p1")));
         assert_eq!((code, out.as_str()), (0, ""));
     }
     let log = std::fs::read_to_string(b.dir.join(".local/state/island/hook.log")).unwrap_or_default();

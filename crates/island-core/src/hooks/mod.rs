@@ -8,6 +8,9 @@ use std::path::Path;
 
 /// Longest text shown from an agent's input, ellipsis included.
 const MAX_CHARS: usize = 300;
+/// Longest tool name and file path shown, ellipsis included.
+const MAX_TOOL_CHARS: usize = 40;
+const MAX_PATH_CHARS: usize = 200;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Agent {
@@ -41,6 +44,14 @@ pub fn parse(agent: Agent, input: &Value) -> Option<HookInput> {
     }
 }
 
+/// Whether `parse` returns None on purpose for this input, so it isn't worth logging as unparsed.
+pub fn is_ignored(agent: Agent, input: &Value) -> bool {
+    match agent {
+        Agent::Claude => claude::is_ignored(input),
+        Agent::Codex | Agent::OpenCode => false,
+    }
+}
+
 /// The text a hook prints for the user's decision. Codex and OpenCode adapters come later.
 pub fn output(agent: Agent, decision: Decision, input: &Value) -> Option<String> {
     match agent {
@@ -55,15 +66,19 @@ fn rel(path: &str, cwd: Option<&str>) -> String {
         .and_then(|c| Path::new(path).strip_prefix(c).ok())
         .map(|r| if r.as_os_str().is_empty() { ".".to_owned() } else { r.to_string_lossy().into_owned() })
         .unwrap_or_else(|| path.to_owned());
-    sanitize(&shown, false)
+    cap_to(&sanitize(&shown, false), MAX_PATH_CHARS)
 }
 
 /// Replaces control characters, and bidi and format characters that can disguise a name, with '?'.
-/// Newlines survive only when `keep_newlines` is set.
-fn sanitize(s: &str, keep_newlines: bool) -> String {
+/// With `command` set (text shown as a command) newlines survive, a tab becomes a space and a CR is dropped.
+fn sanitize(s: &str, command: bool) -> String {
     s.chars()
+        .filter(|&c| !(command && c == '\r'))
         .map(|c| {
-            let control = c.is_control() && !(keep_newlines && c == '\n');
+            if command && c == '\t' {
+                return ' ';
+            }
+            let control = c.is_control() && !(command && c == '\n');
             let format = matches!(
                 c,
                 '\u{200B}'..='\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}' | '\u{FEFF}'
@@ -81,10 +96,15 @@ fn lines(s: &str) -> u32 {
 
 /// Keeps the first `MAX_CHARS` characters, ending with an ellipsis when cut. Cuts on a char boundary.
 fn cap(s: &str) -> String {
-    if s.chars().count() <= MAX_CHARS {
+    cap_to(s, MAX_CHARS)
+}
+
+/// Keeps the first `max` characters, ending with an ellipsis when cut.
+fn cap_to(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
         return s.to_owned();
     }
-    let mut out: String = s.chars().take(MAX_CHARS - 1).collect();
+    let mut out: String = s.chars().take(max - 1).collect();
     out.push('…');
     out
 }
@@ -134,7 +154,17 @@ mod tests {
         assert_eq!(sanitize("a\rb", false), "a?b");
         assert_eq!(sanitize("a\nb", false), "a?b");
         assert_eq!(sanitize("a\nb", true), "a\nb");
+        // as a command, a tab is a space and a CR vanishes
+        assert_eq!(sanitize("a\tb\r\nc", true), "a b\nc");
+        assert_eq!(sanitize("a\tb", false), "a?b");
         assert_eq!(sanitize("x\u{200B}\u{2066}\u{FEFF}é", false), "x???é");
+    }
+
+    #[test]
+    fn long_path_is_capped() {
+        let p = rel(&format!("/{}", "p".repeat(500)), None);
+        assert_eq!(p.chars().count(), MAX_PATH_CHARS);
+        assert!(p.ends_with('…'));
     }
 
     #[test]

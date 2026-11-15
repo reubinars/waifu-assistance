@@ -1,8 +1,14 @@
 //! Claude Code hooks: PermissionRequest for approvals, PreToolUse for AskUserQuestion.
 
-use super::{cap, lines, rel, sanitize, trim_command, HookInput};
+use super::{cap, cap_to, lines, MAX_TOOL_CHARS, rel, sanitize, trim_command, HookInput};
 use crate::approvals::{ApprovalRequest, Decision, Detail, FileChange};
 use serde_json::{json, Value};
+
+/// Inputs `parse` drops on purpose: Claude's permission event for AskUserQuestion (ruling R12).
+pub fn is_ignored(input: &Value) -> bool {
+    input.get("hook_event_name").and_then(Value::as_str) == Some("PermissionRequest")
+        && input.get("tool_name").and_then(Value::as_str) == Some("AskUserQuestion")
+}
 
 pub fn parse(input: &Value) -> Option<HookInput> {
     let event = input.get("hook_event_name")?.as_str()?;
@@ -46,7 +52,7 @@ fn approval(input: &Value, tool: &str) -> Option<ApprovalRequest> {
     let ti = input.get("tool_input").unwrap_or(&Value::Null);
     let cwd = input.get("cwd").and_then(Value::as_str);
     let can_always = suggestions(input).is_some();
-    let tool = sanitize(tool, false);
+    let tool = cap_to(&sanitize(tool, false), MAX_TOOL_CHARS);
     let (summary, detail) = detail(&tool, ti, cwd).unwrap_or_else(|| (format!("Wants to use {tool}"), None));
     Some(ApprovalRequest { agent: "claude".to_owned(), tool, summary, detail, can_always })
 }
@@ -81,7 +87,7 @@ fn detail(tool: &str, ti: &Value, cwd: Option<&str>) -> Option<(String, Option<D
 
 #[cfg(test)]
 mod tests {
-    use super::super::{output, parse, trim_command, Agent, HookInput};
+    use super::super::{is_ignored, output, parse, trim_command, Agent, HookInput};
     use crate::approvals::{Decision, Detail, FileChange};
     use serde_json::{json, Value};
 
@@ -95,6 +101,7 @@ mod tests {
             "claude_question_permission" => {
                 include_str!("../../tests/fixtures/hooks/claude_question_permission.json")
             }
+            "claude_other_event" => include_str!("../../tests/fixtures/hooks/claude_other_event.json"),
             "claude_read" => include_str!("../../tests/fixtures/hooks/claude_read.json"),
             _ => panic!("no fixture named {name}"),
         };
@@ -229,8 +236,22 @@ mod tests {
     }
 
     #[test]
+    fn long_tool_name_is_capped() {
+        let mut i = fx("claude_webfetch");
+        i["tool_name"] = json!("T".repeat(100));
+        let r = approval_of(&i);
+        assert_eq!(r.tool.chars().count(), 40);
+        assert!(r.tool.ends_with('…'));
+    }
+
+    #[test]
     fn question_permission_is_ignored() {
-        assert_eq!(parse(Agent::Claude, &fx("claude_question_permission")), None);
+        let i = fx("claude_question_permission");
+        assert_eq!(parse(Agent::Claude, &i), None);
+        assert!(is_ignored(Agent::Claude, &i));
+        // unknown input is unparseable, not ignored
+        assert!(!is_ignored(Agent::Claude, &fx("claude_other_event")));
+        assert_eq!(parse(Agent::Claude, &fx("claude_other_event")), None);
     }
 
     #[test]

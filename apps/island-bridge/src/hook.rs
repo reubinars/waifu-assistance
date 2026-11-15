@@ -35,23 +35,22 @@ fn connect(path: PathBuf) -> Option<UnixStream> {
     rx.recv_timeout(CONNECT_BUDGET).ok()?.ok()
 }
 
-/// Appends one line to hook.log unless this (agent, version) already has one.
+/// Appends one line to hook.log unless this (agent, event, tool) already has one.
 fn log_unparsed(agent: &str, input: &Value) {
-    let version = ["version", "agent_version", "cli_version"]
-        .iter()
-        .find_map(|k| input.get(k).and_then(Value::as_str))
-        .unwrap_or("-");
+    let field = |k: &str| {
+        input.get(k).and_then(Value::as_str).map(|s| s.chars().filter(|c| !c.is_control()).take(60).collect::<String>())
+    };
+    let (event, tool) = (field("hook_event_name").unwrap_or_else(|| "?".into()), field("tool_name").unwrap_or_else(|| "?".into()));
     let Some(home) = std::env::var_os("HOME").filter(|h| !h.is_empty()) else { return };
     let dir = PathBuf::from(home).join(".local/state/island");
     let log = dir.join("hook.log");
-    let key = format!("{agent} {version} ");
+    let key = format!("{agent} - {event} {tool}: ");
     if std::fs::read_to_string(&log).is_ok_and(|s| s.lines().any(|l| l.starts_with(&key))) {
         return;
     }
-    let tool = input.get("tool_name").and_then(Value::as_str).unwrap_or("?");
     let _ = std::fs::create_dir_all(&dir);
     if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(log) {
-        let _ = writeln!(f, "{key}could not parse hook input (tool: {tool})");
+        let _ = writeln!(f, "{key}could not parse hook input");
     }
 }
 
@@ -66,7 +65,9 @@ fn run_inner(agent_arg: &str) -> Option<()> {
     std::io::stdin().read_to_string(&mut raw).ok()?;
     let input: Value = serde_json::from_str(&raw).ok()?;
     let Some(parsed) = hooks::parse(agent, &input) else {
-        log_unparsed(agent_arg, &input);
+        if !hooks::is_ignored(agent, &input) {
+            log_unparsed(agent_arg, &input);
+        }
         return None;
     };
     let pane_id = std::env::var("HERDR_PANE_ID").ok().filter(|p| !p.is_empty())?;

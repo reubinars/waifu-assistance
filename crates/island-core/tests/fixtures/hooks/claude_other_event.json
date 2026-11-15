@@ -1,0 +1,8 @@
+{
+  "cwd": "/home/reubinars/projects/demo",
+  "hook_event_name": "PostToolUse",
+  "tool_name": "Read",
+  "tool_input": {
+    "file_path": "/home/reubinars/projects/demo/notes.txt"
+  }
+}
