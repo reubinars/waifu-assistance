@@ -252,8 +252,10 @@ fn edit_json(path: &Path, create: bool, edit: impl FnOnce(&mut Value) -> Result<
     if root == before {
         return Ok(false);
     }
+    let is_link = fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_symlink());
     let bytes = if root.as_object().is_some_and(Map::is_empty) {
-        None
+        // a symlinked config keeps its target, emptied, rather than losing the file behind the link
+        is_link.then(|| b"{}\n".to_vec())
     } else {
         let mut b = serde_json::to_vec_pretty(&root).map_err(|e| format!("{}: {e}", path.display()))?;
         b.push(b'\n');
@@ -563,6 +565,13 @@ mod tests {
         remove(&home).unwrap();
         assert!(fs::symlink_metadata(&link).unwrap().file_type().is_symlink());
         assert_eq!(parse(&real), serde_json::from_str::<Value>(CLAUDE).unwrap());
+
+        // a config that only held our entries is emptied, not deleted from behind the link
+        write(&real, "{}\n");
+        install_with(&home, Path::new(EXE), false).unwrap();
+        remove(&home).unwrap();
+        assert!(fs::symlink_metadata(&link).unwrap().file_type().is_symlink());
+        assert_eq!(fs::read_to_string(&real).unwrap(), "{}\n");
     }
 
     #[test]

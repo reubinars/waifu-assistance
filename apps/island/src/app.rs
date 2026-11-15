@@ -477,6 +477,8 @@ impl App {
     /// Answers approval `id`; nothing is sent when it is already gone (closed or timed out).
     fn decide(&mut self, id: &str, d: Decision) {
         if self.session.approvals.take(id).is_some() {
+            // the card list shrank: presses just after must not land on what slid up
+            self.cards_changed = Some(Instant::now());
             self.agent_src.send(&req_decide(id, d));
         }
     }

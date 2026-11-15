@@ -129,6 +129,15 @@ impl ApprovalQueue {
         }
     }
 
+    /// Keeps questions, Later and blocked state only for the listed panes: an agent list is the
+    /// authoritative snapshot, and closes missed across a herdr restart would leave ghosts.
+    /// Approvals stay; their timeout and the hook closing already bound them.
+    pub fn retain_panes(&mut self, listed: &BTreeSet<String>) {
+        self.questions.retain(|q| listed.contains(&q.pane_id));
+        self.later.retain(|p| listed.contains(p));
+        self.blocked.retain(|p| listed.contains(p));
+    }
+
     pub fn remove_pane(&mut self, pane_id: &str) {
         self.approvals.retain(|r| r.pane_id != pane_id);
         self.questions.retain(|q| q.pane_id != pane_id);

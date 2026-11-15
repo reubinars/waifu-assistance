@@ -75,6 +75,8 @@ impl HerdrSession {
                 vec![]
             }
             Incoming::AgentList { agents, .. } => {
+                let listed: BTreeSet<String> = agents.iter().map(|a| a.pane_id.clone()).collect();
+                self.approvals.retain_panes(&listed);
                 for a in &agents {
                     self.approvals.on_status(&a.pane_id, a.status);
                 }
@@ -287,6 +289,28 @@ mod tests {
         s.handle(Incoming::Approval { id: "a1".into(), pane_id: "w1:p1".into(), req, timeout_ms: 45000 }, now());
         s.handle(Incoming::Bridge { connected: false }, now());
         s.handle(Incoming::Bridge { connected: true }, now());
+        assert!(s.approvals.has_approval());
+        assert!(s.approvals.take("a1").is_some());
+    }
+
+    #[test]
+    fn agent_list_drops_ghost_questions_but_keeps_approvals() {
+        let mut s = HerdrSession::default();
+        let req = crate::approvals::ApprovalRequest {
+            agent: "claude".into(),
+            tool: "Edit".into(),
+            summary: "s".into(),
+            detail: None,
+            can_always: true,
+        };
+        s.handle(Incoming::AgentList { id: "island:1".into(), agents: vec![info("dead", Blocked)] }, now());
+        s.approvals.question("dead".into(), "Which?".into());
+        s.handle(Incoming::Approval { id: "a1".into(), pane_id: "dead".into(), req, timeout_ms: 45000 }, now());
+        s.handle(Incoming::Bridge { connected: false }, now());
+        s.handle(Incoming::Bridge { connected: true }, now());
+        s.handle(list(&["other"]), now());
+        // 1 approval only: the question for the unlisted pane is gone
+        assert_eq!(s.approvals.badge(&s.agents), 1);
         assert!(s.approvals.has_approval());
         assert!(s.approvals.take("a1").is_some());
     }

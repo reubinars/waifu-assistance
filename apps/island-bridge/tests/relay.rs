@@ -284,13 +284,16 @@ fn hook_status_is_re_emitted_when_it_changes() {
         .stdout(Stdio::piped())
         .spawn()
         .unwrap();
-    let mut lines = BufReader::new(child.stdout.take().unwrap()).lines();
-    let mut next_hooks = move || loop {
-        let l = lines.next().expect("bridge stdout closed").unwrap();
-        if l.starts_with(r#"{"hooks""#) {
-            return l;
+    let stdout = child.stdout.take().unwrap();
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        for l in BufReader::new(stdout).lines().map_while(Result::ok) {
+            if l.starts_with(r#"{"hooks""#) && tx.send(l).is_err() {
+                break;
+            }
         }
-    };
+    });
+    let next_hooks = || rx.recv_timeout(Duration::from_secs(3)).expect("no hooks line");
     assert_eq!(next_hooks(), r#"{"hooks":{}}"#);
     // a CLI appears after start: the island hears about it
     std::fs::create_dir_all(home.join(".claude")).unwrap();
