@@ -12,15 +12,21 @@ pub const POLL: Duration = Duration::from_secs(60);
 pub const GH_TIMEOUT: Duration = Duration::from_secs(20);
 pub const BACKOFF: Duration = Duration::from_secs(300);
 
-pub const QUERY: &str = r#"query { mine: search(query: "is:pr is:open author:@me archived:false", type: ISSUE, first: 30) { nodes { ...pr } } review: search(query: "is:pr is:open review-requested:@me archived:false", type: ISSUE, first: 30) { nodes { ...pr } } } fragment pr on PullRequest { number title url isDraft updatedAt reviewDecision repository { nameWithOwner } commits(last: 1) { nodes { commit { statusCheckRollup { state } } } } }"#;
+pub const QUERY: &str = r#"query { mine: search(query: "is:pr is:open author:@me archived:false sort:updated-desc", type: ISSUE, first: 30) { nodes { ...pr } } review: search(query: "is:pr is:open review-requested:@me archived:false sort:updated-desc", type: ISSUE, first: 30) { nodes { ...pr } } } fragment pr on PullRequest { number title url isDraft updatedAt reviewDecision repository { nameWithOwner } commits(last: 1) { nodes { commit { statusCheckRollup { state } } } } }"#;
 
 /// The `gh` to run: `ISLAND_GH` when set (a test hook), else `gh`.
 pub fn program() -> OsString {
     std::env::var_os("ISLAND_GH").filter(|v| !v.is_empty()).unwrap_or_else(|| "gh".into())
 }
 
+/// One poll. A failed `gh` that still printed usable data (a partial GraphQL result) counts as a
+/// list, unless it was rate limited.
 pub fn snapshot(program: &OsStr, timeout: Duration) -> Result<Vec<PullRequest>, String> {
-    fetch::fetch(program, timeout).and_then(|json| parse::parse_response(&json))
+    match fetch::fetch(program, timeout) {
+        Ok(json) => parse::parse_response(&json),
+        Err(f) if f.reason == fetch::RATE_LIMITED => Err(f.reason),
+        Err(f) => parse::parse_response(&f.stdout).map_err(|_| f.reason),
+    }
 }
 
 /// Remembers the last printed line so that only the first one and the changes get printed.
@@ -49,7 +55,7 @@ pub fn spawn() {
             if let Some(line) = poller.tick(&r) {
                 crate::emit(&line);
             }
-            let limited = matches!(&r, Err(e) if e == "GitHub rate limited");
+            let limited = matches!(&r, Err(e) if e == fetch::RATE_LIMITED);
             std::thread::sleep(if limited { BACKOFF } else { POLL });
         }
     });
@@ -57,7 +63,33 @@ pub fn spawn() {
 
 #[cfg(test)]
 mod tests {
+    use super::fetch::tests::script;
     use super::*;
+
+    const NODE: &str = r#"{"number":1,"title":"t","url":"https://github.com/a/b/pull/1","repository":{"nameWithOwner":"a/b"}}"#;
+
+    fn snap(name: &str, body: &str) -> Result<Vec<PullRequest>, String> {
+        snapshot(script(name, body).as_os_str(), Duration::from_secs(5))
+    }
+
+    #[test]
+    fn partial_data_on_failure_is_used() {
+        let json = format!(r#"{{"data":{{"mine":{{"nodes":[{NODE}]}},"review":null}},"errors":[{{"message":"Something went wrong"}}]}}"#);
+        let prs = snap("gh-partial", &format!("printf '%s' '{json}'; exit 1")).unwrap();
+        assert_eq!(prs.len(), 1);
+        assert_eq!(prs[0].number, 1);
+    }
+
+    #[test]
+    fn rate_limit_on_failure_wins_over_data() {
+        let json = format!(r#"{{"data":{{"mine":{{"nodes":[{NODE}]}}}},"errors":[{{"type":"RATE_LIMITED","message":"API rate limit exceeded"}}]}}"#);
+        assert_eq!(snap("gh-partial-rate", &format!("printf '%s' '{json}'; exit 1")), Err("GitHub rate limited".to_string()));
+    }
+
+    #[test]
+    fn garbage_on_success_is_unreachable() {
+        assert_eq!(snap("gh-garbage", "echo garbage"), Err("GitHub unreachable".to_string()));
+    }
 
     #[test]
     fn poller_prints_first_and_changes_only() {

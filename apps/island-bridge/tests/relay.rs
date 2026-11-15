@@ -307,6 +307,34 @@ fn hook_status_is_re_emitted_when_it_changes() {
 }
 
 #[test]
+fn github_reports_gh_not_installed() {
+    let sock = sock_path("gh-missing");
+    let home = home_for(&sock);
+    let mut child = Command::new(env!("CARGO_BIN_EXE_island-bridge"))
+        .env("HERDR_SOCKET_PATH", &sock)
+        .env("HOME", &home)
+        .env("XDG_RUNTIME_DIR", &home)
+        .env("ISLAND_GH", "/nonexistent/gh")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let stdout = child.stdout.take().unwrap();
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        for l in BufReader::new(stdout).lines().map_while(Result::ok) {
+            if l.starts_with(r#"{"github""#) && tx.send(l).is_err() {
+                break;
+            }
+        }
+    });
+    let line = rx.recv_timeout(Duration::from_secs(3)).expect("no github line");
+    let _ = child.kill();
+    let _ = child.wait();
+    assert_eq!(line, r#"{"github":{"error":"gh not installed"}}"#);
+}
+
+#[test]
 fn exits_on_stdin_eof() {
     let (_sock, _herdr, mut b) = connected("eof");
     drop(b.stdin.take());

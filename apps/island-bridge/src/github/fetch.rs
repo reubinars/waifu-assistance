@@ -18,8 +18,24 @@ fn drain(mut r: impl Read + Send + 'static) -> mpsc::Receiver<String> {
     rx
 }
 
-pub fn fetch(program: &OsStr, timeout: Duration) -> Result<String, String> {
-    let unreachable = || "GitHub unreachable".to_string();
+pub const RATE_LIMITED: &str = "GitHub rate limited";
+
+/// Why `gh` gave no output to use, and what it printed to stdout anyway (empty if it never ran
+/// to the end).
+#[derive(Debug, PartialEq)]
+pub struct Failure {
+    pub reason: String,
+    pub stdout: String,
+}
+
+impl Failure {
+    fn bare(reason: &str) -> Failure {
+        Failure { reason: reason.to_string(), stdout: String::new() }
+    }
+}
+
+pub fn fetch(program: &OsStr, timeout: Duration) -> Result<String, Failure> {
+    let unreachable = || Failure::bare("GitHub unreachable");
     let mut child = Command::new(program)
         .args(["api", "graphql", "-f"])
         .arg(format!("query={QUERY}"))
@@ -27,7 +43,7 @@ pub fn fetch(program: &OsStr, timeout: Duration) -> Result<String, String> {
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .map_err(|e| if e.kind() == ErrorKind::NotFound { "gh not installed".to_string() } else { unreachable() })?;
+        .map_err(|e| if e.kind() == ErrorKind::NotFound { Failure::bare("gh not installed") } else { unreachable() })?;
     let out = drain(child.stdout.take().ok_or_else(unreachable)?);
     let err = drain(child.stderr.take().ok_or_else(unreachable)?);
 
@@ -51,47 +67,53 @@ pub fn fetch(program: &OsStr, timeout: Duration) -> Result<String, String> {
         return Ok(stdout);
     }
     let all = format!("{stdout}{stderr}").to_lowercase();
-    Err(if all.contains("rate limit") {
-        "GitHub rate limited"
-    } else if ["auth login", "bad credentials", "401", "not logged"].iter().any(|k| all.contains(k)) {
+    // stdout carries PR titles and URLs, so only stderr can say we're logged out
+    let stderr = stderr.to_lowercase();
+    let reason = if all.contains("rate limit") {
+        RATE_LIMITED
+    } else if ["auth login", "bad credentials", "401", "not logged"].iter().any(|k| stderr.contains(k)) {
         "gh not logged in"
     } else {
         "GitHub unreachable"
-    }
-    .to_string())
+    };
+    Err(Failure { reason: reason.to_string(), stdout })
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use super::*;
     use crate::github::QUERY;
     use crate::usage::test_support::{temp_home, write};
     use std::os::unix::fs::PermissionsExt;
     use std::time::Instant;
 
-    fn script(name: &str, body: &str) -> std::path::PathBuf {
+    pub(in crate::github) fn script(name: &str, body: &str) -> std::path::PathBuf {
         let dir = temp_home(name);
         let path = write(&dir, "gh", &format!("#!/bin/sh\n{body}\n"));
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
         path
     }
 
+    fn reason(r: Result<String, Failure>) -> String {
+        r.unwrap_err().reason
+    }
+
     #[test]
     fn missing_program_is_not_installed() {
         let r = fetch(std::ffi::OsStr::new("/nonexistent/gh"), Duration::from_secs(1));
-        assert_eq!(r, Err("gh not installed".to_string()));
+        assert_eq!(reason(r), "gh not installed");
     }
 
     #[test]
     fn logged_out_maps() {
         let p = script("gh-out", "echo 'gh: Bad credentials (HTTP 401)' >&2; exit 1");
-        assert_eq!(fetch(p.as_os_str(), Duration::from_secs(5)), Err("gh not logged in".to_string()));
+        assert_eq!(reason(fetch(p.as_os_str(), Duration::from_secs(5))), "gh not logged in");
     }
 
     #[test]
     fn rate_limit_maps() {
         let p = script("gh-rate", "echo 'API rate limit exceeded' >&2; exit 1");
-        assert_eq!(fetch(p.as_os_str(), Duration::from_secs(5)), Err("GitHub rate limited".to_string()));
+        assert_eq!(reason(fetch(p.as_os_str(), Duration::from_secs(5))), "GitHub rate limited");
     }
 
     #[test]
@@ -99,7 +121,7 @@ mod tests {
         let p = script("gh-hang", "exec sleep 5");
         let start = Instant::now();
         let r = fetch(p.as_os_str(), Duration::from_millis(300));
-        assert_eq!(r, Err("GitHub unreachable".to_string()));
+        assert_eq!(reason(r), "GitHub unreachable");
         assert!(start.elapsed() < Duration::from_secs(2));
     }
 
@@ -109,5 +131,15 @@ mod tests {
         let out = fetch(p.as_os_str(), Duration::from_secs(5)).unwrap();
         let lines: Vec<&str> = out.lines().collect();
         assert_eq!(lines, ["api", "graphql", "-f", &format!("query={QUERY}")]);
+        assert_eq!(QUERY.matches("archived:false sort:updated-desc\"").count(), 2);
+    }
+
+    #[test]
+    fn auth_words_on_stdout_are_not_logged_out() {
+        let json = r#"{"data":{"mine":{"nodes":[{"url":"https://github.com/a/b/pull/1401"}]}}}"#;
+        let p = script("gh-401-out", &format!("printf '%s' '{json}'; echo 'something else' >&2; exit 1"));
+        let f = fetch(p.as_os_str(), Duration::from_secs(5)).unwrap_err();
+        assert_eq!(f.reason, "GitHub unreachable");
+        assert_eq!(f.stdout, json);
     }
 }
