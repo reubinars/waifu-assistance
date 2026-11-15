@@ -54,8 +54,8 @@ impl HerdrSession {
     }
 
     fn reset(&mut self) {
+        // approvals stay: the bridge holds their hook connections across herdr link changes
         self.agents.clear();
-        self.approvals.clear();
         self.sent.clear();
         self.acked.clear();
         self.pending.clear();
@@ -71,10 +71,13 @@ impl HerdrSession {
                 vec![sub, herdr::req_agent_list(&id)]
             }
             Incoming::Bridge { connected: false } => {
-                self.bridge_down();
+                self.reset();
                 vec![]
             }
             Incoming::AgentList { agents, .. } => {
+                for a in &agents {
+                    self.approvals.on_status(&a.pane_id, a.status);
+                }
                 self.agents.replace_all(agents, now);
                 if self.agents.is_empty() { vec![] } else { vec![self.subscribe_all()] }
             }
@@ -84,6 +87,7 @@ impl HerdrSession {
             }
             Incoming::AgentGet { agent, .. } => {
                 let new = !self.sent.contains(&agent.pane_id);
+                self.approvals.on_status(&agent.pane_id, agent.status);
                 self.agents.upsert(agent, now);
                 if new { vec![self.subscribe_all()] } else { vec![] }
             }
@@ -120,8 +124,10 @@ impl HerdrSession {
         }
     }
 
+    /// The bridge process exited: its hook connections are gone, so the approvals are too.
     pub fn bridge_down(&mut self) {
         self.reset();
+        self.approvals.clear();
     }
 
     pub fn focus(&mut self, pane_id: &str) -> String {
@@ -263,9 +269,44 @@ mod tests {
         let shown = s.approvals.pending(&s.agents, &s.hooks);
         assert_eq!(shown.len(), 1);
         assert_eq!(shown[0].pane_id, "w1:p1");
-        s.handle(Incoming::Bridge { connected: false }, now());
+        s.bridge_down();
         assert!(s.approvals.pending(&s.agents, &s.hooks).is_empty());
         assert!(s.approvals.take("a1").is_none());
+    }
+
+    #[test]
+    fn approval_survives_herdr_reconnect() {
+        let mut s = HerdrSession::default();
+        let req = crate::approvals::ApprovalRequest {
+            agent: "claude".into(),
+            tool: "Edit".into(),
+            summary: "s".into(),
+            detail: None,
+            can_always: true,
+        };
+        s.handle(Incoming::Approval { id: "a1".into(), pane_id: "w1:p1".into(), req, timeout_ms: 45000 }, now());
+        s.handle(Incoming::Bridge { connected: false }, now());
+        s.handle(Incoming::Bridge { connected: true }, now());
+        assert!(s.approvals.has_approval());
+        assert!(s.approvals.take("a1").is_some());
+    }
+
+    #[test]
+    fn agent_list_feeds_blocked_so_a_repeat_keeps_later() {
+        let mut s = HerdrSession::default();
+        s.handle(
+            Incoming::AgentList { id: "island:1".into(), agents: vec![info("p", Blocked)] },
+            now(),
+        );
+        s.approvals.question("p".into(), "Which?".into());
+        s.approvals.later("p");
+        s.handle(
+            Incoming::StatusChanged { pane_id: "p".into(), status: Blocked, agent: None, title: None },
+            now(),
+        );
+        // still hidden by Later: the repeat was not a fresh entry into Blocked
+        assert!(s.approvals.pending(&s.agents, &s.hooks).is_empty());
+        assert_eq!(s.approvals.badge(&s.agents), 1);
     }
 
     #[test]
