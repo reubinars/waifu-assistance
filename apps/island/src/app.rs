@@ -540,7 +540,8 @@ impl App {
         let kinds: Vec<CardKind> = self.cards().1.into_iter().map(|c| c.kind).collect();
         let seekable = present && self.clock.seekable();
         let usage = !self.usage.is_empty();
-        hit_expanded(self.tab, present, &kinds, self.scroll, seekable, usage, Point { x: p.x - o.x, y: p.y - o.y })
+        let github = self.session.github.as_ref().map(|g| island_core::github::text::rows(g).len());
+        hit_expanded(self.tab, present, &kinds, self.scroll, seekable, usage, github, Point { x: p.x - o.x, y: p.y - o.y })
     }
 
     fn cursor(&self) -> Option<Point> {
@@ -768,7 +769,7 @@ impl App {
             ExpandedHit::Prev => self.media.command(MediaCommand::Previous),
             ExpandedHit::PlayPause => self.media.command(MediaCommand::PlayPause),
             ExpandedHit::Next => self.media.command(MediaCommand::Next),
-            ExpandedHit::Seek(_) | ExpandedHit::Usage => {}
+            ExpandedHit::Seek(_) | ExpandedHit::Usage | ExpandedHit::GhRow(_) => {}
         }
     }
 
@@ -1156,6 +1157,7 @@ impl App {
             t,
             scroll: self.scroll_fade.value_at(t).min(max_scroll(slots) as f32),
             media_present: present,
+            github_present: self.session.github.is_some(),
             cards,
             media,
             popup,

@@ -25,8 +25,11 @@ pub struct Collapsed { pub dot: Dot, pub media: bool, pub badge: u8 }
 pub enum Tab {
     Agents,
     Media,
+    GitHub,
 }
 
+/// The pop-up strip for a GitHub event.
+pub const POP: Size = Size { w: 300.0, h: 36.0 };
 pub const EXPANDED: Size = Size { w: 360.0, h: 200.0 };
 /// The expanded island with the usage strip under the agent cards.
 pub const EXPANDED_USAGE: Size = Size { w: 360.0, h: 222.0 };
@@ -297,13 +300,24 @@ pub mod layout {
 
     pub const PAD_Y: f32 = 14.0;
     pub const PAD_X: f32 = 16.0;
-    pub const TAB_AGENTS: Rect = Rect { x: 232.0, y: 10.0, w: 60.0, h: 24.0 };
-    pub const TAB_MEDIA: Rect = Rect { x: 296.0, y: 10.0, w: 54.0, h: 24.0 };
+    pub const TAB_AGENTS_W: f32 = 60.0;
+    pub const TAB_MEDIA_W: f32 = 54.0;
+    pub const TAB_GITHUB_W: f32 = 60.0;
+    pub const TAB_GAP: f32 = 4.0;
+    pub const TAB_RIGHT: f32 = 350.0;
 
-    /// Agents is always shown; alone it aligns with the pair's right edge.
-    pub fn tabs(media: bool) -> impl Iterator<Item = (Tab, Rect)> {
-        let agents = if media { TAB_AGENTS } else { Rect { x: TAB_MEDIA.x + TAB_MEDIA.w - TAB_AGENTS.w, ..TAB_AGENTS } };
-        std::iter::once((Tab::Agents, agents)).chain(media.then_some((Tab::Media, TAB_MEDIA)))
+    /// The present tabs (Agents, Media, GitHub), right-aligned to `TAB_RIGHT`.
+    pub fn tabs(media: bool, github: bool) -> impl Iterator<Item = (Tab, Rect)> {
+        let present = [(Tab::Agents, TAB_AGENTS_W, true), (Tab::Media, TAB_MEDIA_W, media), (Tab::GitHub, TAB_GITHUB_W, github)];
+        let mut right = TAB_RIGHT;
+        let mut out = Vec::with_capacity(3);
+        for (tab, w, shown) in present.into_iter().rev() {
+            if shown {
+                out.push((tab, Rect { x: right - w, y: 10.0, w, h: 24.0 }));
+                right -= w + TAB_GAP;
+            }
+        }
+        out.into_iter().rev()
     }
 
     pub const MAX_ROWS: usize = 3;
@@ -563,6 +577,8 @@ pub enum ExpandedHit {
     Row(usize),
     Button(usize, Action),
     Usage,
+    /// A GitHub row, by index into the rows list.
+    GhRow(usize),
     Prev,
     PlayPause,
     Next,
@@ -594,9 +610,10 @@ pub fn scroll_by(offset: usize, notches: i32, rows: usize) -> usize {
 }
 
 /// What a click at `p` (relative to the expanded island's top-left) hit, if anything.
-pub fn hit_expanded(tab: Tab, media_present: bool, cards: &[CardKind], scroll: usize, seekable: bool, usage: bool, p: Point) -> Option<ExpandedHit> {
+#[allow(clippy::too_many_arguments)]
+pub fn hit_expanded(tab: Tab, media_present: bool, cards: &[CardKind], scroll: usize, seekable: bool, usage: bool, github: Option<usize>, p: Point) -> Option<ExpandedHit> {
     use layout::*;
-    for (tab, r) in tabs(media_present) {
+    for (tab, r) in tabs(media_present, github.is_some()) {
         if inside(r, p) {
             return Some(ExpandedHit::Tab(tab));
         }
@@ -631,6 +648,13 @@ pub fn hit_expanded(tab: Tab, media_present: bool, cards: &[CardKind], scroll: u
                 break;
             }
             row.map(ExpandedHit::Row)
+        }
+        Tab::GitHub => {
+            let n = github?;
+            let scroll = scroll.min(max_scroll(n));
+            (scroll..n.min(scroll + MAX_ROWS))
+                .find(|&i| inside(slot_rect(i - scroll), p))
+                .map(ExpandedHit::GhRow)
         }
         Tab::Media => {
             let seek_hit = Rect {
@@ -698,12 +722,12 @@ mod tests {
 
     #[test]
     fn tab_layouts_and_hits() {
-        assert_eq!(layout::tabs(false).collect::<Vec<_>>(), vec![(Tab::Agents, rect(290.0, 10.0, 60.0, 24.0))]);
-        assert_eq!(layout::tabs(true).collect::<Vec<_>>(), vec![
+        assert_eq!(layout::tabs(false, false).collect::<Vec<_>>(), vec![(Tab::Agents, rect(290.0, 10.0, 60.0, 24.0))]);
+        assert_eq!(layout::tabs(true, false).collect::<Vec<_>>(), vec![
             (Tab::Agents, rect(232.0, 10.0, 60.0, 24.0)),
             (Tab::Media, rect(296.0, 10.0, 54.0, 24.0)),
         ]);
-        let hit = |media, x| hit_expanded(Tab::Agents, media, &[], 0, false, false, Point { x, y: 20.0 });
+        let hit = |media, x| hit_expanded(Tab::Agents, media, &[], 0, false, false, None, Point { x, y: 20.0 });
         assert_eq!(hit(false, 291.0), Some(ExpandedHit::Tab(Tab::Agents)));
         assert_eq!(hit(false, 345.0), Some(ExpandedHit::Tab(Tab::Agents)));
         assert_eq!(hit(false, 250.0), None);
@@ -713,6 +737,35 @@ mod tests {
         for x in 0..=360 {
             assert_ne!(hit(false, x as f32), Some(ExpandedHit::Tab(Tab::Media)));
         }
+    }
+
+    #[test]
+    fn three_tabs_fit_right_aligned() {
+        let t = |m, g| layout::tabs(m, g).collect::<Vec<_>>();
+        assert_eq!(t(true, true), vec![
+            (Tab::Agents, rect(168.0, 10.0, 60.0, 24.0)),
+            (Tab::Media, rect(232.0, 10.0, 54.0, 24.0)),
+            (Tab::GitHub, rect(290.0, 10.0, 60.0, 24.0)),
+        ]);
+        assert_eq!(t(false, true), vec![
+            (Tab::Agents, rect(226.0, 10.0, 60.0, 24.0)),
+            (Tab::GitHub, rect(290.0, 10.0, 60.0, 24.0)),
+        ]);
+        assert_eq!(t(true, false)[0].1, rect(232.0, 10.0, 60.0, 24.0));
+        assert_eq!(t(false, false), vec![(Tab::Agents, rect(290.0, 10.0, 60.0, 24.0))]);
+    }
+
+    #[test]
+    fn github_rows_hit() {
+        let hit = |github, scroll, y| hit_expanded(Tab::GitHub, false, &[], scroll, false, false, github, Point { x: 100.0, y });
+        let y = |slot| layout::slot_rect(slot).y + 5.0;
+        assert_eq!(hit(Some(5), 1, y(0)), Some(ExpandedHit::GhRow(1)));
+        assert_eq!(hit(Some(5), 1, y(2)), Some(ExpandedHit::GhRow(3)));
+        assert_eq!(hit(Some(1), 0, y(1)), None);
+        let tab = Point { x: 300.0, y: 20.0 };
+        assert_eq!(hit_expanded(Tab::Agents, false, &[], 0, false, false, Some(0), tab), Some(ExpandedHit::Tab(Tab::GitHub)));
+        assert_eq!(hit_expanded(Tab::Agents, false, &[], 0, false, false, None, tab), Some(ExpandedHit::Tab(Tab::Agents)));
+        assert_eq!(POP, Size { w: 300.0, h: 36.0 });
     }
 
     #[test]
@@ -986,7 +1039,7 @@ mod tests {
             assert_eq!(r.x, 8.0);
             assert_eq!(r.x + r.w, EXPANDED.w - 8.0);
             let p = Point { x: r.x + r.w / 2.0, y: r.y + r.h / 2.0 };
-            assert_eq!(hit_expanded(Tab::Agents, false, &[const { CardKind::Agent }; 5], 1, false, false, p), Some(ExpandedHit::Row(i + 1)));
+            assert_eq!(hit_expanded(Tab::Agents, false, &[const { CardKind::Agent }; 5], 1, false, false, None, p), Some(ExpandedHit::Row(i + 1)));
         }
         assert_eq!(layout::slot_rect(0).h, 44.0);
         assert_eq!(layout::slot_rect(1).y - layout::slot_rect(0).y, 50.0);
@@ -1015,7 +1068,7 @@ mod tests {
 
     #[test]
     fn scrolled_hits_use_absolute_rows_inside_the_list() {
-        let hit = |rows, scroll, x, y| hit_expanded(Tab::Agents, false, &vec![CardKind::Agent; rows], scroll, false, false, Point { x, y });
+        let hit = |rows, scroll, x, y| hit_expanded(Tab::Agents, false, &vec![CardKind::Agent; rows], scroll, false, false, None, Point { x, y });
         assert_eq!(hit(5, 1, 100.0, 50.0), Some(ExpandedHit::Row(1)));
         assert_eq!(hit(5, 1, 100.0, 175.0), Some(ExpandedHit::Row(3)));
         assert_eq!(hit(2, 0, 100.0, 150.0), None);
@@ -1030,18 +1083,18 @@ mod tests {
     #[test]
     fn expanded_hits() {
         let p = |x, y| Point { x, y };
-        assert_eq!(hit_expanded(Tab::Media, true, &[], 0, true, false, p(180.0, 160.0)), Some(ExpandedHit::PlayPause));
-        assert_eq!(hit_expanded(Tab::Media, true, &[], 0, true, false, p(130.0, 160.0)), Some(ExpandedHit::Prev));
-        assert_eq!(hit_expanded(Tab::Media, true, &[], 0, true, false, p(230.0, 160.0)), Some(ExpandedHit::Next));
-        assert_eq!(hit_expanded(Tab::Media, true, &[], 0, true, false, p(180.0, 110.0)), Some(ExpandedHit::Seek(0.5)));
-        assert_eq!(hit_expanded(Tab::Media, true, &[], 0, false, false, p(180.0, 110.0)), None);
-        assert_eq!(hit_expanded(Tab::Agents, true, &[const { CardKind::Agent }; 2], 0, false, false, p(100.0, 120.0)), Some(ExpandedHit::Row(1)));
-        assert_eq!(hit_expanded(Tab::Agents, true, &[const { CardKind::Agent }; 1], 0, false, false, p(100.0, 120.0)), None);
-        assert_eq!(hit_expanded(Tab::Agents, true, &[], 0, false, false, p(300.0, 20.0)), Some(ExpandedHit::Tab(Tab::Media)));
-        assert_eq!(hit_expanded(Tab::Media, true, &[], 0, false, false, p(250.0, 20.0)), Some(ExpandedHit::Tab(Tab::Agents)));
-        assert_eq!(hit_expanded(Tab::Agents, false, &[], 0, false, false, p(300.0, 20.0)), Some(ExpandedHit::Tab(Tab::Agents)));
+        assert_eq!(hit_expanded(Tab::Media, true, &[], 0, true, false, None, p(180.0, 160.0)), Some(ExpandedHit::PlayPause));
+        assert_eq!(hit_expanded(Tab::Media, true, &[], 0, true, false, None, p(130.0, 160.0)), Some(ExpandedHit::Prev));
+        assert_eq!(hit_expanded(Tab::Media, true, &[], 0, true, false, None, p(230.0, 160.0)), Some(ExpandedHit::Next));
+        assert_eq!(hit_expanded(Tab::Media, true, &[], 0, true, false, None, p(180.0, 110.0)), Some(ExpandedHit::Seek(0.5)));
+        assert_eq!(hit_expanded(Tab::Media, true, &[], 0, false, false, None, p(180.0, 110.0)), None);
+        assert_eq!(hit_expanded(Tab::Agents, true, &[const { CardKind::Agent }; 2], 0, false, false, None, p(100.0, 120.0)), Some(ExpandedHit::Row(1)));
+        assert_eq!(hit_expanded(Tab::Agents, true, &[const { CardKind::Agent }; 1], 0, false, false, None, p(100.0, 120.0)), None);
+        assert_eq!(hit_expanded(Tab::Agents, true, &[], 0, false, false, None, p(300.0, 20.0)), Some(ExpandedHit::Tab(Tab::Media)));
+        assert_eq!(hit_expanded(Tab::Media, true, &[], 0, false, false, None, p(250.0, 20.0)), Some(ExpandedHit::Tab(Tab::Agents)));
+        assert_eq!(hit_expanded(Tab::Agents, false, &[], 0, false, false, None, p(300.0, 20.0)), Some(ExpandedHit::Tab(Tab::Agents)));
         // buttons only exist on the media tab
-        assert_eq!(hit_expanded(Tab::Agents, true, &[], 0, false, false, p(180.0, 160.0)), None);
+        assert_eq!(hit_expanded(Tab::Agents, true, &[], 0, false, false, None, p(180.0, 160.0)), None);
     }
 
     #[test]
@@ -1056,9 +1109,9 @@ mod tests {
     #[test]
     fn usage_strip_hit() {
         let p = Point { x: 100.0, y: 200.0 };
-        assert_eq!(hit_expanded(Tab::Agents, false, &[const { CardKind::Agent }; 2], 0, false, true, p), Some(ExpandedHit::Usage));
-        assert_eq!(hit_expanded(Tab::Agents, false, &[const { CardKind::Agent }; 2], 0, false, false, p), None);
-        assert_eq!(hit_expanded(Tab::Media, true, &[const { CardKind::Agent }; 2], 0, false, true, p), None);
+        assert_eq!(hit_expanded(Tab::Agents, false, &[const { CardKind::Agent }; 2], 0, false, true, None, p), Some(ExpandedHit::Usage));
+        assert_eq!(hit_expanded(Tab::Agents, false, &[const { CardKind::Agent }; 2], 0, false, false, None, p), None);
+        assert_eq!(hit_expanded(Tab::Media, true, &[const { CardKind::Agent }; 2], 0, false, true, None, p), None);
     }
 
     fn approval(can_always: bool) -> CardKind {
@@ -1067,7 +1120,7 @@ mod tests {
 
     #[test]
     fn approval_cards_span_two_slots() {
-        let hit = |scroll, y| hit_expanded(Tab::Agents, false, &[approval(true), CardKind::Agent, CardKind::Agent], scroll, false, false, Point { x: 100.0, y });
+        let hit = |scroll, y| hit_expanded(Tab::Agents, false, &[approval(true), CardKind::Agent, CardKind::Agent], scroll, false, false, None, Point { x: 100.0, y });
         assert_eq!(hit(0, 50.0), Some(ExpandedHit::Row(0)));
         assert_eq!(hit(0, 100.0), Some(ExpandedHit::Row(0)));
         assert_eq!(hit(0, 150.0), Some(ExpandedHit::Row(1)));
@@ -1102,15 +1155,15 @@ mod tests {
         let band = layout::card_band(card);
         let allow = layout::buttons(&approval(true), band)[3].1;
         let p = Point { x: allow.x + allow.w / 2.0, y: allow.y + allow.h / 2.0 };
-        assert_eq!(hit_expanded(Tab::Agents, false, &[approval(true), CardKind::Agent], 0, false, false, p), Some(ExpandedHit::Button(0, Action::Allow)));
-        assert_eq!(hit_expanded(Tab::Agents, false, &[approval(true), CardKind::Agent], 0, false, false, Point { x: 100.0, y: 60.0 }), Some(ExpandedHit::Row(0)));
+        assert_eq!(hit_expanded(Tab::Agents, false, &[approval(true), CardKind::Agent], 0, false, false, None, p), Some(ExpandedHit::Button(0, Action::Allow)));
+        assert_eq!(hit_expanded(Tab::Agents, false, &[approval(true), CardKind::Agent], 0, false, false, None, Point { x: 100.0, y: 60.0 }), Some(ExpandedHit::Row(0)));
     }
 
     #[test]
     fn question_and_needs_you_buttons_hit() {
         let band = layout::card_band(layout::slot_rect(0));
         let centre = |r: Rect| Point { x: r.x + r.w / 2.0, y: r.y + r.h / 2.0 };
-        let hit = |k: CardKind, p| hit_expanded(Tab::Agents, false, &[k], 0, false, false, p);
+        let hit = |k: CardKind, p| hit_expanded(Tab::Agents, false, &[k], 0, false, false, None, p);
         let q = layout::buttons(&CardKind::Question, band);
         assert_eq!(hit(CardKind::Question, centre(q[0].1)), Some(ExpandedHit::Button(0, Action::Later)));
         assert_eq!(hit(CardKind::Question, centre(q[1].1)), Some(ExpandedHit::Button(0, Action::OpenTerminal)));
@@ -1121,8 +1174,8 @@ mod tests {
         let card = layout::card_rect(0, 2);
         let always = layout::buttons(&approval(true), layout::card_band(card))[2].1;
         let p = centre(always);
-        assert_eq!(hit_expanded(Tab::Agents, false, &[approval(true)], 0, false, false, p), Some(ExpandedHit::Button(0, Action::Always)));
-        assert_eq!(hit_expanded(Tab::Agents, false, &[approval(false)], 0, false, false, p), Some(ExpandedHit::Row(0)));
+        assert_eq!(hit_expanded(Tab::Agents, false, &[approval(true)], 0, false, false, None, p), Some(ExpandedHit::Button(0, Action::Always)));
+        assert_eq!(hit_expanded(Tab::Agents, false, &[approval(false)], 0, false, false, None, p), Some(ExpandedHit::Row(0)));
     }
 
     #[test]

@@ -40,7 +40,7 @@ pub enum Hot {
 }
 
 const ACTIONS: usize = 5;
-const BUTTONS_AT: usize = 8 + MAX_ROWS;
+const BUTTONS_AT: usize = 9 + MAX_ROWS;
 const HOT_COUNT: usize = BUTTONS_AT + (MAX_ROWS + 1) * ACTIONS;
 
 impl Hot {
@@ -53,6 +53,7 @@ impl Hot {
             ExpandedHit::Next => Hot::Next,
             ExpandedHit::Seek(_) => Hot::Seek,
             ExpandedHit::Usage => Hot::Usage,
+            ExpandedHit::GhRow(i) => Hot::Row(i),
             ExpandedHit::Button(i, a) => Hot::Button(i, a),
         }
     }
@@ -67,6 +68,7 @@ impl Hot {
             Hot::Seek => 5,
             Hot::Row(i) => 6 + i % (MAX_ROWS + 1),
             Hot::Usage => 7 + MAX_ROWS,
+            Hot::Tab(Tab::GitHub) => 8 + MAX_ROWS,
             Hot::Button(i, a) => BUTTONS_AT + i % (MAX_ROWS + 1) * ACTIONS + a as usize,
         }
     }
@@ -171,6 +173,7 @@ pub struct Media {
 pub struct Scene<'a> {
     pub t: f64,
     pub media_present: bool,
+    pub github_present: bool,
     pub cards: Vec<Card>,
     pub scroll: f32,
     pub media: Option<Media>,
@@ -196,8 +199,8 @@ pub fn draw(p: &mut Painter, tab: Tab, ox: f32, oy: f32, k: f32, s: &Scene) -> R
     if let Some(pop) = &s.popup {
         return draw_popup(p, ox, oy, k, s, pop);
     }
-    for (t, r) in layout::tabs(s.media_present) {
-        let label = match t { Tab::Agents => "Agents", Tab::Media => "Media" };
+    for (t, r) in layout::tabs(s.media_present, s.github_present) {
+        let label = match t { Tab::Agents => "Agents", Tab::Media => "Media", Tab::GitHub => "GitHub" };
         let r = off(r, ox, oy);
         let h = s.hover.hover(Hot::Tab(t), s.t);
         let restore = p.scale_about(1.0 + 0.1 * h, r.x + r.w / 2.0, r.y + r.h / 2.0);
@@ -213,6 +216,7 @@ pub fn draw(p: &mut Painter, tab: Tab, ox: f32, oy: f32, k: f32, s: &Scene) -> R
             if s.usage.is_empty() { Ok(()) } else { draw_usage(p, ox, oy, k, s) }
         }
         Tab::Media => draw_media(p, ox, oy, k, s),
+        Tab::GitHub => Ok(()),
     }
 }
 
