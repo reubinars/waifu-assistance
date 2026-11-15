@@ -17,12 +17,12 @@ sleep 0.5
 
 install -D -m 755 target/release/island-bridge "$HOME/.local/bin/island-bridge"
 echo "bridge  -> $HOME/.local/bin/island-bridge"
-"$HOME/.local/bin/island-bridge" hooks install || echo "island: hooks install failed"
-# Codex hooks are not installed yet (ADAPTERS_READY in install.rs); enable this line when they are.
-codex_hooks=0
-if [ "$codex_hooks" = 1 ] && [ -d "$HOME/.codex" ]; then
-    echo "codex: trust the new hook with /hooks on next start"
-fi
+hooks_out=$("$HOME/.local/bin/island-bridge" hooks install) || echo "island: hooks install failed"
+[ -z "$hooks_out" ] || echo "$hooks_out"
+# the trust prompt only exists when install actually wrote a Codex hook
+case "$hooks_out" in
+    *"codex: hooks installed"*) echo "codex: trust the new hook with /hooks on next start" ;;
+esac
 
 mkdir -p "$dest"
 cp target/x86_64-pc-windows-msvc/release/island.exe "$dest/island.exe"
