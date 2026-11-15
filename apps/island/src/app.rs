@@ -5,6 +5,7 @@ use crate::draw::{Color, Painter};
 use crate::fullscreen;
 use crate::gfx::Gfx;
 use crate::log;
+use crate::open::open_url;
 use crate::pet::{self, PetBitmaps, PetImages, Sprite};
 use crate::sources::{AgentSource, ArtImage, DemoAction, MediaCommand, MediaSource, SourceEvent, UiSender};
 use crate::startup;
@@ -15,6 +16,7 @@ use crate::window::{self, Event, VK_ESCAPE, Windows};
 use island_core::anim::Fade;
 use island_core::config::Config;
 use island_core::approvals::{Decision, Pending, PendingKind, Request};
+use island_core::github::{GhRow, GhState, text::rows as gh_rows};
 use island_core::herdr::{Incoming, req_decide};
 use island_core::media::MediaClock;
 use island_core::pet::{PetClock, PetState, Sheet, pet_state, second_pet_state};
@@ -273,6 +275,7 @@ impl App {
                 for line in self.session.handle(msg, now) {
                     self.agent_src.send(&line);
                 }
+                self.mark_github_seen();
                 // an approval pops a collapsed island open, without focus; never over fullscreen
                 if arrived && !self.expanded && !self.fullscreen && !self.user_hidden && self.popup_info().is_some() {
                     self.popup = true;
@@ -288,6 +291,7 @@ impl App {
                         self.expand(false, now);
                     }
                     self.tab = tab;
+                    self.mark_github_seen();
                 }
                 DemoAction::Collapse => self.collapse(),
                 DemoAction::Mode(m) => self.set_mode(m),
@@ -466,6 +470,21 @@ impl App {
         self.cards().1.iter().map(Card::slots).sum()
     }
 
+    /// The scrollable list's row slots on the shown tab.
+    fn list_rows(&self) -> usize {
+        match (self.tab, &self.session.github) {
+            (Tab::GitHub, Some(g)) => gh_rows(g).len(),
+            _ => self.slots(),
+        }
+    }
+
+    /// Whatever the GitHub tab shows while it is open counts as seen.
+    fn mark_github_seen(&mut self) {
+        if self.expanded && self.tab == Tab::GitHub {
+            self.session.github.as_mut().map(GhState::seen);
+        }
+    }
+
     fn badge(&self) -> u8 {
         self.session.approvals.badge(&self.session.agents)
     }
@@ -540,7 +559,7 @@ impl App {
         let kinds: Vec<CardKind> = self.cards().1.into_iter().map(|c| c.kind).collect();
         let seekable = present && self.clock.seekable();
         let usage = !self.usage.is_empty();
-        let github = self.session.github.as_ref().map(|g| island_core::github::text::rows(g).len());
+        let github = self.session.github.as_ref().map(|g| gh_rows(g).len());
         hit_expanded(self.tab, present, &kinds, self.scroll, seekable, usage, github, Point { x: p.x - o.x, y: p.y - o.y })
     }
 
@@ -566,7 +585,7 @@ impl App {
     }
 
     fn on_wheel(&mut self, delta: i32, now: Instant) {
-        if !self.expanded || self.popup || self.tab != Tab::Agents {
+        if !self.expanded || self.popup || self.tab == Tab::Media {
             return;
         }
         let Some(p) = self.cursor() else { return };
@@ -578,12 +597,12 @@ impl App {
         self.wheel_acc += delta;
         let notches = self.wheel_acc / WHEEL_DELTA;
         self.wheel_acc %= WHEEL_DELTA;
-        if self.expanded_hit(p) == Some(ExpandedHit::Usage) {
+        if self.tab == Tab::Agents && self.expanded_hit(p) == Some(ExpandedHit::Usage) {
             self.ticker.wheel(notches);
             self.dirty = true;
             return;
         }
-        let slots = self.slots();
+        let slots = self.list_rows();
         self.set_scroll(scroll_by(self.scroll, notches, slots), self.secs(now));
     }
 
@@ -731,7 +750,11 @@ impl App {
         }
         match hit {
             ExpandedHit::Tab(tab) => {
+                if tab != self.tab {
+                    self.set_scroll(0, self.secs(Instant::now()));
+                }
                 self.tab = tab;
+                self.mark_github_seen();
                 self.hover.reset();
                 self.retarget(Instant::now());
             }
@@ -769,7 +792,16 @@ impl App {
             ExpandedHit::Prev => self.media.command(MediaCommand::Previous),
             ExpandedHit::PlayPause => self.media.command(MediaCommand::PlayPause),
             ExpandedHit::Next => self.media.command(MediaCommand::Next),
-            ExpandedHit::Seek(_) | ExpandedHit::Usage | ExpandedHit::GhRow(_) => {}
+            ExpandedHit::GhRow(i) => {
+                let url = self.session.github.as_ref().and_then(|g| match gh_rows(g).into_iter().nth(i) {
+                    Some(GhRow::Pr { pr, .. }) => Some(pr.url),
+                    _ => None,
+                });
+                if let Some(url) = url {
+                    open_url(&url);
+                }
+            }
+            ExpandedHit::Seek(_) | ExpandedHit::Usage => {}
         }
     }
 
@@ -877,7 +909,10 @@ impl App {
                 self.refresh_hover(t);
             }
         }
-        let slots = self.slots();
+        if self.tab == Tab::GitHub && self.session.github.is_none() {
+            self.tab = Tab::Agents;
+        }
+        let slots = self.list_rows();
         self.set_scroll(self.scroll.min(max_scroll(slots)), t);
         self.pet.set(pet_state(&self.session.agents), t);
         self.pet2.set(second_pet_state(&self.session.agents, self.clock.is_playing()), t);
@@ -1151,13 +1186,14 @@ impl App {
                 fraction: countdown_fraction(r.expires, now, r.timeout_ms),
             }
         });
-        let slots: usize = list.iter().map(Card::slots).sum();
+        let slots = self.list_rows();
         let collapsed = Scene { t, playing: self.clock.is_playing(), accent: arc_accent(self.art.as_ref().and_then(|a| a.accent)), badge: self.collapsed.badge };
         let expanded = ui_expanded::Scene {
             t,
             scroll: self.scroll_fade.value_at(t).min(max_scroll(slots) as f32),
             media_present: present,
             github_present: self.session.github.is_some(),
+            github: self.session.github.as_ref().map(gh_rows).unwrap_or_default(),
             cards,
             media,
             popup,
