@@ -23,7 +23,7 @@ use island_core::ticker::Ticker;
 use island_core::usage::{CliUsage, strip_runs};
 use island_core::view::layout::{self, SEEK};
 use island_core::view::{
-    Action, COLLAPSED, Card, CardKind, Collapsed, Dot, DisplayMode, ExpandedHit, Shown, Spot, Tab, block_rect, block_size, cards, choose_collapsed, clock_label, detail_line,
+    Action, COLLAPSED, Card, CardKind, Collapsed, Dot, DisplayMode, ExpandedHit, Shown, Spot, Tab, block_rect, block_size, card_identity, cards, choose_collapsed, clock_label, detail_line,
     corner_radii, expanded_size, fullscreen_jump_target, hit_expanded, is_drag, island_rect,
     jump_target, max_scroll, pet_cell, scroll_by, second_pet_cell, shown, spot_at,
 };
@@ -113,6 +113,8 @@ pub struct App {
     /// Seekbar position (0..=1) while it is dragged.
     drag: Option<f32>,
     press: Option<Press>,
+    /// Identity of the card a button press started on (see `card_identity`).
+    pressed_card: Option<String>,
     anim: Animator,
     device: Option<Device>,
     media: Box<dyn MediaSource>,
@@ -181,6 +183,7 @@ impl App {
             scroll_fade: Fade { from: 0.0, to: 0.0, start: 0.0, duration: 0.0 },
             drag: None,
             press: None,
+            pressed_card: None,
             anim,
             device: None,
             media,
@@ -233,6 +236,7 @@ impl App {
 
     pub fn on_source_event(&mut self, e: SourceEvent) {
         let now = Instant::now();
+        let before: Vec<String> = self.cards().1.iter().map(card_identity).collect();
         match e {
             SourceEvent::Media(snap) => self.clock.update(snap, now),
             SourceEvent::Art(art) => {
@@ -262,6 +266,11 @@ impl App {
                 DemoAction::Collapse => self.collapse(),
                 DemoAction::Mode(m) => self.set_mode(m),
             },
+        }
+        // a press must not land on a card that has since changed
+        if self.hover.pressed.is_some() && self.cards().1.iter().map(card_identity).collect::<Vec<_>>() != before {
+            self.hover.set_pressed(None, self.secs(now));
+            self.pressed_card = None;
         }
         self.retarget(now);
         self.apply_visibility();
@@ -421,7 +430,7 @@ impl App {
     }
 
     fn has_approval(&self) -> bool {
-        self.cards().0.iter().any(|p| matches!(p.kind, PendingKind::Approval(_)))
+        self.session.approvals.has_approval()
     }
 
     /// Answers approval `id`; nothing is sent when it is already gone (closed or timed out).
@@ -578,6 +587,10 @@ impl App {
             self.win.capture(true);
         }
         self.hover.set_pressed(hit.map(Hot::of), self.secs(now));
+        self.pressed_card = match hit {
+            Some(ExpandedHit::Button(i, _) | ExpandedHit::Row(i)) => self.cards().1.get(i).map(card_identity),
+            _ => None,
+        };
         self.dirty = true;
     }
 
@@ -588,6 +601,7 @@ impl App {
             return;
         }
         let pressed = self.hover.pressed.take();
+        let bound = self.pressed_card.take();
         self.hover.set_pressed(None, self.secs(Instant::now()));
         self.dirty = true;
         if !self.expanded {
@@ -597,6 +611,12 @@ impl App {
         if pressed != Some(Hot::of(hit)) {
             return;
         }
+        // the card under the cursor must still be the one that was pressed
+        if let ExpandedHit::Button(i, _) | ExpandedHit::Row(i) = hit
+            && self.cards().1.get(i).map(card_identity) != bound
+        {
+            return;
+        }
         match hit {
             ExpandedHit::Tab(tab) => {
                 self.tab = tab;
@@ -604,8 +624,12 @@ impl App {
                 self.retarget(Instant::now());
             }
             ExpandedHit::Row(i) => {
-                if let Some(card) = self.cards().1.get(i) {
-                    self.jump(&card.pane_id.clone());
+                if let Some(card) = self.cards().1.into_iter().nth(i) {
+                    // answer "none" so the agent shows its own prompt now
+                    if let CardKind::Approval { id, .. } = &card.kind {
+                        self.decide(id, Decision::None);
+                    }
+                    self.jump(&card.pane_id);
                 }
             }
             ExpandedHit::Button(i, action) => {
@@ -799,11 +823,11 @@ impl App {
 
     /// Whether the content itself moves every frame (media arc, blocked pulse, usage ticker).
     fn continuous(&self) -> bool {
-        match self.anim.face {
+        self.has_approval()
+            || match self.anim.face {
             Face::Dot { dot: Dot::Blocked, .. } => true,
             Face::Dot { media: true, .. } | Face::Expanded(Tab::Media) => self.clock.is_playing(),
-            // approvals pending: their countdowns tick
-            Face::Expanded(Tab::Agents) => self.ticker_running() || self.has_approval(),
+            Face::Expanded(Tab::Agents) => self.ticker_running(),
             _ => false,
         }
     }

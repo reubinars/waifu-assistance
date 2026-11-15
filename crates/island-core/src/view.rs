@@ -413,6 +413,15 @@ impl CardKind {
     }
 }
 
+/// What a press on a card is bound to: the approval's id, else the pane. A release only acts
+/// when the card at that index still has the same identity.
+pub fn card_identity(c: &Card) -> String {
+    match &c.kind {
+        CardKind::Approval { id, .. } => format!("approval:{id}"),
+        _ => format!("pane:{}", c.pane_id),
+    }
+}
+
 impl Card {
     /// Row slots the card takes.
     pub fn slots(&self) -> usize {
@@ -1063,6 +1072,15 @@ mod tests {
         let p = Point { x: allow.x + 1.0, y: allow.y + 1.0 };
         assert_eq!(hit_popup(&l, &approval(true), p), Some(Action::Allow));
         assert_eq!(hit_popup(&l, &approval(true), Point { x: 0.0, y: 0.0 }), None);
+    }
+
+    #[test]
+    fn card_identity_follows_the_request() {
+        let a = |id: &str| Card { pane_id: "p1".into(), kind: CardKind::Approval { id: id.into(), can_always: false } };
+        assert_ne!(card_identity(&a("a1")), card_identity(&a("a2")));
+        assert_eq!(card_identity(&a("a1")), card_identity(&a("a1")));
+        let q = Card { pane_id: "p1".into(), kind: CardKind::Question };
+        assert_ne!(card_identity(&q), card_identity(&a("a1")));
     }
 
     #[test]

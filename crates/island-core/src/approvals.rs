@@ -104,6 +104,11 @@ impl ApprovalQueue {
         Some(self.approvals.remove(i))
     }
 
+    /// Whether any approval is waiting.
+    pub fn has_approval(&self) -> bool {
+        !self.approvals.is_empty()
+    }
+
     pub fn later(&mut self, pane_id: &str) {
         self.later.insert(pane_id.to_owned());
     }
