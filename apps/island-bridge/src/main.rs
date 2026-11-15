@@ -15,6 +15,8 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::time::{Duration, Instant};
 
+mod hook;
+mod socket;
 mod usage;
 
 const MIN_BACKOFF: Duration = Duration::from_secs(1);
@@ -66,6 +68,10 @@ fn spawn_stdin_reader(tx: Sender<Msg>) {
     std::thread::spawn(move || {
         for line in io::stdin().lock().lines() {
             let Ok(line) = line else { break };
+            if line.starts_with(r#"{"decide""#) {
+                socket::decide(&line);
+                continue;
+            }
             if tx.send(Msg::Line(line)).is_err() {
                 return;
             }
@@ -182,6 +188,13 @@ fn wait(backoff: Duration, rx: &Receiver<Msg>) {
 }
 
 fn main() {
+    let args: Vec<String> = std::env::args().collect();
+    if args.get(1).map(String::as_str) == Some("hook") {
+        std::process::exit(hook::run(args.get(2).map_or("", String::as_str)));
+    }
+    if let Err(e) = socket::spawn() {
+        eprintln!("island-bridge: approvals disabled, cannot serve {}: {e}", socket::socket_path().display());
+    }
     let home = std::env::var_os("HOME").filter(|h| !h.is_empty()).map(PathBuf::from);
     usage::spawn(home);
 

@@ -101,6 +101,7 @@ impl Bridge {
         let mut child = Command::new(env!("CARGO_BIN_EXE_island-bridge"))
             .env("HERDR_SOCKET_PATH", sock)
             .env("HOME", home)
+            .env("XDG_RUNTIME_DIR", home)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .spawn()
