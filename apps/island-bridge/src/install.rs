@@ -19,8 +19,16 @@ const AGENTS: [&str; 3] = ["claude", "codex", "opencode"];
 /// Mode for files we create (a user's config is private).
 const PRIVATE: u32 = 0o600;
 
+/// Whether the Codex and OpenCode adapters exist. Until they do, install leaves those CLIs'
+/// config alone and status doesn't report them. `remove` still cleans up after an older install.
+const ADAPTERS_READY: bool = false;
+
 /// Adds or refreshes the island's hooks. Returns one line per file changed or in error.
 pub fn install(home: &Path, exe: &Path) -> io::Result<Vec<String>> {
+    install_with(home, exe, ADAPTERS_READY)
+}
+
+fn install_with(home: &Path, exe: &Path, adapters: bool) -> io::Result<Vec<String>> {
     let mut lines = Vec::new();
     if home.join(".claude").is_dir() {
         let path = home.join(".claude/settings.json");
@@ -31,14 +39,14 @@ pub fn install(home: &Path, exe: &Path) -> io::Result<Vec<String>> {
         });
         outcome("claude", &path, "hooks installed in", result, &mut lines);
     }
-    if home.join(".codex").is_dir() {
+    if adapters && home.join(".codex").is_dir() {
         let path = home.join(".codex/hooks.json");
         let result = edit_json(&path, true, |root| {
             upsert(entry(hooks_of(root)?, "PermissionRequest"), group(exe, "codex", None))
         });
         outcome("codex", &path, "hooks installed in", result, &mut lines);
     }
-    if home.join(".config/opencode").is_dir() {
+    if adapters && home.join(".config/opencode").is_dir() {
         let path = plugin_path(home);
         let result = install_plugin(&path, exe);
         outcome("opencode", &path, "plugin written to", result, &mut lines);
@@ -65,6 +73,10 @@ pub fn remove(home: &Path) -> io::Result<Vec<String>> {
 
 /// Which CLIs have a config dir here, and whether the island's entry is in place for each.
 pub fn status(home: &Path) -> HookStatus {
+    status_with(home, ADAPTERS_READY)
+}
+
+fn status_with(home: &Path, adapters: bool) -> HookStatus {
     let mut map = BTreeMap::new();
     if home.join(".claude").is_dir() {
         let ours = read_json(&home.join(".claude/settings.json")).is_some_and(|v| {
@@ -73,11 +85,11 @@ pub fn status(home: &Path) -> HookStatus {
         });
         map.insert("claude".to_string(), ours);
     }
-    if home.join(".codex").is_dir() {
+    if adapters && home.join(".codex").is_dir() {
         let ours = read_json(&home.join(".codex/hooks.json")).is_some_and(|v| has_ours(&v, "PermissionRequest", None, "codex"));
         map.insert("codex".to_string(), ours);
     }
-    if home.join(".config/opencode").is_dir() {
+    if adapters && home.join(".config/opencode").is_dir() {
         map.insert("opencode".to_string(), plugin_path(home).is_file());
     }
     HookStatus(map)
@@ -349,11 +361,11 @@ mod tests {
         let codex = home.join(".codex/hooks.json");
         let plugin = plugin_path(&home);
 
-        assert_eq!(install(&home, exe).unwrap().len(), 3);
+        assert_eq!(install_with(&home, exe, true).unwrap().len(), 3);
         let (c1, x1, p1) = (fs::read(&claude).unwrap(), fs::read(&codex).unwrap(), fs::read(&plugin).unwrap());
         assert_eq!(fs::read_to_string(claude.with_extension("json.bak")).unwrap(), CLAUDE);
 
-        assert!(install(&home, exe).unwrap().is_empty());
+        assert!(install_with(&home, exe, true).unwrap().is_empty());
         assert_eq!(fs::read(&claude).unwrap(), c1);
         assert_eq!(fs::read(&codex).unwrap(), x1);
         assert_eq!(fs::read(&plugin).unwrap(), p1);
@@ -370,7 +382,7 @@ mod tests {
         assert!(String::from_utf8_lossy(&p1).contains(&format!("const EXE = \"{EXE}\";")));
 
         // a different exe replaces our entry rather than adding a second one
-        install(&home, Path::new("/other/island-bridge")).unwrap();
+        install_with(&home, Path::new("/other/island-bridge"), true).unwrap();
         let v = parse(&claude);
         let groups = v["hooks"]["PermissionRequest"].as_array().unwrap();
         assert_eq!(groups.len(), 1);
@@ -385,7 +397,7 @@ mod tests {
             write(&home.join(".claude/settings.json"), claude_text);
             write(&home.join(".codex/hooks.json"), CODEX);
             fs::create_dir_all(home.join(".config/opencode")).unwrap();
-            install(&home, Path::new(EXE)).unwrap();
+            install_with(&home, Path::new(EXE), true).unwrap();
 
             let lines = remove(&home).unwrap();
             assert_eq!(lines.len(), 3, "{lines:?}");
@@ -401,7 +413,7 @@ mod tests {
         let home = home("created");
         fs::create_dir_all(home.join(".claude")).unwrap();
         fs::create_dir_all(home.join(".codex")).unwrap();
-        install(&home, Path::new(EXE)).unwrap();
+        install_with(&home, Path::new(EXE), true).unwrap();
         assert!(home.join(".claude/settings.json").is_file());
         assert!(home.join(".codex/hooks.json").is_file());
 
@@ -416,13 +428,36 @@ mod tests {
         let home = home("missing");
         write(&home.join(".claude/settings.json"), CLAUDE);
 
-        let lines = install(&home, Path::new(EXE)).unwrap();
+        let lines = install_with(&home, Path::new(EXE), true).unwrap();
         assert_eq!(lines.len(), 1, "{lines:?}");
         assert!(!home.join(".codex").exists());
         assert!(!home.join(".config").exists());
-        let s = status(&home);
+        let s = status_with(&home, true);
         let keys: Vec<&str> = s.0.keys().map(String::as_str).collect();
         assert_eq!(keys, vec!["claude"]);
+    }
+
+    #[test]
+    fn adapters_off_leaves_codex_and_opencode_alone_but_remove_cleans_up() {
+        let home = home("gate");
+        write(&home.join(".claude/settings.json"), CLAUDE);
+        write(&home.join(".codex/hooks.json"), CODEX);
+        fs::create_dir_all(home.join(".config/opencode")).unwrap();
+
+        let lines = install_with(&home, Path::new(EXE), false).unwrap();
+        assert_eq!(lines.len(), 1, "{lines:?}");
+        assert_eq!(fs::read_to_string(home.join(".codex/hooks.json")).unwrap(), CODEX);
+        assert!(!home.join(".codex/hooks.json.bak").exists());
+        assert!(!plugin_path(&home).exists());
+        let keys: Vec<String> = status_with(&home, false).0.into_keys().collect();
+        assert_eq!(keys, vec!["claude".to_string()]);
+
+        // an earlier install that did write them is still removed
+        install_with(&home, Path::new(EXE), true).unwrap();
+        assert!(plugin_path(&home).exists());
+        remove(&home).unwrap();
+        assert_eq!(parse(&home.join(".codex/hooks.json")), serde_json::from_str::<Value>(CODEX).unwrap());
+        assert!(!plugin_path(&home).exists());
     }
 
     #[test]
@@ -431,13 +466,13 @@ mod tests {
         write(&home.join(".claude/settings.json"), CLAUDE);
         fs::create_dir_all(home.join(".codex")).unwrap();
 
-        let before = status(&home).0;
+        let before = status_with(&home, true).0;
         assert_eq!(before.get("claude"), Some(&false));
         assert_eq!(before.get("codex"), Some(&false));
         assert!(!before.contains_key("opencode"));
 
-        install(&home, Path::new(EXE)).unwrap();
-        let after = status(&home).0;
+        install_with(&home, Path::new(EXE), true).unwrap();
+        let after = status_with(&home, true).0;
         assert_eq!(after.get("claude"), Some(&true));
         assert_eq!(after.get("codex"), Some(&true));
     }
@@ -448,13 +483,13 @@ mod tests {
         write(&home.join(".claude/settings.json"), "{ not json");
         write(&home.join(".codex/hooks.json"), CODEX);
 
-        let lines = install(&home, Path::new(EXE)).unwrap();
+        let lines = install_with(&home, Path::new(EXE), true).unwrap();
         assert_eq!(lines.len(), 2, "{lines:?}");
         assert!(lines.iter().any(|l| l.starts_with("claude:") && l.contains("settings.json")), "{lines:?}");
         assert!(lines.iter().any(|l| l.starts_with("codex: hooks installed in")), "{lines:?}");
         assert_eq!(fs::read_to_string(home.join(".claude/settings.json")).unwrap(), "{ not json");
         assert!(!home.join(".claude/settings.json.bak").exists());
-        assert_eq!(status(&home).0.get("codex"), Some(&true));
+        assert_eq!(status_with(&home, true).0.get("codex"), Some(&true));
 
         let lines = remove(&home).unwrap();
         assert!(lines.iter().any(|l| l.starts_with("claude:") && l.contains("settings.json")), "{lines:?}");
@@ -472,7 +507,7 @@ mod tests {
         fs::set_permissions(&claude, fs::Permissions::from_mode(0o600)).unwrap();
         fs::create_dir_all(home.join(".codex")).unwrap();
 
-        install(&home, Path::new(EXE)).unwrap();
+        install_with(&home, Path::new(EXE), true).unwrap();
         assert_eq!(mode(&claude), 0o600);
         assert_eq!(mode(&claude.with_extension("json.bak")), 0o600);
         assert_eq!(mode(&home.join(".codex/hooks.json")), 0o600);
@@ -487,12 +522,12 @@ mod tests {
         }});
         write(&claude, &bare.to_string());
 
-        install(&home, Path::new(EXE)).unwrap();
+        install_with(&home, Path::new(EXE), true).unwrap();
         let v = parse(&claude);
         let groups = v["hooks"]["PermissionRequest"].as_array().unwrap();
         assert_eq!(groups.len(), 1);
         assert_eq!(groups[0]["hooks"][0]["command"], format!("\"{EXE}\" hook claude"));
-        assert_eq!(status(&home).0.get("claude"), Some(&true));
+        assert_eq!(status_with(&home, true).0.get("claude"), Some(&true));
     }
 
     #[test]
@@ -502,7 +537,7 @@ mod tests {
             "PermissionRequest": [{"hooks": [{"type": "command", "command": format!("\"{EXE}\" hook claude")}]}]
         }});
         write(&home.join(".claude/settings.json"), &bare.to_string());
-        assert_eq!(status(&home).0.get("claude"), Some(&false));
+        assert_eq!(status_with(&home, true).0.get("claude"), Some(&false));
     }
 
     #[test]
@@ -531,9 +566,9 @@ mod tests {
         write(&claude, THIRD_PARTY);
         let exe = Path::new(EXE);
 
-        install(&home, exe).unwrap();
+        install_with(&home, exe, true).unwrap();
         let once = fs::read(&claude).unwrap();
-        install(&home, exe).unwrap();
+        install_with(&home, exe, true).unwrap();
         assert_eq!(fs::read(&claude).unwrap(), once, "install is byte-idempotent");
 
         let v = parse(&claude);
