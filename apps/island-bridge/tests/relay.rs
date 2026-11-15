@@ -103,6 +103,7 @@ impl Bridge {
             .env("HERDR_SOCKET_PATH", sock)
             .env("HOME", home)
             .env("XDG_RUNTIME_DIR", home)
+            .env("ISLAND_GH", "/nonexistent/gh")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .spawn()
@@ -118,6 +119,8 @@ impl Bridge {
                     utx.send(line).is_ok()
                 } else if line.starts_with(r#"{"hooks""#) {
                     htx.send(line).is_ok()
+                } else if line.starts_with(r#"{"github""#) {
+                    true // the GitHub poller's lines are not what these tests are about
                 } else {
                     tx.send(line).is_ok()
                 };
@@ -279,6 +282,7 @@ fn hook_status_is_re_emitted_when_it_changes() {
         .env("HERDR_SOCKET_PATH", &sock)
         .env("HOME", &home)
         .env("XDG_RUNTIME_DIR", &home)
+        .env("ISLAND_GH", "/nonexistent/gh")
         .env("ISLAND_HOOK_STATUS_MS", "50")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
