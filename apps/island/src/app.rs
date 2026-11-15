@@ -16,7 +16,7 @@ use crate::window::{self, Event, VK_ESCAPE, Windows};
 use island_core::anim::Fade;
 use island_core::config::Config;
 use island_core::approvals::{Decision, Pending, PendingKind, Request};
-use island_core::github::{GhEvent, GhRow, GhState, PopSlot, PopWorld, text::rows as gh_rows};
+use island_core::github::{GhEvent, GhRow, GhState, PopSlot, PopWorld, text::row_count as gh_row_count, text::rows as gh_rows};
 use island_core::herdr::{Incoming, req_decide};
 use island_core::media::MediaClock;
 use island_core::pet::{PetClock, PetState, Sheet, pet_state, second_pet_state};
@@ -66,6 +66,10 @@ struct Press {
     at: (i32, i32),
     block: Point,
     dragging: bool,
+    /// The GitHub pop showing and whether the island was expanded at the press: if either has
+    /// changed by the release, the release does nothing.
+    pop: bool,
+    expanded: bool,
 }
 
 struct Device {
@@ -511,15 +515,25 @@ impl App {
     /// The scrollable list's row slots on the shown tab.
     fn list_rows(&self) -> usize {
         match (self.tab, &self.session.github) {
-            (Tab::GitHub, Some(g)) => gh_rows(g).len(),
+            (Tab::GitHub, Some(g)) => gh_row_count(g),
             _ => self.slots(),
         }
     }
 
-    /// Whatever the GitHub tab shows while it is open counts as seen.
+    /// Whatever the GitHub tab shows while it is open counts as seen, and needs no pop.
     fn mark_github_seen(&mut self) {
         if self.expanded && self.tab == Tab::GitHub {
             self.session.github.as_mut().map(GhState::seen);
+            self.gh_pop.forget();
+        }
+    }
+
+    /// The URL of the PR in GitHub row `i`, if that row is a PR.
+    fn gh_url_at(&self, i: usize) -> Option<String> {
+        let g = self.session.github.as_ref()?;
+        match gh_rows(g).into_iter().nth(i)? {
+            GhRow::Pr { pr, .. } => Some(pr.url),
+            GhRow::Message(_) => None,
         }
     }
 
@@ -597,7 +611,7 @@ impl App {
         let kinds: Vec<CardKind> = self.cards().1.into_iter().map(|c| c.kind).collect();
         let seekable = present && self.clock.seekable();
         let usage = !self.usage.is_empty();
-        let github = self.session.github.as_ref().map(|g| gh_rows(g).len());
+        let github = self.session.github.as_ref().map(gh_row_count);
         hit_expanded(self.tab, present, &kinds, self.scroll, seekable, usage, github, Point { x: p.x - o.x, y: p.y - o.y })
     }
 
@@ -619,6 +633,13 @@ impl App {
         self.scroll = scroll;
         self.scroll_fade = Fade { from: self.scroll_fade.value_at(t), to: scroll as f32, start: t, duration: SCROLL_FADE };
         self.refresh_hover(t);
+        self.dirty = true;
+    }
+
+    /// Back to the top at once, without the scroll fade (a different list is showing).
+    fn snap_scroll_top(&mut self) {
+        self.scroll = 0;
+        self.scroll_fade = Fade { from: 0.0, to: 0.0, start: 0.0, duration: 0.0 };
         self.dirty = true;
     }
 
@@ -687,7 +708,8 @@ impl App {
         let r = block_rect(self.spot(), self.anim.size(), self.pets());
         let (o, s) = (self.win.origin, self.win.scale);
         let block = Point { x: o.0 as f32 + r.x * s, y: o.1 as f32 + r.y * s };
-        self.press = Some(Press { at: (x, y), block, dragging: false });
+        let pop = self.gh_pop.showing().is_some();
+        self.press = Some(Press { at: (x, y), block, dragging: false, pop, expanded: self.expanded });
         self.win.capture(true);
     }
 
@@ -720,6 +742,8 @@ impl App {
         if press.dragging {
             log::info!("moved to {:?}", self.spot());
             self.save_config();
+        } else if press.expanded != self.expanded || press.pop != self.gh_pop.showing().is_some() {
+            // the island changed under the pointer: this click was meant for something else
         } else if let Some(url) = self.gh_pop.showing().map(|e| e.url.clone()) {
             // a click on a GitHub pop opens its PR and closes it, without focusing the island
             open_url(&url);
@@ -764,6 +788,7 @@ impl App {
         self.hover.set_pressed(hit.map(Hot::of), self.secs(now));
         self.pressed_card = match hit {
             Some(ExpandedHit::Button(i, _) | ExpandedHit::Row(i)) => self.card_at(i).as_ref().map(card_identity),
+            Some(ExpandedHit::GhRow(i)) => self.gh_url_at(i),
             _ => None,
         };
         self.dirty = true;
@@ -792,10 +817,16 @@ impl App {
         {
             return;
         }
+        // and the PR row must still hold the PR that was pressed
+        if let ExpandedHit::GhRow(i) = hit
+            && (bound.is_none() || self.gh_url_at(i) != bound)
+        {
+            return;
+        }
         match hit {
             ExpandedHit::Tab(tab) => {
                 if tab != self.tab {
-                    self.set_scroll(0, self.secs(Instant::now()));
+                    self.snap_scroll_top();
                 }
                 self.tab = tab;
                 self.mark_github_seen();
@@ -836,12 +867,8 @@ impl App {
             ExpandedHit::Prev => self.media.command(MediaCommand::Previous),
             ExpandedHit::PlayPause => self.media.command(MediaCommand::PlayPause),
             ExpandedHit::Next => self.media.command(MediaCommand::Next),
-            ExpandedHit::GhRow(i) => {
-                let url = self.session.github.as_ref().and_then(|g| match gh_rows(g).into_iter().nth(i) {
-                    Some(GhRow::Pr { pr, .. }) => Some(pr.url),
-                    _ => None,
-                });
-                if let Some(url) = url {
+            ExpandedHit::GhRow(_) => {
+                if let Some(url) = bound {
                     open_url(&url);
                 }
             }
@@ -955,6 +982,7 @@ impl App {
         }
         if self.tab == Tab::GitHub && self.session.github.is_none() {
             self.tab = Tab::Agents;
+            self.snap_scroll_top();
         }
         let slots = self.list_rows();
         self.set_scroll(self.scroll.min(max_scroll(slots)), t);

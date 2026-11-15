@@ -514,8 +514,11 @@ fn draw_github(p: &mut Painter, ox: f32, oy: f32, k: f32, s: &Scene) -> Result<(
                     let w = r.x + r.w - RIGHT - (r.x + TEXT_X);
                     let title = Rect { x: r.x + TEXT_X, y: r.y + LINE1_Y, w, h: LINE1_H };
                     p.text(&head(pr), title, 12.0, 600, TEXT_PRIMARY.fade(k), Align::Left)?;
-                    let line2 = Rect { x: r.x + TEXT_X, y: r.y + LINE2_Y, w, h: LINE2_H };
-                    p.text(&chip(pr), line2, 11.0, 400, TEXT_TERTIARY.fade(k), Align::Left)?;
+                    let chip = chip(pr);
+                    if !chip.is_empty() {
+                        let line2 = Rect { x: r.x + TEXT_X, y: r.y + LINE2_Y, w, h: LINE2_H };
+                        p.text(&chip, line2, 11.0, 400, TEXT_TERTIARY.fade(k), Align::Left)?;
+                    }
                 }
             }
         }
