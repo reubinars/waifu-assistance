@@ -51,6 +51,8 @@ pub enum Incoming {
     ApprovalClosed { id: String },
     /// An agent is asking the user a question in this pane.
     Question { pane_id: String, text: String },
+    /// The bridge's GitHub PR snapshot, or why it has none.
+    GitHub(Result<Vec<crate::github::PullRequest>, String>),
     /// Which agent CLIs have the island's hooks installed.
     Hooks(HookStatus),
     /// Valid JSON we don't use.
@@ -136,6 +138,9 @@ pub fn parse_line(line: &str) -> Result<Incoming, serde_json::Error> {
     }
     if let Some(list) = v.get("usage") {
         return Ok(Incoming::Usage(usage::parse_usage(list)));
+    }
+    if let Some(g) = v.get("github") {
+        return Ok(crate::github::parse_github(g).map_or(Incoming::Other, Incoming::GitHub));
     }
     if let Some(kind) = v.get("event").and_then(Value::as_str) {
         return Ok(event(kind, v.get("data").unwrap_or(&Value::Null)));

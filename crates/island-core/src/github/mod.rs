@@ -5,7 +5,11 @@ use serde::{Deserialize, Serialize};
 use crate::hooks::{cap_to, sanitize};
 
 mod diff;
+mod state;
+pub mod text;
 pub use diff::{GhEvent, GhEventKind, diff};
+pub use state::{GhState, MAX_POPS};
+pub use text::GhRow;
 
 const MAX_TEXT: usize = 120;
 
