@@ -6,12 +6,12 @@ use crate::draw::{Align, Color, Painter, TEXT_PRIMARY, TEXT_SECONDARY, TEXT_TERT
 use island_core::Rect;
 use island_core::anim::{Fade, breathe};
 use island_core::approvals::Detail;
-use island_core::github::{Ci, GhRow, text::{chip, ci_glyph, head}};
+use island_core::github::{Ci, GhEvent, GhEventKind, GhRow, text::{chip, ci_glyph, head, pop_text}};
 use island_core::herdr::AgentStatus;
 use island_core::ticker;
 use island_core::usage::{Level, Run, Tone, level};
 use island_core::view::layout::{self, MAX_ROWS};
-use island_core::view::{Action, CardKind, EXPANDED, ExpandedHit, PopupLayout, Tab, max_scroll, status_word};
+use island_core::view::{Action, CardKind, EXPANDED, ExpandedHit, POP, PopupLayout, Tab, max_scroll, status_word};
 use std::cell::Cell;
 use windows::Win32::Graphics::Direct2D::ID2D1Bitmap1;
 use windows::Win32::Graphics::DirectWrite::{DWRITE_TEXT_METRICS, IDWriteTextLayout};
@@ -531,6 +531,25 @@ fn draw_github(p: &mut Painter, ox: f32, oy: f32, k: f32, s: &Scene) -> Result<(
         p.round_rect(Rect { x: ox + EXPANDED.w - 5.0, y, w: 2.5, h }, 1.25, Color::white(0.25).fade(k));
     }
     Ok(())
+}
+
+/// A GitHub event on the collapsed island: one line at the `POP` size with its top-left at
+/// (ox, oy), the glyph in the GitHub tab's CI colours.
+pub fn draw_pop(p: &mut Painter, ox: f32, oy: f32, k: f32, e: &GhEvent) -> Result<()> {
+    const PAD_X: f32 = 14.0;
+    const GLYPH_W: f32 = 22.0;
+    let text = pop_text(e);
+    let (glyph, rest) = text.split_once(' ').unwrap_or(("", &text));
+    let color = match e.kind {
+        GhEventKind::CiFailed => ci_color(Ci::Failing),
+        GhEventKind::CiPassed | GhEventKind::Approved => ci_color(Ci::Passing),
+        GhEventKind::ReviewRequested | GhEventKind::ChangesRequested => TEXT_PRIMARY,
+    };
+    let glyph_r = Rect { x: ox + PAD_X, y: oy, w: GLYPH_W, h: POP.h };
+    p.text(glyph, glyph_r, 12.0, 600, color.fade(k), Align::Left)?;
+    let x = glyph_r.x + GLYPH_W;
+    let rest_r = Rect { x, y: oy, w: ox + POP.w - PAD_X - x, h: POP.h };
+    p.text(rest, rest_r, 12.0, 600, TEXT_PRIMARY.fade(k), Align::Left)
 }
 
 fn tone_color(t: Tone) -> Color {

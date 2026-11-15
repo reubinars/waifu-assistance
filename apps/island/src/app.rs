@@ -16,7 +16,7 @@ use crate::window::{self, Event, VK_ESCAPE, Windows};
 use island_core::anim::Fade;
 use island_core::config::Config;
 use island_core::approvals::{Decision, Pending, PendingKind, Request};
-use island_core::github::{GhRow, GhState, text::rows as gh_rows};
+use island_core::github::{GhEvent, GhRow, GhState, PopSlot, PopWorld, text::rows as gh_rows};
 use island_core::herdr::{Incoming, req_decide};
 use island_core::media::MediaClock;
 use island_core::pet::{PetClock, PetState, Sheet, pet_state, second_pet_state};
@@ -25,7 +25,7 @@ use island_core::ticker::Ticker;
 use island_core::usage::{CliUsage, strip_runs};
 use island_core::view::layout::{self, SEEK};
 use island_core::view::{
-    Action, COLLAPSED, Card, PopupExit, CardKind, Collapsed, Dot, DisplayMode, ExpandedHit, Shown, Spot, Tab, block_rect, block_size, card_identity, cards, choose_collapsed, clock_label, detail_line,
+    Action, COLLAPSED, POP, Card, PopupExit, CardKind, Collapsed, Dot, DisplayMode, ExpandedHit, Shown, Spot, Tab, block_rect, block_size, card_identity, cards, choose_collapsed, clock_label, detail_line,
     corner_radii, countdown_fraction, expanded_size, hit_popup, popup_exit, popup_layout, popup_press_guarded, card_press_guarded, popup_request, fullscreen_jump_target, hit_expanded, is_drag, island_rect,
     jump_target, max_scroll, pet_cell, scroll_by, second_pet_cell, shown, spot_at,
 };
@@ -52,6 +52,8 @@ pub const TIMER_LEAVE: usize = 4;
 pub const TIMER_TICK: usize = 5;
 /// One-shot wake for the next pet animation frame.
 pub const TIMER_PET: usize = 6;
+/// Wakes the GitHub pop: its 4 s are up, a hovered pop is rechecked, or the next one is due.
+pub const TIMER_POP: usize = 7;
 
 const LEAVE_COLLAPSE: Duration = Duration::from_secs(2);
 /// Deactivation right after expanding (the click that expanded) doesn't collapse.
@@ -151,6 +153,10 @@ pub struct App {
     /// Whether the ticker was running last frame: the first running frame after a pause must
     /// not advance by the time spent paused.
     ticker_was_running: bool,
+    /// The GitHub event popped open on the collapsed island, if any.
+    gh_pop: PopSlot,
+    /// The last pop shown, kept so it can fade out after it closes.
+    pop_drawn: Option<GhEvent>,
 }
 
 impl App {
@@ -214,6 +220,8 @@ impl App {
             ticker: Ticker::default(),
             ticker_t: 0.0,
             ticker_was_running: false,
+            gh_pop: PopSlot::default(),
+            pop_drawn: None,
         };
         app.win.place(app.mode(), app.spot(), app.pets());
         app
@@ -308,6 +316,7 @@ impl App {
         }
         self.retarget(now);
         self.apply_visibility();
+        self.sync_gh_pop(now);
     }
 
     pub fn on_window_event(&mut self, e: Event) {
@@ -331,6 +340,8 @@ impl App {
                 self.kill_timer(TIMER_PET);
                 self.dirty = true;
             }
+            // sync_gh_pop below does the work and re-arms it
+            Event::Timer(TIMER_POP) => self.kill_timer(TIMER_POP),
             Event::Timer(_) => {}
             Event::Reposition => {
                 self.reposition();
@@ -370,6 +381,33 @@ impl App {
             }
         }
         self.apply_visibility();
+        self.sync_gh_pop(now);
+    }
+
+    /// Whether the pointer is over the showing GitHub pop.
+    fn pop_hovered(&self) -> bool {
+        if self.gh_pop.showing().is_none() {
+            return false;
+        }
+        let Some(p) = self.cursor() else { return false };
+        let r = self.rect_at(POP);
+        p.x >= r.x && p.x <= r.x + r.w && p.y >= r.y && p.y <= r.y + r.h
+    }
+
+    /// Shows, holds, closes or drops the GitHub pop for the island's current state. An approval
+    /// popup or a user-expanded island holds it; fullscreen or hidden drops the queue.
+    fn sync_gh_pop(&mut self, now: Instant) {
+        let world = PopWorld { suppressed: self.fullscreen || self.user_hidden, held: self.expanded, hovered: self.pop_hovered() };
+        if self.gh_pop.tick(self.session.github.as_mut(), world, now) {
+            if let Some(e) = self.gh_pop.showing() {
+                self.pop_drawn = Some(e.clone());
+            }
+            self.retarget(now);
+        }
+        match self.gh_pop.wake(world.hovered, now) {
+            Some(d) => self.set_timer(TIMER_POP, d + Duration::from_millis(1)),
+            None => self.kill_timer(TIMER_POP),
+        }
     }
 
     fn on_tray_menu(&mut self, x: i32, y: i32) {
@@ -682,6 +720,12 @@ impl App {
         if press.dragging {
             log::info!("moved to {:?}", self.spot());
             self.save_config();
+        } else if let Some(url) = self.gh_pop.showing().map(|e| e.url.clone()) {
+            // a click on a GitHub pop opens its PR and closes it, without focusing the island
+            open_url(&url);
+            let now = Instant::now();
+            self.gh_pop.dismiss(now);
+            self.retarget(now);
         } else {
             self.on_collapsed_click(Instant::now());
         }
@@ -927,6 +971,8 @@ impl App {
         }
         let (size, radius, face) = if self.expanded {
             (self.expanded_size(), EXPANDED_RADIUS, Face::Expanded(self.tab))
+        } else if self.gh_pop.showing().is_some() {
+            (POP, POP.h / 2.0, Face::Pop)
         } else {
             (COLLAPSED, COLLAPSED_RADIUS, Face::Dot { dot: self.collapsed.dot, media: self.collapsed.media })
         };
@@ -1003,6 +1049,7 @@ impl App {
             self.sync_popup();
             self.retarget(now);
             self.apply_visibility();
+            self.sync_gh_pop(now);
         }
         let t = self.secs(now);
         // clamped so a slow frame doesn't jump; zero on the first running frame after a pause
@@ -1187,7 +1234,14 @@ impl App {
             }
         });
         let slots = self.list_rows();
-        let collapsed = Scene { t, playing: self.clock.is_playing(), accent: arc_accent(self.art.as_ref().and_then(|a| a.accent)), badge: self.collapsed.badge };
+        let collapsed = Scene {
+            t,
+            playing: self.clock.is_playing(),
+            accent: arc_accent(self.art.as_ref().and_then(|a| a.accent)),
+            badge: self.collapsed.badge,
+            gh_dot: self.session.github.as_ref().is_some_and(|g| g.unseen > 0),
+            pop: self.gh_pop.showing().or(self.pop_drawn.as_ref()).cloned(),
+        };
         let expanded = ui_expanded::Scene {
             t,
             scroll: self.scroll_fade.value_at(t).min(max_scroll(slots) as f32),
@@ -1305,7 +1359,15 @@ fn draw_face(
     scene: &Scene,
     ex: &ui_expanded::Scene,
 ) -> Result<()> {
-    let Face::Expanded(tab) = face else { return ui_collapsed::draw(p, face, rect, k, scene) };
+    let tab = match face {
+        Face::Expanded(tab) => tab,
+        Face::Pop => {
+            let Some(e) = &scene.pop else { return Ok(()) };
+            let (ox, oy) = (rect.x + (rect.w - POP.w) * spot.x, rect.y + (rect.h - POP.h) * spot.y);
+            return ui_expanded::draw_pop(p, ox, oy, k, e);
+        }
+        Face::Dot { .. } => return ui_collapsed::draw(p, face, rect, k, scene),
+    };
     // pinned to the island's edges the way the island is pinned to the screen's, so the content
     // stays put while the island grows away from those edges
     let (ox, oy) = (rect.x + (rect.w - size.w) * spot.x, rect.y + (rect.h - size.h) * spot.y);

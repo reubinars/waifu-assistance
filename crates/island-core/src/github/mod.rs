@@ -5,9 +5,11 @@ use serde::{Deserialize, Serialize};
 use crate::hooks::{cap_to, sanitize};
 
 mod diff;
+pub mod pop;
 mod state;
 pub mod text;
 pub use diff::{GhEvent, GhEventKind, diff};
+pub use pop::{POP_SECS, PopSlot, PopWorld};
 pub use state::{GhState, MAX_POPS};
 pub use text::GhRow;
 

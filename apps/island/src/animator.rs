@@ -10,6 +10,8 @@ use island_core::view::{Dot, Tab};
 pub enum Face {
     Dot { dot: Dot, media: bool },
     Expanded(Tab),
+    /// A GitHub event, one line on the otherwise collapsed island.
+    Pop,
 }
 
 const CROSS_FADE: f32 = 0.2;
