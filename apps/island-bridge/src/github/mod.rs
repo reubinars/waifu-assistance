@@ -98,7 +98,7 @@ mod tests {
 
     #[test]
     fn rate_limit_on_failure_wins_over_data() {
-        let json = format!(r#"{{"data":{{"mine":{{"nodes":[{NODE}]}}}},"errors":[{{"type":"RATE_LIMITED","message":"API rate limit exceeded"}}]}}"#);
+        let json = format!(r#"{{"data":{{"mine":{{"nodes":[{NODE}]}},"review":{{"nodes":[]}}}},"errors":[{{"type":"RATE_LIMITED","message":"API rate limit exceeded"}}]}}"#);
         assert_eq!(snap("gh-partial-rate", &format!("printf '%s' '{json}'; exit 1")), Err("GitHub rate limited".to_string()));
     }
 
