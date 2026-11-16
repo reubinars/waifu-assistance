@@ -1,13 +1,37 @@
 //! The collapsed island's centre piece: three dots whose arrangement shows the state, blending
 //! from wherever they are to the next state's targets.
 
-use crate::anim::ease;
+use crate::Point;
+use crate::anim::{cubic_bezier, ease, ease_in_out};
 use crate::view::Dot;
 
 /// Seconds a change of state takes to blend into the next arrangement.
 pub const MORPH: f32 = 0.35;
 /// The record's diameter: the 32 px pill inset 1.5 px.
 pub const RECORD_D: f32 = 29.0;
+
+/// Seconds the record's sheen takes to turn once while media plays.
+pub const SHEEN_PERIOD: f32 = 8.0;
+
+/// Working's rise: one cycle, and the delay between neighbouring dots.
+const RISE_PERIOD: f64 = 1.2;
+const RISE_STAGGER: f64 = 0.15;
+/// How far a rising dot lifts, px, and its opacity at rest.
+const RISE_LIFT: f32 = 2.0;
+const RISE_REST_ALPHA: f32 = 0.45;
+/// Needs-you's ripple: one cycle, how far the ring grows, its starting opacity.
+const RIPPLE_PERIOD: f64 = 1.5;
+const RIPPLE_GROW: f32 = 1.4;
+const RIPPLE_ALPHA: f32 = 0.75;
+/// Done's entry, in seconds from arriving: the pop's peak scale and timings, the tick's draw.
+const POP_START: f64 = 0.35;
+const POP_PEAK_AT: f64 = 0.45;
+const POP_END: f64 = 0.65;
+const POP_PEAK: f32 = 1.3;
+const TICK_START: f64 = 0.45;
+const TICK_END: f64 = 0.85;
+/// The tick, centre-relative px (board 5's `M3 7.2 L6 10 L11 4.2` in a 14 box, halved).
+const TICK: [(f32, f32); 3] = [(-2.0, 0.1), (-0.5, 1.5), (2.0, -1.4)];
 
 /// Colour as linear RGBA, 0..1.
 pub type Rgba = [f32; 4];
@@ -76,6 +100,37 @@ pub fn target(dot: Dot, media: bool) -> Base {
     }
 }
 
+/// One dot as drawn: offset from the pill centre, diameter, opacity (times the shared colour's).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct DotPose {
+    pub x: f32,
+    pub y: f32,
+    pub d: f32,
+    pub alpha: f32,
+}
+
+/// Needs-you's ripple ring: diameter and opacity; drawn in the dots' colour.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Ring {
+    pub d: f32,
+    pub alpha: f32,
+}
+
+/// Everything the collapsed centre piece draws at one moment.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Pose {
+    pub dots: [DotPose; 3],
+    pub color: Rgba,
+    /// How much of the Done tick is drawn, 0..1.
+    pub tick: f32,
+    pub ring: Option<Ring>,
+    /// The record's diameter; 0 when there is no record.
+    pub record_d: f32,
+    pub label_d: f32,
+    /// The sheen's angle, radians.
+    pub sheen: f32,
+}
+
 /// The centre piece's state: what it shows, and the blend from where it was.
 #[derive(Clone, Debug)]
 pub struct Morph {
@@ -83,17 +138,45 @@ pub struct Morph {
     media: bool,
     from: Base,
     start: f64,
+    /// When `dot` last changed: the rise, ripple, pop and tick run from here.
+    arrived: f64,
+    /// The tick when `dot` last changed.
+    tick_from: f32,
+    playing: bool,
+    /// The sheen's angle at `sheen_at`.
+    sheen_from: f64,
+    sheen_at: f64,
 }
 
 impl Morph {
     /// Settled on `dot` at `t`: nothing plays.
     pub fn new(dot: Dot, media: bool, t: f64) -> Morph {
-        Morph { dot, media, from: target(dot, media), start: t - MORPH as f64 }
+        let long_ago = t - 10.0;
+        Morph {
+            dot,
+            media,
+            from: target(dot, media),
+            start: long_ago,
+            arrived: long_ago,
+            tick_from: if dot == Dot::Done { 1.0 } else { 0.0 },
+            playing: false,
+            sheen_from: 0.0,
+            sheen_at: t,
+        }
     }
 
     /// Retargets to `dot` / `media`, blending from the current values; `playing` says whether
     /// media is playing (it turns the record's sheen).
-    pub fn set(&mut self, dot: Dot, media: bool, _playing: bool, t: f64) {
+    pub fn set(&mut self, dot: Dot, media: bool, playing: bool, t: f64) {
+        if playing != self.playing {
+            self.sheen_from = self.sheen(t);
+            self.sheen_at = t;
+            self.playing = playing;
+        }
+        if dot != self.dot {
+            self.tick_from = self.tick(t);
+            self.arrived = t;
+        }
         if (dot, media) != (self.dot, self.media) {
             self.from = self.base(t);
             self.start = t;
@@ -104,7 +187,7 @@ impl Morph {
 
     /// The blend's progress at `t`, 0..1, eased.
     fn k(&self, t: f64) -> f32 {
-        ease(((t - self.start) as f32 / MORPH).clamp(0.0, 1.0))
+        ease(((t - self.start) / MORPH as f64).clamp(0.0, 1.0) as f32)
     }
 
     /// The blended values at `t`, without ongoing motion.
@@ -115,6 +198,128 @@ impl Morph {
     pub fn dot(&self) -> Dot {
         self.dot
     }
+
+    /// Seconds since `dot` last changed.
+    fn since(&self, t: f64) -> f64 {
+        t - self.arrived
+    }
+
+    fn tick(&self, t: f64) -> f32 {
+        if self.dot == Dot::Done {
+            let e = ease(((self.since(t) - TICK_START) / (TICK_END - TICK_START)).clamp(0.0, 1.0) as f32);
+            mix(self.tick_from, 1.0, e)
+        } else {
+            mix(self.tick_from, 0.0, self.k(t))
+        }
+    }
+
+    fn sheen(&self, t: f64) -> f64 {
+        if !self.playing {
+            return self.sheen_from;
+        }
+        let turned = std::f64::consts::TAU * (t - self.sheen_at) / SHEEN_PERIOD as f64;
+        (self.sheen_from + turned).rem_euclid(std::f64::consts::TAU)
+    }
+
+    /// Done's pop: a scale on the dots' diameter.
+    fn pop(&self, t: f64) -> f32 {
+        if self.dot != Dot::Done {
+            return 1.0;
+        }
+        let since = self.since(t);
+        let up = |a: f64, b: f64| ease(((since - a) / (b - a)).clamp(0.0, 1.0) as f32);
+        if since <= POP_START || since >= POP_END {
+            1.0
+        } else if since <= POP_PEAK_AT {
+            mix(1.0, POP_PEAK, up(POP_START, POP_PEAK_AT))
+        } else {
+            mix(POP_PEAK, 1.0, up(POP_PEAK_AT, POP_END))
+        }
+    }
+
+    /// Everything to draw at `t`.
+    pub fn pose(&self, t: f64) -> Pose {
+        let b = self.base(t);
+        let pop = self.pop(t);
+        let dots = std::array::from_fn(|i| {
+            let [x, y, d] = b.dots[i];
+            let f = if b.rise > 0.0 { rise_at(self.since(t) - RISE_STAGGER * i as f64) } else { 0.0 };
+            DotPose {
+                x,
+                y: y - RISE_LIFT * f * b.rise,
+                d: d * pop,
+                alpha: 1.0 - b.rise * (1.0 - mix(RISE_REST_ALPHA, 1.0, f)),
+            }
+        });
+        let ring = (b.ripple > 0.0).then(|| {
+            let phase = (self.since(t) / RIPPLE_PERIOD).rem_euclid(1.0) as f32;
+            let e = cubic_bezier(0.0, 0.0, 0.58, 1.0, phase);
+            Ring { d: b.dots[0][2] * (1.0 + RIPPLE_GROW * e), alpha: RIPPLE_ALPHA * (1.0 - e) * b.ripple }
+        });
+        Pose {
+            dots,
+            color: b.color,
+            tick: self.tick(t),
+            ring,
+            record_d: if b.record > 0.0 { mix(b.label_d, RECORD_D, b.record) } else { 0.0 },
+            label_d: b.label_d,
+            sheen: self.sheen(t) as f32,
+        }
+    }
+
+    /// Whether the pose still changes after `t`.
+    pub fn busy(&self, t: f64) -> bool {
+        t - self.start < MORPH as f64
+            || matches!(self.dot, Dot::Working | Dot::Blocked)
+            || (self.dot == Dot::Done && self.since(t) < TICK_END)
+            || (self.media && self.playing)
+    }
+}
+
+fn mix(a: f32, b: f32, k: f32) -> f32 {
+    a * (1.0 - k) + b * k
+}
+
+/// How far a rising dot is lifted, 0..1, `local` seconds into its cycles (before 0 it waits):
+/// up over the first 30 %, down by 60 %, then rests.
+fn rise_at(local: f64) -> f32 {
+    if local < 0.0 {
+        return 0.0;
+    }
+    let ph = (local / RISE_PERIOD).fract() as f32;
+    if ph < 0.3 {
+        ease_in_out(ph / 0.3)
+    } else if ph < 0.6 {
+        1.0 - ease_in_out((ph - 0.3) / 0.3)
+    } else {
+        0.0
+    }
+}
+
+/// The Done tick, centre-relative, drawn `progress` (0..1) of its length; fewer than two points
+/// means nothing to draw.
+pub fn tick_points(progress: f32) -> Vec<Point> {
+    let pt = |(x, y): (f32, f32)| Point { x, y };
+    if progress >= 1.0 {
+        return TICK.iter().copied().map(pt).collect();
+    }
+    let legs: Vec<f32> = TICK.windows(2).map(|w| (w[1].0 - w[0].0).hypot(w[1].1 - w[0].1)).collect();
+    let mut left = progress.max(0.0) * legs.iter().sum::<f32>();
+    if left <= 0.0 {
+        return Vec::new();
+    }
+    let mut out = vec![pt(TICK[0])];
+    for (w, len) in TICK.windows(2).zip(legs) {
+        if left >= len {
+            out.push(pt(w[1]));
+            left -= len;
+        } else {
+            let k = left / len;
+            out.push(pt((w[0].0 + (w[1].0 - w[0].0) * k, w[0].1 + (w[1].1 - w[0].1) * k)));
+            break;
+        }
+    }
+    out
 }
 
 #[cfg(test)]
@@ -186,5 +391,116 @@ mod tests {
         m.set(Dot::Idle, true, false, 1.0);
         let r = m.base(1.0 + MORPH as f64 / 2.0).record;
         assert!(r > 0.0 && r < 1.0);
+    }
+
+    #[test]
+    fn new_starts_settled() {
+        let m = Morph::new(Dot::Done, false, 100.0);
+        let p = m.pose(100.0);
+        assert_eq!(p.tick, 1.0);
+        assert!(p.dots.iter().all(|d| approx(d.d, 11.0)));
+        assert!(!m.busy(100.0));
+    }
+
+    #[test]
+    fn done_pop_and_tick() {
+        let mut m = Morph::new(Dot::Working, false, 0.0);
+        m.set(Dot::Done, false, false, 10.0);
+        assert!(approx(m.pose(10.35).dots[0].d, 11.0));
+        assert!(approx(m.pose(10.45).dots[0].d, 11.0 * 1.3));
+        assert!(approx(m.pose(10.65).dots[0].d, 11.0));
+        assert_eq!(m.pose(10.45).tick, 0.0);
+        assert_eq!(m.pose(10.85).tick, 1.0);
+        assert!(m.busy(10.8) && !m.busy(10.9));
+    }
+
+    #[test]
+    fn leaving_done_undraws_tick() {
+        let mut m = Morph::new(Dot::Done, false, 0.0);
+        m.set(Dot::Idle, false, false, 1.0);
+        let half = m.pose(1.0 + MORPH as f64 / 2.0).tick;
+        assert!(half > 0.0 && half < 1.0);
+        assert_eq!(m.pose(1.0 + MORPH as f64).tick, 0.0);
+    }
+
+    #[test]
+    fn done_reentry_redraws_from_current_tick() {
+        let mut m = Morph::new(Dot::Done, false, 0.0);
+        m.set(Dot::Idle, false, false, 1.0);
+        let cur = m.pose(1.1).tick;
+        m.set(Dot::Done, false, false, 1.1);
+        assert!(approx(m.pose(1.1).tick, cur));
+        assert!(approx(m.pose(1.1 + 0.45).tick, cur)); // waits for its 0.45 s start
+        assert_eq!(m.pose(1.1 + 0.85).tick, 1.0);
+    }
+
+    #[test]
+    fn working_rise_staggers_from_arrival() {
+        let mut m = Morph::new(Dot::Idle, false, 0.0);
+        m.set(Dot::Working, false, false, 1.0);
+        // settled, dot 0 at phase 0.3 of its second cycle: top of the rise
+        let p = m.pose(1.0 + 1.2 + 0.36);
+        assert!(approx(p.dots[0].y, -2.0) && approx(p.dots[0].alpha, 1.0));
+        // dot 2 has not started 0.2 s after arrival
+        assert!(approx(m.pose(1.2).dots[2].y, 0.0));
+        // resting part of the cycle
+        let r = m.pose(1.0 + 1.2 + 0.9);
+        assert!(approx(r.dots[0].y, 0.0) && approx(r.dots[0].alpha, 0.45));
+        assert!(m.busy(50.0));
+    }
+
+    #[test]
+    fn ripple_ring() {
+        let mut m = Morph::new(Dot::Idle, false, 0.0);
+        assert!(m.pose(0.0).ring.is_none());
+        m.set(Dot::Blocked, false, false, 1.0);
+        let start = m.pose(1.0 + 1.5 * 2.0).ring.unwrap();
+        assert!(approx(start.d, 9.0) && approx(start.alpha, 0.75));
+        let end = m.pose(1.0 + 1.5 * 3.0 - 1e-4).ring.unwrap();
+        assert!((end.d - 21.6).abs() < 0.01 && end.alpha < 0.01);
+        assert!(m.busy(100.0));
+    }
+
+    #[test]
+    fn record_and_sheen() {
+        let mut m = Morph::new(Dot::Idle, true, 0.0);
+        assert!(approx(m.pose(0.0).record_d, RECORD_D) && approx(m.pose(0.0).label_d, 14.0));
+        assert!(!m.busy(0.0));
+        m.set(Dot::Idle, true, true, 1.0);
+        assert!(m.busy(1.0));
+        let a = m.pose(3.0).sheen; // 2 s playing = quarter turn
+        assert!(approx(a, std::f32::consts::FRAC_PI_2));
+        m.set(Dot::Idle, true, false, 3.0);
+        assert!(approx(m.pose(10.0).sheen, a)); // frozen while paused
+        m.set(Dot::Idle, true, true, 10.0);
+        assert!(approx(m.pose(12.0).sheen, a + std::f32::consts::FRAC_PI_2)); // continues
+        assert_eq!(Morph::new(Dot::Idle, false, 0.0).pose(0.0).record_d, 0.0);
+    }
+
+    #[test]
+    fn idle_settled_is_static() {
+        let mut m = Morph::new(Dot::Working, false, 0.0);
+        m.set(Dot::Idle, false, false, 1.0);
+        assert!(m.busy(1.2) && !m.busy(1.0 + MORPH as f64 + 1e-3));
+    }
+
+    #[test]
+    fn tick_points_truncate() {
+        assert!(tick_points(0.0).len() < 2);
+        let full = tick_points(1.0);
+        assert_eq!(full.len(), 3);
+        assert_eq!((full[0].x, full[0].y), (-2.0, 0.1));
+        assert_eq!((full[2].x, full[2].y), (2.0, -1.4));
+        let half = tick_points(0.5); // first leg ≈ 2.05 of total ≈ 5.88, so half ends on leg 2
+        assert_eq!(half.len(), 3);
+    }
+
+    #[test]
+    fn long_uptime_is_finite() {
+        let t = 6.0 * 86_400.0;
+        let mut m = Morph::new(Dot::Idle, true, t);
+        m.set(Dot::Working, true, true, t + 1.0);
+        let p = m.pose(t + 2.0);
+        assert!(p.dots.iter().all(|d| d.y.is_finite() && d.alpha.is_finite()) && p.sheen.is_finite());
     }
 }
