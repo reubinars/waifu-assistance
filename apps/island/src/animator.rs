@@ -3,12 +3,14 @@
 use crate::draw::Color;
 use island_core::Size;
 use island_core::anim::{Fade, ISLAND_SPRING, Spring, ease};
-use island_core::view::{Dot, Tab};
+use island_core::collapsed::Morph;
+use island_core::view::Tab;
 
-/// What the island's content shows; a change cross-fades.
+/// What the island's content shows; a change cross-fades. The collapsed dot's own changes
+/// morph instead (see [`Morph`]).
 #[derive(Clone, Debug, PartialEq)]
 pub enum Face {
-    Dot { dot: Dot, media: bool },
+    Dot,
     Expanded(Tab),
     /// A GitHub event, one line on the otherwise collapsed island.
     Pop,
@@ -60,10 +62,12 @@ pub struct Animator {
     glow: Fade,
     glow_color: ColorFade,
     last: Option<f64>,
+    /// The collapsed dot's centre piece; kept across face changes.
+    pub morph: Morph,
 }
 
 impl Animator {
-    pub fn new(size: Size, radius: f32, face: Face) -> Animator {
+    pub fn new(size: Size, radius: f32, face: Face, morph: Morph) -> Animator {
         Animator {
             w: Spring::new(size.w),
             h: Spring::new(size.h),
@@ -74,6 +78,7 @@ impl Animator {
             glow: Fade { from: 0.0, to: 0.0, start: 0.0, duration: 0.0 },
             glow_color: ColorFade::still(Color::white(1.0)),
             last: None,
+            morph,
         }
     }
 
@@ -136,6 +141,7 @@ impl Animator {
             || ((t - self.swap_at) as f32) < CROSS_FADE
             || !self.glow.done_at(t)
             || !self.glow_color.done_at(t)
+            || ((self.face == Face::Dot || self.old == Some(Face::Dot)) && self.morph.busy(t))
     }
 
     /// Forgets the last frame time, so the next step doesn't jump after an idle stretch.

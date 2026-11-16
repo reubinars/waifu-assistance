@@ -16,7 +16,7 @@ use windows::Win32::Graphics::Direct2D::{
     D2D1_PROPERTY_TYPE_VECTOR4, D2D1_ROUNDED_RECT, D2D1_SHADOW_PROP_BLUR_STANDARD_DEVIATION, D2D1_SHADOW_PROP_COLOR,
     D2D1_SWEEP_DIRECTION_CLOCKWISE, D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE, ID2D1Bitmap1, ID2D1BitmapBrush1,
     ID2D1DeviceContext, ID2D1Effect, ID2D1Factory1, ID2D1Geometry, ID2D1Image, ID2D1PathGeometry1,
-    ID2D1SolidColorBrush, ID2D1StrokeStyle1, D2D1_STROKE_STYLE_PROPERTIES1, D2D1_CAP_STYLE_ROUND,
+    ID2D1SolidColorBrush, ID2D1StrokeStyle1, D2D1_STROKE_STYLE_PROPERTIES1, D2D1_CAP_STYLE_ROUND, D2D1_LINE_JOIN_ROUND,
 };
 use windows::Win32::Graphics::DirectWrite::{
     DWRITE_FACTORY_TYPE_SHARED, DWRITE_FONT_STRETCH_NORMAL, DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_WEIGHT,
@@ -135,6 +135,7 @@ impl Painter {
             let round_caps = factory.CreateStrokeStyle(&D2D1_STROKE_STYLE_PROPERTIES1 {
                 startCap: D2D1_CAP_STYLE_ROUND,
                 endCap: D2D1_CAP_STYLE_ROUND,
+                lineJoin: D2D1_LINE_JOIN_ROUND,
                 ..Default::default()
             }, None)?;
             dc.SetTextAntialiasMode(D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE);
@@ -305,20 +306,16 @@ impl Painter {
         unsafe { self.dc.DrawEllipse(&e, self.brush(c), width, None) }
     }
 
-    /// A clockwise stroked arc; angles are radians from the right.
-    pub fn arc(&self, cx: f32, cy: f32, radius: f32, start_angle: f32, sweep: f32, c: Color, width: f32) -> Result<()> {
+    /// An open stroked line through `pts`, with round caps and joins.
+    pub fn polyline(&self, pts: &[(f32, f32)], c: Color, width: f32) -> Result<()> {
+        let Some((&(x0, y0), rest)) = pts.split_first() else { return Ok(()) };
         unsafe {
             let path: ID2D1PathGeometry1 = self.factory.CreatePathGeometry()?;
             let sink = path.Open()?;
-            sink.BeginFigure(v2(cx + radius * start_angle.cos(), cy + radius * start_angle.sin()), D2D1_FIGURE_BEGIN_HOLLOW);
-            let end = start_angle + sweep;
-            sink.AddArc(&D2D1_ARC_SEGMENT {
-                point: v2(cx + radius * end.cos(), cy + radius * end.sin()),
-                size: D2D_SIZE_F { width: radius, height: radius },
-                rotationAngle: 0.0,
-                sweepDirection: D2D1_SWEEP_DIRECTION_CLOCKWISE,
-                arcSize: D2D1_ARC_SIZE_SMALL,
-            });
+            sink.BeginFigure(v2(x0, y0), D2D1_FIGURE_BEGIN_HOLLOW);
+            for &(x, y) in rest {
+                sink.AddLine(v2(x, y));
+            }
             sink.EndFigure(D2D1_FIGURE_END_OPEN);
             sink.Close()?;
             self.dc.DrawGeometry(&path, self.brush(c), width, &self.round_caps);

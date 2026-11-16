@@ -10,11 +10,12 @@ use crate::pet::{self, PetBitmaps, PetImages, Sprite};
 use crate::sources::{AgentSource, ArtImage, DemoAction, MediaCommand, MediaSource, SourceEvent, UiSender};
 use crate::startup;
 use crate::tray::{self, Tray};
-use crate::ui_collapsed::{self, SPINNER_TICK_MS, Scene};
+use crate::ui_collapsed::{self, Scene};
 use crate::ui_expanded::{self, Hot, Hover};
 use crate::window::{self, Event, VK_ESCAPE, Windows};
 use island_core::anim::Fade;
 use island_core::config::Config;
+use island_core::collapsed::Morph;
 use island_core::approvals::{Decision, Pending, PendingKind, Request};
 use island_core::github::{GhEvent, GhRow, GhState, PopSlot, PopWorld, text::row_count as gh_row_count, text::rows as gh_rows};
 use island_core::herdr::{Incoming, req_decide};
@@ -44,7 +45,6 @@ const SCROLL_FADE: f32 = 0.12;
 const WHEEL_DELTA: i32 = 120;
 
 pub const TIMER_LINGER: usize = 1;
-pub const TIMER_SPINNER: usize = 2;
 pub const TIMER_RETRY: usize = 3;
 /// Collapse after the mouse has been outside the expanded island for 2 s.
 pub const TIMER_LEAVE: usize = 4;
@@ -140,7 +140,6 @@ pub struct App {
     t0: Instant,
     dirty: bool,
     animating: bool,
-    spinner_on: bool,
     tick_on: bool,
     tray: Option<Tray>,
     /// Hidden from the tray menu.
@@ -173,7 +172,8 @@ impl App {
         agent_src: Box<dyn AgentSource>,
     ) -> App {
         let collapsed = Collapsed { dot: Dot::Idle, media: false, badge: 0 };
-        let anim = Animator::new(COLLAPSED, COLLAPSED_RADIUS, Face::Dot { dot: collapsed.dot, media: collapsed.media });
+        let morph = Morph::new(collapsed.dot, collapsed.media, 0.0);
+        let anim = Animator::new(COLLAPSED, COLLAPSED_RADIUS, Face::Dot, morph);
         let pet_sheet = pet::load();
         let pet2_sheet = if pet_sheet.is_some() { pet::load_second() } else { None };
         let tray = Tray::add(win.tray).inspect_err(|e| log::error!("tray icon: {e}")).ok();
@@ -218,7 +218,6 @@ impl App {
             t0: Instant::now(),
             dirty: true,
             animating: false,
-            spinner_on: false,
             tick_on: false,
             usage: Vec::new(),
             ticker: Ticker::default(),
@@ -330,7 +329,6 @@ impl App {
                 self.kill_timer(TIMER_LINGER);
                 self.retarget(now);
             }
-            Event::Timer(TIMER_SPINNER) => self.dirty = true,
             Event::Timer(TIMER_RETRY) => {
                 self.kill_timer(TIMER_RETRY);
                 self.dirty = true;
@@ -1002,10 +1000,13 @@ impl App {
         } else if self.gh_pop.showing().is_some() {
             (POP, POP.h / 2.0, Face::Pop)
         } else {
-            (COLLAPSED, COLLAPSED_RADIUS, Face::Dot { dot: self.collapsed.dot, media: self.collapsed.media })
+            (COLLAPSED, COLLAPSED_RADIUS, Face::Dot)
         };
         self.anim.set_target(size, radius);
         self.anim.set_face(face, t);
+        // kept current whatever the face, so the dot is right when the island collapses again
+        let media_playing = self.collapsed.media && self.clock.is_playing();
+        self.anim.morph.set(self.collapsed.dot, self.collapsed.media, media_playing, t);
         let accent = self.accent();
         let white = Color::white(1.0);
         let playing = present && self.clock.is_playing();
@@ -1059,12 +1060,12 @@ impl App {
             && self.hover.hot != Some(Hot::Usage)
     }
 
-    /// Whether the content itself moves every frame (media arc, blocked pulse, usage ticker).
+    /// Whether the content itself moves every frame (expanded media, usage ticker); the collapsed
+    /// dot's motion counts through `Animator::busy`.
     fn continuous(&self) -> bool {
         self.has_approval()
             || match self.anim.face {
-            Face::Dot { dot: Dot::Blocked, .. } => true,
-            Face::Dot { media: true, .. } | Face::Expanded(Tab::Media) => self.clock.is_playing(),
+            Face::Expanded(Tab::Media) => self.clock.is_playing(),
             Face::Expanded(Tab::Agents) => self.ticker_running(),
             _ => false,
         }
@@ -1133,15 +1134,6 @@ impl App {
                 self.set_timer(TIMER_TICK, Duration::from_secs(1));
             } else {
                 self.kill_timer(TIMER_TICK);
-            }
-        }
-        let spin = !self.animating && matches!(self.anim.face, Face::Dot { dot: Dot::Working, .. });
-        if spin != self.spinner_on {
-            self.spinner_on = spin;
-            if spin {
-                self.set_timer(TIMER_SPINNER, Duration::from_millis(SPINNER_TICK_MS as u64));
-            } else {
-                self.kill_timer(TIMER_SPINNER);
             }
         }
         if !self.animating {
@@ -1263,11 +1255,9 @@ impl App {
         });
         let slots = self.list_rows();
         let collapsed = Scene {
-            t,
-            playing: self.clock.is_playing(),
-            accent: arc_accent(self.art.as_ref().and_then(|a| a.accent)),
             badge: self.collapsed.badge,
             gh_dot: self.session.github.as_ref().is_some_and(|g| g.unseen > 0),
+            pose: self.anim.morph.pose(t),
             pop: self.gh_pop.showing().or(self.pop_drawn.as_ref()).cloned(),
         };
         let expanded = ui_expanded::Scene {
@@ -1394,7 +1384,7 @@ fn draw_face(
             let (ox, oy) = (rect.x + (rect.w - POP.w) * spot.x, rect.y + (rect.h - POP.h) * spot.y);
             return ui_expanded::draw_pop(p, ox, oy, k, e);
         }
-        Face::Dot { .. } => return ui_collapsed::draw(p, face, rect, k, scene),
+        Face::Dot => return ui_collapsed::draw(p, rect, k, scene),
     };
     // pinned to the island's edges the way the island is pinned to the screen's, so the content
     // stays put while the island grows away from those edges
@@ -1450,13 +1440,6 @@ fn draw_backdrop(p: &mut Painter, b: &Backdrop) -> Result<()> {
 }
 
 /// The collapsed arc's colour: the album-art tint brightened for the black dot, else white.
-fn arc_accent(accent: Option<[u8; 3]>) -> Color {
-    accent.map_or(Color::white(1.0), |c| {
-        let [r, g, b] = island_core::color::brighten(c);
-        Color::rgba(r, g, b, 1.0)
-    })
-}
-
 /// The errors after which the device must be rebuilt (and rebuilding helps).
 fn device_lost(e: &Error) -> bool {
     [D2DERR_RECREATE_TARGET, DXGI_ERROR_DEVICE_REMOVED, DXGI_ERROR_DEVICE_RESET, DXGI_ERROR_DEVICE_HUNG].contains(&e.code())

@@ -1,32 +1,32 @@
-//! The collapsed island's status dot and media ring.
+//! The collapsed island: the morphing three-dot centre piece, the record behind it when media
+//! is present, and the GitHub dot and approval badge.
 
-use crate::animator::Face;
-use crate::draw::{Align, Color, Painter, TEXT_PRIMARY};
+use crate::draw::{Align, Color, Painter};
 use island_core::Rect;
+use island_core::collapsed::{Pose, tick_points};
 use island_core::github::GhEvent;
-use island_core::anim::{BLOCKED_PULSE_PERIOD, pulse};
-use island_core::view::Dot;
 use windows::core::Result;
 
-const IDLE_DOT: Color = Color::white(0.35);
-const DONE: Color = Color::rgba(0x34, 0xc7, 0x59, 1.0);
 const BLOCKED: Color = Color::rgba(0xff, 0x95, 0x00, 1.0);
-const SPINNER_D: f32 = 14.0;
-/// One spinner step (of 8) per tick.
-pub const SPINNER_TICK_MS: u32 = 100;
+const RECORD: Color = Color::rgba(0x14, 0x14, 0x14, 1.0);
+const GROOVE: Color = Color::rgba(0x22, 0x22, 0x22, 1.0);
+const GROOVE_W: f32 = 0.5;
+const GROOVE_STEP: f32 = 1.5;
+/// The sheen's wedges, widest first, stacked so the middle peaks near 0.16 white.
+const SHEEN_WEDGES: [f32; 3] = [35.0, 23.0, 12.0];
+const SHEEN_ALPHA: f32 = 0.055;
+const TICK_W: f32 = 1.0;
+const RIPPLE_W: f32 = 1.0;
 
 pub struct Scene {
-    /// Seconds on the app clock.
-    pub t: f64,
-    pub playing: bool,
-    /// The album-art tint for the orbiting arc (white when there is none).
-    pub accent: Color,
     /// Requests waiting on the user; above 0 a badge shows top-right.
     pub badge: u8,
     /// GitHub events not yet seen on the GitHub tab: a purple dot top-left.
     pub gh_dot: bool,
     /// The GitHub event the pop face shows (the last one, while it fades out).
     pub pop: Option<GhEvent>,
+    /// The centre piece at `t`.
+    pub pose: Pose,
 }
 
 const BADGE_R: f32 = 9.0;
@@ -42,30 +42,28 @@ const _: () = {
 /// GitHub purple.
 const GH_DOT: Color = Color::rgba(0x89, 0x57, 0xe5, 1.0);
 
-/// Draws `face` inside `r` at opacity `k` (the caller clips to the island shape).
-pub fn draw(p: &mut Painter, face: &Face, r: Rect, k: f32, s: &Scene) -> Result<()> {
-    let Face::Dot { dot, media } = face else { return Ok(()) };
+/// Draws the collapsed island inside `r` at opacity `k` (the caller clips to the island shape).
+pub fn draw(p: &mut Painter, r: Rect, k: f32, s: &Scene) -> Result<()> {
     let (cx, cy) = (r.x + r.w / 2.0, r.y + r.h / 2.0);
-    if *media {
-        p.circle_outline(cx, cy, 28.0, Color::white(0.16).fade(k), 1.5);
-        if s.playing {
-            let angle = (s.t % 2.0) as f32 * std::f32::consts::PI;
-            p.arc(cx, cy, 14.0, angle, std::f32::consts::FRAC_PI_2, s.accent.fade(0.9 * k), 1.5)?;
-        }
+    let pose = &s.pose;
+    if pose.record_d > 0.0 {
+        record(p, cx, cy, pose, k)?;
     }
-    match dot {
-        Dot::Idle => p.circle(cx, cy, 9.0 * (0.8 + 0.2 * k), IDLE_DOT.fade(k)),
-        Dot::Working => spinner(p, cx, cy, s.t, k),
-        Dot::Blocked => {
-            let (o, scale) = pulse(s.t, BLOCKED_PULSE_PERIOD);
-            let opacity = 0.6 + (o - 0.25) / 0.35 * 0.4;
-            p.circle(cx, cy, 10.0 * scale, BLOCKED.fade(opacity * k));
-        }
-        Dot::Done => {
-            let dot = p.shape(Rect { x: cx - 5.0, y: cy - 5.0, w: 10.0, h: 10.0 }, [5.0; 4])?;
-            p.shadow(&dot, 0.0, 0.0, 6.0, DONE.fade(k))?;
-            p.fill(&dot, DONE.fade(k));
-        }
+    let [cr, cg, cb, ca] = pose.color;
+    let rgb = |a: f32| Color { r: cr, g: cg, b: cb, a };
+    if let Some(ring) = pose.ring {
+        p.circle_outline(cx, cy, ring.d, rgb(ca * ring.alpha * k), RIPPLE_W);
+    }
+    // one layer for the shared colour's opacity, so stacked dots read as one dot
+    p.push_layer(None, ca * k);
+    for d in &pose.dots {
+        p.circle(cx + d.x, cy + d.y, d.d, rgb(d.alpha));
+    }
+    p.pop_layer();
+    let tick = tick_points(pose.tick);
+    if tick.len() >= 2 {
+        let pts: Vec<(f32, f32)> = tick.iter().map(|q| (cx + q.x, cy + q.y)).collect();
+        p.polyline(&pts, Color::BLACK.fade(k), TICK_W)?;
     }
     if s.gh_dot {
         p.circle(r.x + GH_DOT_INSET, r.y + GH_DOT_INSET, 2.0 * GH_DOT_R, GH_DOT.fade(k));
@@ -80,15 +78,27 @@ pub fn draw(p: &mut Painter, face: &Face, r: Rect, k: f32, s: &Scene) -> Result<
     Ok(())
 }
 
-/// iOS-style activity indicator: 8 spokes, the brightest one stepping round every tick.
-fn spinner(p: &Painter, cx: f32, cy: f32, t: f64, k: f32) {
-    let step = ((t * 1000.0) as u64 / SPINNER_TICK_MS as u64 % 8) as usize;
-    let (r0, r1) = (SPINNER_D * 0.25, SPINNER_D / 2.0);
-    for i in 0..8 {
-        let a = i as f32 * std::f32::consts::TAU / 8.0 - std::f32::consts::FRAC_PI_2;
-        let age = (step + 8 - i) % 8;
-        let alpha = 1.0 - age as f32 * 0.11;
-        let (sx, sy) = (a.cos(), a.sin());
-        p.line(cx + sx * r0, cy + sy * r0, cx + sx * r1, cy + sy * r1, TEXT_PRIMARY.fade(alpha * k), 1.6);
+/// The grey record: disc, grooves, turning sheen, black label.
+fn record(p: &Painter, cx: f32, cy: f32, pose: &Pose, k: f32) -> Result<()> {
+    let rim = pose.record_d / 2.0;
+    p.circle(cx, cy, pose.record_d, RECORD.fade(k));
+    let mut gr = pose.label_d / 2.0 + 1.0;
+    while gr <= rim - 0.5 {
+        p.circle_outline(cx, cy, 2.0 * gr, GROOVE.fade(k), GROOVE_W);
+        gr += GROOVE_STEP;
     }
+    for base in [pose.sheen, pose.sheen + std::f32::consts::PI] {
+        for width in SHEEN_WEDGES {
+            let half = width.to_radians() / 2.0;
+            let steps = 6;
+            let mut pts = vec![(cx, cy)];
+            for i in 0..=steps {
+                let a = base - half + 2.0 * half * i as f32 / steps as f32;
+                pts.push((cx + rim * a.cos(), cy + rim * a.sin()));
+            }
+            p.polygon(&pts, Color::white(SHEEN_ALPHA * k))?;
+        }
+    }
+    p.circle(cx, cy, pose.label_d, Color::BLACK.fade(k));
+    Ok(())
 }
