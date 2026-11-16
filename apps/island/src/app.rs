@@ -44,6 +44,8 @@ const EXPANDED_RADIUS: f32 = 32.0;
 const SCROLL_FADE: f32 = 0.12;
 const WHEEL_DELTA: i32 = 120;
 
+/// Seconds after launch the collapsed dot stops jumping if no bridge state has come.
+const MORPH_SETTLE_SECS: f64 = 3.0;
 pub const TIMER_LINGER: usize = 1;
 pub const TIMER_RETRY: usize = 3;
 /// Collapse after the mouse has been outside the expanded island for 2 s.
@@ -118,6 +120,11 @@ pub struct App {
     popup_size: Size,
     /// The pointer left the popup: coming back switches to the tabs.
     popup_left: bool,
+    /// Until the bridge's first agent list lands, the collapsed dot jumps to each state instead
+    /// of morphing, so launching into Done or Needs you plays nothing. `agent_list_seen` marks
+    /// that list's arrival; the update that applies it still jumps.
+    morph_settling: bool,
+    agent_list_seen: bool,
     /// The request the popup shows and when it appeared there.
     popup_shown: Option<(String, Instant)>,
     /// When the expanded card list last changed; request and question buttons ignore presses just after.
@@ -200,6 +207,8 @@ impl App {
             popup: false,
             popup_size: Size { w: 0.0, h: 0.0 },
             popup_left: false,
+            morph_settling: true,
+            agent_list_seen: false,
             popup_shown: None,
             cards_changed: None,
             expanded_at: None,
@@ -282,6 +291,7 @@ impl App {
                 }
             }
             SourceEvent::Herdr(msg) => {
+                self.agent_list_seen |= matches!(msg, Incoming::AgentList { .. });
                 let arrived = matches!(msg, Incoming::Approval { .. });
                 for line in self.session.handle(msg, now) {
                     self.agent_src.send(&line);
@@ -1006,7 +1016,15 @@ impl App {
         self.anim.set_face(face, t);
         // kept current whatever the face, so the dot is right when the island collapses again
         let media_playing = self.collapsed.media && self.clock.is_playing();
-        self.anim.morph.set(self.collapsed.dot, self.collapsed.media, media_playing, t);
+        // without a bridge no list ever comes: morph anyway once a short grace has passed
+        let grace = t < MORPH_SETTLE_SECS;
+        if self.morph_settling && (self.agent_list_seen || grace) {
+            self.anim.morph.settle(self.collapsed.dot, self.collapsed.media, media_playing, t);
+            self.morph_settling = !self.agent_list_seen;
+        } else {
+            self.morph_settling = false;
+            self.anim.morph.set(self.collapsed.dot, self.collapsed.media, media_playing, t);
+        }
         let accent = self.accent();
         let white = Color::white(1.0);
         let playing = present && self.clock.is_playing();

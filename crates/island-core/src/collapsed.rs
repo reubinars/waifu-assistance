@@ -101,7 +101,7 @@ pub fn target(dot: Dot, media: bool) -> Base {
 }
 
 /// One dot as drawn: offset from the pill centre, diameter, opacity (times the shared colour's).
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct DotPose {
     pub x: f32,
     pub y: f32,
@@ -117,7 +117,7 @@ pub struct Ring {
 }
 
 /// Everything the collapsed centre piece draws at one moment.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Pose {
     pub dots: [DotPose; 3],
     pub color: Rgba,
@@ -140,8 +140,11 @@ pub struct Morph {
     start: f64,
     /// When `dot` last changed: the rise, ripple, pop and tick run from here.
     arrived: f64,
-    /// The tick when `dot` last changed.
+    /// The tick when the blend started.
     tick_from: f32,
+    /// The pose as drawn when the blend started; the drawn pose blends from it, so a change
+    /// never jumps, even mid-rise, mid-pop or mid-ripple.
+    from_pose: Pose,
     playing: bool,
     /// The sheen's angle at `sheen_at`.
     sheen_from: f64,
@@ -152,17 +155,20 @@ impl Morph {
     /// Settled on `dot` at `t`: nothing plays.
     pub fn new(dot: Dot, media: bool, t: f64) -> Morph {
         let long_ago = t - 10.0;
-        Morph {
+        let mut m = Morph {
             dot,
             media,
             from: target(dot, media),
             start: long_ago,
             arrived: long_ago,
             tick_from: if dot == Dot::Done { 1.0 } else { 0.0 },
+            from_pose: Pose::default(),
             playing: false,
             sheen_from: 0.0,
             sheen_at: t,
-        }
+        };
+        m.from_pose = m.raw(t);
+        m
     }
 
     /// Retargets to `dot` / `media`, blending from the current values; `playing` says whether
@@ -173,16 +179,31 @@ impl Morph {
             self.sheen_at = t;
             self.playing = playing;
         }
+        if (dot, media) == (self.dot, self.media) {
+            return;
+        }
+        let drawn = self.pose(t);
+        // within Done the tick runs on its own clock, which a media change leaves alone
+        if !(dot == Dot::Done && self.dot == Dot::Done) {
+            self.tick_from = drawn.tick;
+        }
         if dot != self.dot {
-            self.tick_from = self.tick(t);
             self.arrived = t;
         }
-        if (dot, media) != (self.dot, self.media) {
-            self.from = self.base(t);
-            self.start = t;
-            self.dot = dot;
-            self.media = media;
-        }
+        self.from = self.base(t);
+        self.from_pose = drawn;
+        self.start = t;
+        self.dot = dot;
+        self.media = media;
+    }
+
+    /// Jumps to `dot` / `media` as if it had been there all along: no blend, pop or tick draw.
+    /// For the app's start-up, before it knows the real state. The sheen keeps its angle.
+    pub fn settle(&mut self, dot: Dot, media: bool, playing: bool, t: f64) {
+        let sheen = self.sheen(t);
+        *self = Morph::new(dot, media, t);
+        self.sheen_from = sheen;
+        self.playing = playing;
     }
 
     /// The blend's progress at `t`, 0..1, eased.
@@ -239,6 +260,32 @@ impl Morph {
 
     /// Everything to draw at `t`.
     pub fn pose(&self, t: f64) -> Pose {
+        let raw = self.raw(t);
+        let k = self.k(t);
+        if k >= 1.0 {
+            return raw;
+        }
+        let f = &self.from_pose;
+        let ring = match (f.ring, raw.ring) {
+            (Some(a), Some(b)) => Some(Ring { d: mix(a.d, b.d, k), alpha: mix(a.alpha, b.alpha, k) }),
+            (Some(a), None) => Some(Ring { d: a.d, alpha: mix(a.alpha, 0.0, k) }),
+            (None, r) => r,
+        };
+        Pose {
+            dots: std::array::from_fn(|i| {
+                let (a, b) = (f.dots[i], raw.dots[i]);
+                DotPose { x: mix(a.x, b.x, k), y: mix(a.y, b.y, k), d: mix(a.d, b.d, k), alpha: mix(a.alpha, b.alpha, k) }
+            }),
+            color: std::array::from_fn(|j| mix(f.color[j], raw.color[j], k)),
+            ring,
+            record_d: mix(f.record_d, raw.record_d, k),
+            label_d: mix(f.label_d, raw.label_d, k),
+            ..raw
+        }
+    }
+
+    /// The pose at `t` before blending from the drawn pose: base values plus ongoing motion.
+    fn raw(&self, t: f64) -> Pose {
         let b = self.base(t);
         let pop = self.pop(t);
         let dots = std::array::from_fn(|i| {
@@ -502,5 +549,49 @@ mod tests {
         m.set(Dot::Working, true, true, t + 1.0);
         let p = m.pose(t + 2.0);
         assert!(p.dots.iter().all(|d| d.y.is_finite() && d.alpha.is_finite()) && p.sheen.is_finite());
+    }
+
+    fn assert_pose_close(a: &Pose, b: &Pose, what: &str) {
+        let near = |x: f32, y: f32| (x - y).abs() < 1e-3;
+        for (da, db) in a.dots.iter().zip(&b.dots) {
+            assert!(near(da.x, db.x) && near(da.y, db.y) && near(da.d, db.d) && near(da.alpha, db.alpha), "{what}: dots {a:?} vs {b:?}");
+        }
+        assert!(a.color.iter().zip(&b.color).all(|(x, y)| near(*x, *y)), "{what}: color");
+        assert!(near(a.tick, b.tick), "{what}: tick {} vs {}", a.tick, b.tick);
+        assert!(near(a.record_d, b.record_d) && near(a.label_d, b.label_d), "{what}: record");
+        let ring = |p: &Pose| p.ring.map_or((0.0, 0.0), |r| (r.d, r.alpha));
+        let (ra, rb) = (ring(a), ring(b));
+        // a ring at zero opacity is the same picture as no ring
+        assert!(near(ra.1, rb.1) && (ra.1 < 1e-3 || near(ra.0, rb.0)), "{what}: ring {ra:?} vs {rb:?}");
+    }
+
+    #[test]
+    fn any_change_leaves_the_drawn_pose_unchanged() {
+        let states: Vec<(Dot, bool)> =
+            [Dot::Idle, Dot::Working, Dot::Blocked, Dot::Done].into_iter().flat_map(|d| [(d, false), (d, true)]).collect();
+        for &a in &states {
+            for &b in &states {
+                for &c in &states {
+                    for dt in [0.1, 0.2, 0.36, 0.5, 0.6, 0.8, 1.3, 2.0] {
+                        let mut m = Morph::new(a.0, a.1, 0.0);
+                        m.set(b.0, b.1, false, 1.0);
+                        let before = m.pose(1.0 + dt);
+                        m.set(c.0, c.1, false, 1.0 + dt);
+                        assert_pose_close(&before, &m.pose(1.0 + dt), &format!("{a:?} -> {b:?} -> {c:?} at +{dt}"));
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn settle_jumps_to_the_state_without_playing_it() {
+        let mut m = Morph::new(Dot::Idle, false, 0.0);
+        m.settle(Dot::Done, true, false, 1.0);
+        let p = m.pose(1.0);
+        assert_eq!(p.tick, 1.0);
+        assert!(p.dots.iter().all(|d| d.d == 11.0));
+        assert_eq!(p.record_d, RECORD_D);
+        assert!(!m.busy(1.0));
     }
 }
