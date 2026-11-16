@@ -103,6 +103,7 @@ impl Bridge {
             .env("HERDR_SOCKET_PATH", sock)
             .env("HOME", home)
             .env("XDG_RUNTIME_DIR", home)
+            .env("ISLAND_GH", "/nonexistent/gh")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .spawn()
@@ -118,6 +119,8 @@ impl Bridge {
                     utx.send(line).is_ok()
                 } else if line.starts_with(r#"{"hooks""#) {
                     htx.send(line).is_ok()
+                } else if line.starts_with(r#"{"github""#) {
+                    true // the GitHub poller's lines are not what these tests are about
                 } else {
                     tx.send(line).is_ok()
                 };
@@ -279,6 +282,7 @@ fn hook_status_is_re_emitted_when_it_changes() {
         .env("HERDR_SOCKET_PATH", &sock)
         .env("HOME", &home)
         .env("XDG_RUNTIME_DIR", &home)
+        .env("ISLAND_GH", "/nonexistent/gh")
         .env("ISLAND_HOOK_STATUS_MS", "50")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -300,6 +304,34 @@ fn hook_status_is_re_emitted_when_it_changes() {
     assert_eq!(next_hooks(), r#"{"hooks":{"claude":false}}"#);
     let _ = child.kill();
     let _ = child.wait();
+}
+
+#[test]
+fn github_reports_gh_not_installed() {
+    let sock = sock_path("gh-missing");
+    let home = home_for(&sock);
+    let mut child = Command::new(env!("CARGO_BIN_EXE_island-bridge"))
+        .env("HERDR_SOCKET_PATH", &sock)
+        .env("HOME", &home)
+        .env("XDG_RUNTIME_DIR", &home)
+        .env("ISLAND_GH", "/nonexistent/gh")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let stdout = child.stdout.take().unwrap();
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        for l in BufReader::new(stdout).lines().map_while(Result::ok) {
+            if l.starts_with(r#"{"github""#) && tx.send(l).is_err() {
+                break;
+            }
+        }
+    });
+    let line = rx.recv_timeout(Duration::from_secs(3)).expect("no github line");
+    let _ = child.kill();
+    let _ = child.wait();
+    assert_eq!(line, r#"{"github":{"error":"gh not installed"}}"#);
 }
 
 #[test]

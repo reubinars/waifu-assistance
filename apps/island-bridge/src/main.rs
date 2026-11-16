@@ -17,6 +17,7 @@ use std::time::{Duration, Instant};
 
 use serde_json::json;
 
+mod github;
 mod hook;
 mod install;
 mod socket;
@@ -277,6 +278,7 @@ fn main() {
     spawn_hook_status();
     let home = std::env::var_os("HOME").filter(|h| !h.is_empty()).map(PathBuf::from);
     usage::spawn(home);
+    github::spawn();
 
     let (tx, rx) = mpsc::channel();
     spawn_stdin_reader(tx.clone());

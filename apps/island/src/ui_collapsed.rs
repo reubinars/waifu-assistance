@@ -3,6 +3,7 @@
 use crate::animator::Face;
 use crate::draw::{Align, Color, Painter, TEXT_PRIMARY};
 use island_core::Rect;
+use island_core::github::GhEvent;
 use island_core::anim::{BLOCKED_PULSE_PERIOD, pulse};
 use island_core::view::Dot;
 use windows::core::Result;
@@ -22,9 +23,24 @@ pub struct Scene {
     pub accent: Color,
     /// Requests waiting on the user; above 0 a badge shows top-right.
     pub badge: u8,
+    /// GitHub events not yet seen on the GitHub tab: a purple dot top-left.
+    pub gh_dot: bool,
+    /// The GitHub event the pop face shows (the last one, while it fades out).
+    pub pop: Option<GhEvent>,
 }
 
 const BADGE_R: f32 = 9.0;
+const GH_DOT_R: f32 = 6.0;
+/// The GitHub dot's centre, in from the top-left: far enough that the whole dot sits inside the
+/// 32x32 round pill (centre (16, 16), radius 16).
+const GH_DOT_INSET: f32 = 9.0;
+const _: () = {
+    let d = 16.0 - GH_DOT_INSET;
+    // distance between the centres plus the dot's radius stays within the pill's radius
+    assert!(2.0 * d * d <= (16.0 - GH_DOT_R) * (16.0 - GH_DOT_R));
+};
+/// GitHub purple.
+const GH_DOT: Color = Color::rgba(0x89, 0x57, 0xe5, 1.0);
 
 /// Draws `face` inside `r` at opacity `k` (the caller clips to the island shape).
 pub fn draw(p: &mut Painter, face: &Face, r: Rect, k: f32, s: &Scene) -> Result<()> {
@@ -50,6 +66,9 @@ pub fn draw(p: &mut Painter, face: &Face, r: Rect, k: f32, s: &Scene) -> Result<
             p.shadow(&dot, 0.0, 0.0, 6.0, DONE.fade(k))?;
             p.fill(&dot, DONE.fade(k));
         }
+    }
+    if s.gh_dot {
+        p.circle(r.x + GH_DOT_INSET, r.y + GH_DOT_INSET, 2.0 * GH_DOT_R, GH_DOT.fade(k));
     }
     if s.badge > 0 {
         let (bx, by) = (r.x + r.w - BADGE_R, r.y + BADGE_R);

@@ -5,6 +5,7 @@ use crate::draw::{Color, Painter};
 use crate::fullscreen;
 use crate::gfx::Gfx;
 use crate::log;
+use crate::open::open_url;
 use crate::pet::{self, PetBitmaps, PetImages, Sprite};
 use crate::sources::{AgentSource, ArtImage, DemoAction, MediaCommand, MediaSource, SourceEvent, UiSender};
 use crate::startup;
@@ -15,6 +16,7 @@ use crate::window::{self, Event, VK_ESCAPE, Windows};
 use island_core::anim::Fade;
 use island_core::config::Config;
 use island_core::approvals::{Decision, Pending, PendingKind, Request};
+use island_core::github::{GhEvent, GhRow, GhState, PopSlot, PopWorld, text::row_count as gh_row_count, text::rows as gh_rows};
 use island_core::herdr::{Incoming, req_decide};
 use island_core::media::MediaClock;
 use island_core::pet::{PetClock, PetState, Sheet, pet_state, second_pet_state};
@@ -23,7 +25,7 @@ use island_core::ticker::Ticker;
 use island_core::usage::{CliUsage, strip_runs};
 use island_core::view::layout::{self, SEEK};
 use island_core::view::{
-    Action, COLLAPSED, Card, PopupExit, CardKind, Collapsed, Dot, DisplayMode, ExpandedHit, Shown, Spot, Tab, block_rect, block_size, card_identity, cards, choose_collapsed, clock_label, detail_line,
+    Action, COLLAPSED, POP, Card, PopupExit, CardKind, Collapsed, Dot, DisplayMode, ExpandedHit, Shown, Spot, Tab, block_rect, block_size, card_identity, cards, choose_collapsed, clock_label, detail_line,
     corner_radii, countdown_fraction, expanded_size, hit_popup, popup_exit, popup_layout, popup_press_guarded, card_press_guarded, popup_request, fullscreen_jump_target, hit_expanded, is_drag, island_rect,
     jump_target, max_scroll, pet_cell, scroll_by, second_pet_cell, shown, spot_at,
 };
@@ -50,6 +52,8 @@ pub const TIMER_LEAVE: usize = 4;
 pub const TIMER_TICK: usize = 5;
 /// One-shot wake for the next pet animation frame.
 pub const TIMER_PET: usize = 6;
+/// Wakes the GitHub pop: its 4 s are up, a hovered pop is rechecked, or the next one is due.
+pub const TIMER_POP: usize = 7;
 
 const LEAVE_COLLAPSE: Duration = Duration::from_secs(2);
 /// Deactivation right after expanding (the click that expanded) doesn't collapse.
@@ -62,6 +66,10 @@ struct Press {
     at: (i32, i32),
     block: Point,
     dragging: bool,
+    /// The GitHub pop showing and whether the island was expanded at the press: if either has
+    /// changed by the release, the release does nothing.
+    pop: bool,
+    expanded: bool,
 }
 
 struct Device {
@@ -149,6 +157,10 @@ pub struct App {
     /// Whether the ticker was running last frame: the first running frame after a pause must
     /// not advance by the time spent paused.
     ticker_was_running: bool,
+    /// The GitHub event popped open on the collapsed island, if any.
+    gh_pop: PopSlot,
+    /// The last pop shown, kept so it can fade out after it closes.
+    pop_drawn: Option<GhEvent>,
 }
 
 impl App {
@@ -212,6 +224,8 @@ impl App {
             ticker: Ticker::default(),
             ticker_t: 0.0,
             ticker_was_running: false,
+            gh_pop: PopSlot::default(),
+            pop_drawn: None,
         };
         app.win.place(app.mode(), app.spot(), app.pets());
         app
@@ -273,6 +287,7 @@ impl App {
                 for line in self.session.handle(msg, now) {
                     self.agent_src.send(&line);
                 }
+                self.mark_github_seen();
                 // an approval pops a collapsed island open, without focus; never over fullscreen
                 if arrived && !self.expanded && !self.fullscreen && !self.user_hidden && self.popup_info().is_some() {
                     self.popup = true;
@@ -288,6 +303,7 @@ impl App {
                         self.expand(false, now);
                     }
                     self.tab = tab;
+                    self.mark_github_seen();
                 }
                 DemoAction::Collapse => self.collapse(),
                 DemoAction::Mode(m) => self.set_mode(m),
@@ -304,6 +320,7 @@ impl App {
         }
         self.retarget(now);
         self.apply_visibility();
+        self.sync_gh_pop(now);
     }
 
     pub fn on_window_event(&mut self, e: Event) {
@@ -327,6 +344,8 @@ impl App {
                 self.kill_timer(TIMER_PET);
                 self.dirty = true;
             }
+            // sync_gh_pop below does the work and re-arms it
+            Event::Timer(TIMER_POP) => self.kill_timer(TIMER_POP),
             Event::Timer(_) => {}
             Event::Reposition => {
                 self.reposition();
@@ -366,6 +385,33 @@ impl App {
             }
         }
         self.apply_visibility();
+        self.sync_gh_pop(now);
+    }
+
+    /// Whether the pointer is over the showing GitHub pop.
+    fn pop_hovered(&self) -> bool {
+        if self.gh_pop.showing().is_none() {
+            return false;
+        }
+        let Some(p) = self.cursor() else { return false };
+        let r = self.rect_at(POP);
+        p.x >= r.x && p.x <= r.x + r.w && p.y >= r.y && p.y <= r.y + r.h
+    }
+
+    /// Shows, holds, closes or drops the GitHub pop for the island's current state. An approval
+    /// popup or a user-expanded island holds it; fullscreen or hidden drops the queue.
+    fn sync_gh_pop(&mut self, now: Instant) {
+        let world = PopWorld { suppressed: self.fullscreen || self.user_hidden, held: self.expanded, hovered: self.pop_hovered() };
+        if self.gh_pop.tick(self.session.github.as_mut(), world, now) {
+            if let Some(e) = self.gh_pop.showing() {
+                self.pop_drawn = Some(e.clone());
+            }
+            self.retarget(now);
+        }
+        match self.gh_pop.wake(world.hovered, now) {
+            Some(d) => self.set_timer(TIMER_POP, d + Duration::from_millis(1)),
+            None => self.kill_timer(TIMER_POP),
+        }
     }
 
     fn on_tray_menu(&mut self, x: i32, y: i32) {
@@ -466,6 +512,31 @@ impl App {
         self.cards().1.iter().map(Card::slots).sum()
     }
 
+    /// The scrollable list's row slots on the shown tab.
+    fn list_rows(&self) -> usize {
+        match (self.tab, &self.session.github) {
+            (Tab::GitHub, Some(g)) => gh_row_count(g),
+            _ => self.slots(),
+        }
+    }
+
+    /// Whatever the GitHub tab shows while it is open counts as seen, and needs no pop.
+    fn mark_github_seen(&mut self) {
+        if self.expanded && self.tab == Tab::GitHub {
+            self.session.github.as_mut().map(GhState::seen);
+            self.gh_pop.forget();
+        }
+    }
+
+    /// The URL of the PR in GitHub row `i`, if that row is a PR.
+    fn gh_url_at(&self, i: usize) -> Option<String> {
+        let g = self.session.github.as_ref()?;
+        match gh_rows(g).into_iter().nth(i)? {
+            GhRow::Pr { pr, .. } => Some(pr.url),
+            GhRow::Message(_) => None,
+        }
+    }
+
     fn badge(&self) -> u8 {
         self.session.approvals.badge(&self.session.agents)
     }
@@ -540,7 +611,8 @@ impl App {
         let kinds: Vec<CardKind> = self.cards().1.into_iter().map(|c| c.kind).collect();
         let seekable = present && self.clock.seekable();
         let usage = !self.usage.is_empty();
-        hit_expanded(self.tab, present, &kinds, self.scroll, seekable, usage, Point { x: p.x - o.x, y: p.y - o.y })
+        let github = self.session.github.as_ref().map(gh_row_count);
+        hit_expanded(self.tab, present, &kinds, self.scroll, seekable, usage, github, Point { x: p.x - o.x, y: p.y - o.y })
     }
 
     fn cursor(&self) -> Option<Point> {
@@ -564,8 +636,15 @@ impl App {
         self.dirty = true;
     }
 
+    /// Back to the top at once, without the scroll fade (a different list is showing).
+    fn snap_scroll_top(&mut self) {
+        self.scroll = 0;
+        self.scroll_fade = Fade { from: 0.0, to: 0.0, start: 0.0, duration: 0.0 };
+        self.dirty = true;
+    }
+
     fn on_wheel(&mut self, delta: i32, now: Instant) {
-        if !self.expanded || self.popup || self.tab != Tab::Agents {
+        if !self.expanded || self.popup || self.tab == Tab::Media {
             return;
         }
         let Some(p) = self.cursor() else { return };
@@ -577,12 +656,12 @@ impl App {
         self.wheel_acc += delta;
         let notches = self.wheel_acc / WHEEL_DELTA;
         self.wheel_acc %= WHEEL_DELTA;
-        if self.expanded_hit(p) == Some(ExpandedHit::Usage) {
+        if self.tab == Tab::Agents && self.expanded_hit(p) == Some(ExpandedHit::Usage) {
             self.ticker.wheel(notches);
             self.dirty = true;
             return;
         }
-        let slots = self.slots();
+        let slots = self.list_rows();
         self.set_scroll(scroll_by(self.scroll, notches, slots), self.secs(now));
     }
 
@@ -629,7 +708,8 @@ impl App {
         let r = block_rect(self.spot(), self.anim.size(), self.pets());
         let (o, s) = (self.win.origin, self.win.scale);
         let block = Point { x: o.0 as f32 + r.x * s, y: o.1 as f32 + r.y * s };
-        self.press = Some(Press { at: (x, y), block, dragging: false });
+        let pop = self.gh_pop.showing().is_some();
+        self.press = Some(Press { at: (x, y), block, dragging: false, pop, expanded: self.expanded });
         self.win.capture(true);
     }
 
@@ -662,6 +742,14 @@ impl App {
         if press.dragging {
             log::info!("moved to {:?}", self.spot());
             self.save_config();
+        } else if press.expanded != self.expanded || press.pop != self.gh_pop.showing().is_some() {
+            // the island changed under the pointer: this click was meant for something else
+        } else if let Some(url) = self.gh_pop.showing().map(|e| e.url.clone()) {
+            // a click on a GitHub pop opens its PR and closes it, without focusing the island
+            open_url(&url);
+            let now = Instant::now();
+            self.gh_pop.dismiss(now);
+            self.retarget(now);
         } else {
             self.on_collapsed_click(Instant::now());
         }
@@ -700,6 +788,7 @@ impl App {
         self.hover.set_pressed(hit.map(Hot::of), self.secs(now));
         self.pressed_card = match hit {
             Some(ExpandedHit::Button(i, _) | ExpandedHit::Row(i)) => self.card_at(i).as_ref().map(card_identity),
+            Some(ExpandedHit::GhRow(i)) => self.gh_url_at(i),
             _ => None,
         };
         self.dirty = true;
@@ -728,9 +817,19 @@ impl App {
         {
             return;
         }
+        // and the PR row must still hold the PR that was pressed
+        if let ExpandedHit::GhRow(i) = hit
+            && (bound.is_none() || self.gh_url_at(i) != bound)
+        {
+            return;
+        }
         match hit {
             ExpandedHit::Tab(tab) => {
+                if tab != self.tab {
+                    self.snap_scroll_top();
+                }
                 self.tab = tab;
+                self.mark_github_seen();
                 self.hover.reset();
                 self.retarget(Instant::now());
             }
@@ -768,6 +867,11 @@ impl App {
             ExpandedHit::Prev => self.media.command(MediaCommand::Previous),
             ExpandedHit::PlayPause => self.media.command(MediaCommand::PlayPause),
             ExpandedHit::Next => self.media.command(MediaCommand::Next),
+            ExpandedHit::GhRow(_) => {
+                if let Some(url) = bound {
+                    open_url(&url);
+                }
+            }
             ExpandedHit::Seek(_) | ExpandedHit::Usage => {}
         }
     }
@@ -876,7 +980,11 @@ impl App {
                 self.refresh_hover(t);
             }
         }
-        let slots = self.slots();
+        if self.tab == Tab::GitHub && self.session.github.is_none() {
+            self.tab = Tab::Agents;
+            self.snap_scroll_top();
+        }
+        let slots = self.list_rows();
         self.set_scroll(self.scroll.min(max_scroll(slots)), t);
         self.pet.set(pet_state(&self.session.agents), t);
         self.pet2.set(second_pet_state(&self.session.agents, self.clock.is_playing()), t);
@@ -891,6 +999,8 @@ impl App {
         }
         let (size, radius, face) = if self.expanded {
             (self.expanded_size(), EXPANDED_RADIUS, Face::Expanded(self.tab))
+        } else if self.gh_pop.showing().is_some() {
+            (POP, POP.h / 2.0, Face::Pop)
         } else {
             (COLLAPSED, COLLAPSED_RADIUS, Face::Dot { dot: self.collapsed.dot, media: self.collapsed.media })
         };
@@ -967,6 +1077,7 @@ impl App {
             self.sync_popup();
             self.retarget(now);
             self.apply_visibility();
+            self.sync_gh_pop(now);
         }
         let t = self.secs(now);
         // clamped so a slow frame doesn't jump; zero on the first running frame after a pause
@@ -1150,12 +1261,21 @@ impl App {
                 fraction: countdown_fraction(r.expires, now, r.timeout_ms),
             }
         });
-        let slots: usize = list.iter().map(Card::slots).sum();
-        let collapsed = Scene { t, playing: self.clock.is_playing(), accent: arc_accent(self.art.as_ref().and_then(|a| a.accent)), badge: self.collapsed.badge };
+        let slots = self.list_rows();
+        let collapsed = Scene {
+            t,
+            playing: self.clock.is_playing(),
+            accent: arc_accent(self.art.as_ref().and_then(|a| a.accent)),
+            badge: self.collapsed.badge,
+            gh_dot: self.session.github.as_ref().is_some_and(|g| g.unseen > 0),
+            pop: self.gh_pop.showing().or(self.pop_drawn.as_ref()).cloned(),
+        };
         let expanded = ui_expanded::Scene {
             t,
             scroll: self.scroll_fade.value_at(t).min(max_scroll(slots) as f32),
             media_present: present,
+            github_present: self.session.github.is_some(),
+            github: self.session.github.as_ref().map(gh_rows).unwrap_or_default(),
             cards,
             media,
             popup,
@@ -1267,7 +1387,15 @@ fn draw_face(
     scene: &Scene,
     ex: &ui_expanded::Scene,
 ) -> Result<()> {
-    let Face::Expanded(tab) = face else { return ui_collapsed::draw(p, face, rect, k, scene) };
+    let tab = match face {
+        Face::Expanded(tab) => tab,
+        Face::Pop => {
+            let Some(e) = &scene.pop else { return Ok(()) };
+            let (ox, oy) = (rect.x + (rect.w - POP.w) * spot.x, rect.y + (rect.h - POP.h) * spot.y);
+            return ui_expanded::draw_pop(p, ox, oy, k, e);
+        }
+        Face::Dot { .. } => return ui_collapsed::draw(p, face, rect, k, scene),
+    };
     // pinned to the island's edges the way the island is pinned to the screen's, so the content
     // stays put while the island grows away from those edges
     let (ox, oy) = (rect.x + (rect.w - size.w) * spot.x, rect.y + (rect.h - size.h) * spot.y);

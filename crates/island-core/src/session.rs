@@ -12,6 +12,8 @@ pub struct HerdrSession {
     pub approvals: ApprovalQueue,
     /// The bridge's hook status snapshot. Kept across reconnects: the bridge re-sends it.
     pub hooks: HookStatus,
+    /// GitHub PR state; `None` until the bridge first sends a `github` line.
+    pub github: Option<crate::github::GhState>,
     last_id: u64,
     /// Panes in the most recently sent subscription.
     sent: BTreeSet<String>,
@@ -122,6 +124,10 @@ impl HerdrSession {
                 vec![]
             }
             Incoming::Ok { id } => self.subscription_started(&id),
+            Incoming::GitHub(r) => {
+                self.github.get_or_insert_with(Default::default).apply(r);
+                vec![]
+            }
             Incoming::Error { .. } | Incoming::Usage(_) | Incoming::Other => vec![],
         }
     }
@@ -130,6 +136,9 @@ impl HerdrSession {
     pub fn bridge_down(&mut self) {
         self.reset();
         self.approvals.clear();
+        if let Some(g) = &mut self.github {
+            g.rebaseline();
+        }
     }
 
     pub fn focus(&mut self, pane_id: &str) -> String {
@@ -340,5 +349,36 @@ mod tests {
         assert!(out[0].contains("\"id\":\"island:1\""));
         assert!(out[1].contains("\"id\":\"island:2\""));
         assert!(s.focus("w1:p1").contains("\"id\":\"island:3\""));
+    }
+
+    fn gh(n: u32, ci: crate::github::Ci) -> crate::github::PullRequest {
+        crate::github::test_pr("o/a", n, crate::github::Role::Mine, ci, crate::github::Review::None)
+    }
+
+    #[test]
+    fn github_message_creates_state() {
+        let mut s = HerdrSession::default();
+        assert!(s.github.is_none());
+        s.handle(crate::herdr::parse_line(r#"{"github":{"prs":[]}}"#).unwrap(), now());
+        assert!(s.github.is_some());
+    }
+
+    #[test]
+    fn bridge_down_rebaselines() {
+        let mut s = HerdrSession::default();
+        s.handle(Incoming::GitHub(Ok(vec![gh(1, crate::github::Ci::Running)])), now());
+        s.bridge_down();
+        s.handle(Incoming::GitHub(Ok(vec![gh(1, crate::github::Ci::Failing)])), now());
+        let g = s.github.as_mut().unwrap();
+        assert_eq!(g.unseen, 0);
+        assert_eq!(g.next_pop(), None);
+    }
+
+    #[test]
+    fn herdr_reconnect_keeps_github() {
+        let mut s = HerdrSession::default();
+        s.handle(Incoming::GitHub(Ok(vec![gh(1, crate::github::Ci::Running)])), now());
+        s.handle(Incoming::Bridge { connected: true }, now());
+        assert_eq!(s.github.as_ref().unwrap().prs.len(), 1);
     }
 }

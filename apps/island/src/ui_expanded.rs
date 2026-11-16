@@ -6,11 +6,12 @@ use crate::draw::{Align, Color, Painter, TEXT_PRIMARY, TEXT_SECONDARY, TEXT_TERT
 use island_core::Rect;
 use island_core::anim::{Fade, breathe};
 use island_core::approvals::Detail;
+use island_core::github::{Ci, GhEvent, GhEventKind, GhRow, text::{chip, ci_glyph, head, pop_text}};
 use island_core::herdr::AgentStatus;
 use island_core::ticker;
 use island_core::usage::{Level, Run, Tone, level};
 use island_core::view::layout::{self, MAX_ROWS};
-use island_core::view::{Action, CardKind, EXPANDED, ExpandedHit, PopupLayout, Tab, max_scroll, status_word};
+use island_core::view::{Action, CardKind, EXPANDED, ExpandedHit, POP, PopupLayout, Tab, max_scroll, status_word};
 use std::cell::Cell;
 use windows::Win32::Graphics::Direct2D::ID2D1Bitmap1;
 use windows::Win32::Graphics::DirectWrite::{DWRITE_TEXT_METRICS, IDWriteTextLayout};
@@ -29,6 +30,8 @@ const BUTTON_FADE: f32 = 0.12;
 pub enum Hot {
     Tab(Tab),
     Row(usize),
+    /// A GitHub tab row, by list index.
+    Gh(usize),
     /// A card's button, by card index.
     Button(usize, Action),
     Prev,
@@ -40,7 +43,7 @@ pub enum Hot {
 }
 
 const ACTIONS: usize = 5;
-const BUTTONS_AT: usize = 8 + MAX_ROWS;
+const BUTTONS_AT: usize = 10 + 2 * MAX_ROWS;
 const HOT_COUNT: usize = BUTTONS_AT + (MAX_ROWS + 1) * ACTIONS;
 
 impl Hot {
@@ -53,6 +56,7 @@ impl Hot {
             ExpandedHit::Next => Hot::Next,
             ExpandedHit::Seek(_) => Hot::Seek,
             ExpandedHit::Usage => Hot::Usage,
+            ExpandedHit::GhRow(i) => Hot::Gh(i),
             ExpandedHit::Button(i, a) => Hot::Button(i, a),
         }
     }
@@ -67,6 +71,8 @@ impl Hot {
             Hot::Seek => 5,
             Hot::Row(i) => 6 + i % (MAX_ROWS + 1),
             Hot::Usage => 7 + MAX_ROWS,
+            Hot::Tab(Tab::GitHub) => 8 + MAX_ROWS,
+            Hot::Gh(i) => 9 + MAX_ROWS + i % (MAX_ROWS + 1),
             Hot::Button(i, a) => BUTTONS_AT + i % (MAX_ROWS + 1) * ACTIONS + a as usize,
         }
     }
@@ -171,6 +177,8 @@ pub struct Media {
 pub struct Scene<'a> {
     pub t: f64,
     pub media_present: bool,
+    pub github_present: bool,
+    pub github: Vec<GhRow>,
     pub cards: Vec<Card>,
     pub scroll: f32,
     pub media: Option<Media>,
@@ -196,8 +204,8 @@ pub fn draw(p: &mut Painter, tab: Tab, ox: f32, oy: f32, k: f32, s: &Scene) -> R
     if let Some(pop) = &s.popup {
         return draw_popup(p, ox, oy, k, s, pop);
     }
-    for (t, r) in layout::tabs(s.media_present) {
-        let label = match t { Tab::Agents => "Agents", Tab::Media => "Media" };
+    for (t, r) in layout::tabs(s.media_present, s.github_present) {
+        let label = match t { Tab::Agents => "Agents", Tab::Media => "Media", Tab::GitHub => "GitHub" };
         let r = off(r, ox, oy);
         let h = s.hover.hover(Hot::Tab(t), s.t);
         let restore = p.scale_about(1.0 + 0.1 * h, r.x + r.w / 2.0, r.y + r.h / 2.0);
@@ -213,6 +221,7 @@ pub fn draw(p: &mut Painter, tab: Tab, ox: f32, oy: f32, k: f32, s: &Scene) -> R
             if s.usage.is_empty() { Ok(()) } else { draw_usage(p, ox, oy, k, s) }
         }
         Tab::Media => draw_media(p, ox, oy, k, s),
+        Tab::GitHub => draw_github(p, ox, oy, k, s),
     }
 }
 
@@ -456,6 +465,94 @@ fn draw_rows(p: &mut Painter, ox: f32, oy: f32, k: f32, s: &Scene) -> Result<()>
         p.round_rect(Rect { x: ox + EXPANDED.w - 5.0, y, w: 2.5, h }, 1.25, Color::white(0.25).fade(k));
     }
     Ok(())
+}
+
+fn ci_color(c: Ci) -> Color {
+    match c {
+        Ci::Passing => tone_color(Tone::Percent(Level::Low)),
+        Ci::Failing => tone_color(Tone::Percent(Level::High)),
+        Ci::Running => tone_color(Tone::Percent(Level::Mid)),
+        Ci::None => TEXT_TERTIARY,
+    }
+}
+
+/// The GitHub tab: a message row, or one card per PR in the agent rows' geometry, scrolled like them.
+fn draw_github(p: &mut Painter, ox: f32, oy: f32, k: f32, s: &Scene) -> Result<()> {
+    const GLYPH_X: f32 = 14.0;
+    const TEXT_X: f32 = 30.0;
+    const RIGHT: f32 = 10.0;
+    const LINE1_Y: f32 = 6.0;
+    const LINE1_H: f32 = 18.0;
+    const LINE2_Y: f32 = 22.0;
+    const LINE2_H: f32 = 16.0;
+    const DIM: f32 = 0.55;
+    let list = off(layout::LIST, ox, oy);
+    let mask = p.rect_geometry(list)?;
+    p.push_layer(Some(&mask), 1.0);
+    let drawn = (|| -> Result<()> {
+        for (i, row) in s.github.iter().enumerate() {
+            let top = layout::slot_rect(0).y + layout::ROW_STEP * (i as f32 - s.scroll);
+            let r = off(Rect { y: top, ..layout::slot_rect(0) }, ox, oy);
+            if r.y + r.h <= list.y || r.y >= list.y + list.h {
+                continue;
+            }
+            match row {
+                GhRow::Message(text) => {
+                    p.round_rect(r, layout::ROW_RADIUS, Color::white(0.06).fade(k));
+                    let rect = Rect { x: r.x + GLYPH_X, w: r.w - GLYPH_X - RIGHT, ..r };
+                    p.text(text, rect, 12.0, 400, TEXT_SECONDARY.fade(k), Align::Left)?;
+                }
+                GhRow::Pr { pr, dim } => {
+                    let k = if *dim { k * DIM } else { k };
+                    p.round_rect(r, layout::ROW_RADIUS, Color::white(0.06).fade(k));
+                    let h = s.hover.hover(Hot::Gh(i), s.t);
+                    if h > 0.0 {
+                        p.round_rect(r, layout::ROW_RADIUS, Color::white(0.10 * h).fade(k));
+                    }
+                    let line1 = Rect { x: r.x + GLYPH_X, y: r.y + LINE1_Y, w: TEXT_X - GLYPH_X, h: LINE1_H };
+                    p.text(ci_glyph(pr.ci), line1, 12.0, 600, ci_color(pr.ci).fade(k), Align::Left)?;
+                    let w = r.x + r.w - RIGHT - (r.x + TEXT_X);
+                    let title = Rect { x: r.x + TEXT_X, y: r.y + LINE1_Y, w, h: LINE1_H };
+                    p.text(&head(pr), title, 12.0, 600, TEXT_PRIMARY.fade(k), Align::Left)?;
+                    let chip = chip(pr);
+                    if !chip.is_empty() {
+                        let line2 = Rect { x: r.x + TEXT_X, y: r.y + LINE2_Y, w, h: LINE2_H };
+                        p.text(&chip, line2, 11.0, 400, TEXT_TERTIARY.fade(k), Align::Left)?;
+                    }
+                }
+            }
+        }
+        Ok(())
+    })();
+    p.pop_layer();
+    drawn?;
+    let total = s.github.len();
+    let max = max_scroll(total);
+    if max > 0 {
+        let h = list.h * MAX_ROWS as f32 / total as f32;
+        let y = list.y + (list.h - h) * (s.scroll / max as f32).clamp(0.0, 1.0);
+        p.round_rect(Rect { x: ox + EXPANDED.w - 5.0, y, w: 2.5, h }, 1.25, Color::white(0.25).fade(k));
+    }
+    Ok(())
+}
+
+/// A GitHub event on the collapsed island: one line at the `POP` size with its top-left at
+/// (ox, oy), the glyph in the GitHub tab's CI colours.
+pub fn draw_pop(p: &mut Painter, ox: f32, oy: f32, k: f32, e: &GhEvent) -> Result<()> {
+    const PAD_X: f32 = 14.0;
+    const GLYPH_W: f32 = 22.0;
+    let text = pop_text(e);
+    let (glyph, rest) = text.split_once(' ').unwrap_or(("", &text));
+    let color = match e.kind {
+        GhEventKind::CiFailed => ci_color(Ci::Failing),
+        GhEventKind::CiPassed | GhEventKind::Approved => ci_color(Ci::Passing),
+        GhEventKind::ReviewRequested | GhEventKind::ChangesRequested => TEXT_PRIMARY,
+    };
+    let glyph_r = Rect { x: ox + PAD_X, y: oy, w: GLYPH_W, h: POP.h };
+    p.text(glyph, glyph_r, 12.0, 600, color.fade(k), Align::Left)?;
+    let x = glyph_r.x + GLYPH_W;
+    let rest_r = Rect { x, y: oy, w: ox + POP.w - PAD_X - x, h: POP.h };
+    p.text(rest, rest_r, 12.0, 600, TEXT_PRIMARY.fade(k), Align::Left)
 }
 
 fn tone_color(t: Tone) -> Color {

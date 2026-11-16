@@ -1,0 +1,67 @@
+{
+ "data": {
+  "mine": {
+   "nodes": [
+    {
+     "number": 7,
+     "title": "Add GitHub tab",
+     "url": "https://github.com/reubinars/waifu-assistance/pull/7",
+     "isDraft": false,
+     "updatedAt": "2024-09-25T13:43:28Z",
+     "reviewDecision": "REVIEW_REQUIRED",
+     "repository": {
+      "nameWithOwner": "reubinars/waifu-assistance"
+     },
+     "commits": {
+      "nodes": [
+       {
+        "commit": {
+         "statusCheckRollup": null
+        }
+       }
+      ]
+     }
+    },
+    {
+     "number": 9,
+     "title": "No url",
+     "isDraft": false,
+     "updatedAt": "2026-11-14T10:00:00Z",
+     "reviewDecision": null,
+     "repository": {
+      "nameWithOwner": "org/repo"
+     },
+     "commits": {
+      "nodes": []
+     }
+    }
+   ]
+  },
+  "review": {
+   "nodes": [
+    {
+     "number": 45,
+     "title": "Add retries",
+     "url": "https://github.com/org/repo/pull/45",
+     "isDraft": true,
+     "updatedAt": "2026-11-14T10:00:00Z",
+     "reviewDecision": null,
+     "repository": {
+      "nameWithOwner": "org/repo"
+     },
+     "commits": {
+      "nodes": [
+       {
+        "commit": {
+         "statusCheckRollup": {
+          "state": "FAILURE"
+         }
+        }
+       }
+      ]
+     }
+    }
+   ]
+  }
+ }
+}
