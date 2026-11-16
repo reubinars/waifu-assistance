@@ -12,7 +12,7 @@ pub const POLL: Duration = Duration::from_secs(60);
 pub const GH_TIMEOUT: Duration = Duration::from_secs(20);
 pub const BACKOFF: Duration = Duration::from_secs(300);
 
-pub const QUERY: &str = r#"query { mine: search(query: "repo:reubinars/waifu-assistance repo:reubinars/dynamic-island is:pr is:open author:@me archived:false sort:updated-desc", type: ISSUE, first: 30) { nodes { ...pr } } review: search(query: "repo:reubinars/waifu-assistance repo:reubinars/dynamic-island is:pr is:open review-requested:@me archived:false sort:updated-desc", type: ISSUE, first: 30) { nodes { ...pr } } } fragment pr on PullRequest { number title url isDraft updatedAt reviewDecision repository { nameWithOwner } commits(last: 1) { nodes { commit { statusCheckRollup { state } } } } }"#;
+pub const QUERY: &str = r#"query { mine: search(query: "is:pr is:open author:@me archived:false sort:updated-desc", type: ISSUE, first: 30) { nodes { ...pr } } review: search(query: "is:pr is:open review-requested:@me archived:false sort:updated-desc", type: ISSUE, first: 30) { nodes { ...pr } } } fragment pr on PullRequest { number title url isDraft updatedAt reviewDecision repository { nameWithOwner } commits(last: 1) { nodes { commit { statusCheckRollup { state } } } } }"#;
 
 /// The `gh` to run: `ISLAND_GH` when set (a test hook), else `gh`.
 pub fn program() -> OsString {
