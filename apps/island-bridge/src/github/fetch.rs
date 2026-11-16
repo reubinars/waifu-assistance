@@ -148,6 +148,7 @@ pub(super) mod tests {
         let lines: Vec<&str> = out.lines().collect();
         assert_eq!(lines, ["api", "graphql", "-f", &format!("query={QUERY}")]);
         assert_eq!(QUERY.matches("archived:false sort:updated-desc\"").count(), 2);
+        assert_eq!(QUERY.matches("\"repo:reubinars/waifu-assistance repo:reubinars/dynamic-island is:pr is:open ").count(), 2);
     }
 
     #[test]
