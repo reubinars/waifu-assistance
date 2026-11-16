@@ -23,6 +23,7 @@ pub struct Rect {
 pub mod anim;
 pub mod agents;
 pub mod approvals;
+pub mod collapsed;
 pub mod color;
 pub mod config;
 pub mod github;
