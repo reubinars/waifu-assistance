@@ -6,8 +6,22 @@ use crate::herdr::{self, Incoming};
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::Instant;
 
+/// How far the island's link to herdr reaches; the Agents tab says which part is missing.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Link {
+    /// Nothing heard from the bridge yet.
+    #[default]
+    Starting,
+    /// The bridge isn't running (WSL unavailable, or it exited and is being restarted).
+    NoBridge,
+    /// The bridge runs but can't reach herdr's socket.
+    NoHerdr,
+    Up,
+}
+
 #[derive(Default)]
 pub struct HerdrSession {
+    pub link: Link,
     pub agents: AgentTable,
     pub approvals: ApprovalQueue,
     /// The bridge's hook status snapshot. Kept across reconnects: the bridge re-sends it.
@@ -67,12 +81,14 @@ impl HerdrSession {
     pub fn handle(&mut self, msg: Incoming, now: Instant) -> Vec<String> {
         match msg {
             Incoming::Bridge { connected: true } => {
+                self.link = Link::Up;
                 self.reset();
                 let sub = self.subscribe_all();
                 let id = self.next_id();
                 vec![sub, herdr::req_agent_list(&id)]
             }
             Incoming::Bridge { connected: false } => {
+                self.link = Link::NoHerdr;
                 self.reset();
                 vec![]
             }
@@ -134,6 +150,7 @@ impl HerdrSession {
 
     /// The bridge process exited: its hook connections are gone, so the approvals are too.
     pub fn bridge_down(&mut self) {
+        self.link = Link::NoBridge;
         self.reset();
         self.approvals.clear();
         if let Some(g) = &mut self.github {
@@ -266,6 +283,20 @@ mod tests {
     }
 
     #[test]
+    fn link_follows_bridge_and_herdr() {
+        let mut s = HerdrSession::default();
+        assert_eq!(s.link, Link::Starting);
+        s.handle(Incoming::Bridge { connected: false }, now());
+        assert_eq!(s.link, Link::NoHerdr);
+        s.handle(Incoming::Bridge { connected: true }, now());
+        assert_eq!(s.link, Link::Up);
+        s.bridge_down();
+        assert_eq!(s.link, Link::NoBridge);
+        s.handle(Incoming::Bridge { connected: true }, now());
+        assert_eq!(s.link, Link::Up);
+    }
+
+    #[test]
     fn bridge_down_clears_requests() {
         let mut s = HerdrSession::default();
         s.handle(list(&["w1:p1"]), now());
@@ -275,6 +306,7 @@ mod tests {
             summary: "Wants to edit 1 file".into(),
             detail: None,
             can_always: true,
+            scope: Default::default(),
         };
         s.handle(Incoming::Approval { id: "a1".into(), pane_id: "w1:p1".into(), req, timeout_ms: 45000 }, now());
         let shown = s.approvals.pending(&s.agents, &s.hooks);
@@ -294,6 +326,7 @@ mod tests {
             summary: "s".into(),
             detail: None,
             can_always: true,
+            scope: Default::default(),
         };
         s.handle(Incoming::Approval { id: "a1".into(), pane_id: "w1:p1".into(), req, timeout_ms: 45000 }, now());
         s.handle(Incoming::Bridge { connected: false }, now());
@@ -311,6 +344,7 @@ mod tests {
             summary: "s".into(),
             detail: None,
             can_always: true,
+            scope: Default::default(),
         };
         s.handle(Incoming::AgentList { id: "island:1".into(), agents: vec![info("dead", Blocked)] }, now());
         s.approvals.question("dead".into(), "Which?".into());

@@ -3,6 +3,7 @@
 
 use crate::log;
 use island_core::Rect;
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::mem::ManuallyDrop;
 use windows::Win32::Foundation::E_INVALIDARG;
@@ -16,10 +17,11 @@ use windows::Win32::Graphics::Direct2D::{
     D2D1_BITMAP_OPTIONS_NONE, D2D1_BITMAP_OPTIONS_TARGET, D2D1_BITMAP_PROPERTIES1, D2D1_CAP_STYLE_ROUND,
     D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT, D2D1_ELLIPSE, D2D1_INTERPOLATION_MODE_LINEAR,
     D2D1_INTERPOLATION_MODE_NEAREST_NEIGHBOR, D2D1_LAYER_OPTIONS1_NONE, D2D1_LAYER_PARAMETERS1, D2D1_LINE_JOIN_ROUND,
-    D2D1_PROPERTY_TYPE_FLOAT, D2D1_PROPERTY_TYPE_VECTOR4, D2D1_ROUNDED_RECT, D2D1_SHADOW_PROP_BLUR_STANDARD_DEVIATION,
-    D2D1_SHADOW_PROP_COLOR, D2D1_STROKE_STYLE_PROPERTIES1, D2D1_SWEEP_DIRECTION_CLOCKWISE,
-    D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE, ID2D1Bitmap1, ID2D1BitmapBrush1, ID2D1DeviceContext, ID2D1Effect,
-    ID2D1Factory1, ID2D1Geometry, ID2D1Image, ID2D1PathGeometry1, ID2D1SolidColorBrush, ID2D1StrokeStyle1,
+    D2D1_PRIMITIVE_BLEND_MAX, D2D1_PRIMITIVE_BLEND_SOURCE_OVER, D2D1_PROPERTY_TYPE_FLOAT, D2D1_PROPERTY_TYPE_VECTOR4,
+    D2D1_ROUNDED_RECT, D2D1_SHADOW_PROP_BLUR_STANDARD_DEVIATION, D2D1_SHADOW_PROP_COLOR, D2D1_STROKE_STYLE_PROPERTIES1,
+    D2D1_SWEEP_DIRECTION_CLOCKWISE, D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE, ID2D1Bitmap1, ID2D1BitmapBrush1,
+    ID2D1DeviceContext, ID2D1Effect, ID2D1Factory1, ID2D1Geometry, ID2D1Image, ID2D1PathGeometry1,
+    ID2D1SolidColorBrush, ID2D1StrokeStyle1,
 };
 use windows::Win32::Graphics::DirectWrite::{
     DWRITE_FACTORY_TYPE_SHARED, DWRITE_FONT_FEATURE, DWRITE_FONT_FEATURE_TAG_TABULAR_FIGURES,
@@ -71,10 +73,11 @@ impl Color {
     }
 }
 
-/// CSS `rgba(...)` text colours (§6.4).
+/// Text colours. Tertiary is the dimmest that still reads at 11 px: 5.3:1 on the black island and
+/// on a 6 % white card; secondary sits a clear step above it.
 pub const TEXT_PRIMARY: Color = Color::rgba(0xf5, 0xf5, 0xf7, 1.0);
-pub const TEXT_SECONDARY: Color = Color::white(0.60);
-pub const TEXT_TERTIARY: Color = Color::white(0.35);
+pub const TEXT_SECONDARY: Color = Color::white(0.70);
+pub const TEXT_TERTIARY: Color = Color::white(0.50);
 
 #[derive(Clone, Copy)]
 pub enum Align {
@@ -127,6 +130,8 @@ pub struct Painter {
     /// Shadow effects; one per shadow drawn this frame, reused across frames.
     shadows: Vec<ID2D1Effect>,
     shadows_used: usize,
+    /// Polygons built once and redrawn through a transform (`polygon_cached`).
+    shapes: RefCell<HashMap<&'static str, ID2D1Geometry>>,
 }
 
 impl Painter {
@@ -164,6 +169,7 @@ impl Painter {
                 formats: HashMap::new(),
                 shadows: Vec::new(),
                 shadows_used: 0,
+                shapes: RefCell::new(HashMap::new()),
             })
         }
     }
@@ -339,7 +345,38 @@ impl Painter {
 
     /// A filled polygon through `pts`.
     pub fn polygon(&self, pts: &[(f32, f32)], c: Color) -> Result<()> {
-        let Some((&(x0, y0), rest)) = pts.split_first() else { return Ok(()) };
+        let Some(path) = self.polygon_geometry(pts)? else { return Ok(()) };
+        unsafe { self.dc.FillGeometry(&path, self.brush(c), None) };
+        Ok(())
+    }
+
+    /// A filled polygon built once, under `key`, from `pts` in its own coordinates, then drawn
+    /// through `m` on top of the current transform: for shapes that only move, turn or scale.
+    pub fn polygon_cached(
+        &self,
+        key: &'static str,
+        pts: impl FnOnce() -> Vec<(f32, f32)>,
+        m: Matrix3x2,
+        c: Color,
+    ) -> Result<()> {
+        let cached = self.shapes.borrow().get(key).cloned();
+        let geometry = match cached {
+            Some(g) => g,
+            None => {
+                let Some(g) = self.polygon_geometry(&pts())? else { return Ok(()) };
+                let g: ID2D1Geometry = g.cast()?;
+                self.shapes.borrow_mut().insert(key, g.clone());
+                g
+            }
+        };
+        let restore = self.then(m);
+        unsafe { self.dc.FillGeometry(&geometry, self.brush(c), None) };
+        self.set_transform(restore);
+        Ok(())
+    }
+
+    fn polygon_geometry(&self, pts: &[(f32, f32)]) -> Result<Option<ID2D1PathGeometry1>> {
+        let Some((&(x0, y0), rest)) = pts.split_first() else { return Ok(None) };
         unsafe {
             let path: ID2D1PathGeometry1 = self.factory.CreatePathGeometry()?;
             let sink = path.Open()?;
@@ -349,9 +386,15 @@ impl Painter {
             }
             sink.EndFigure(D2D1_FIGURE_END_CLOSED);
             sink.Close()?;
-            self.dc.FillGeometry(&path, self.brush(c), None);
+            Ok(Some(path))
         }
-        Ok(())
+    }
+
+    /// While `on`, each pixel drawn keeps the larger of old and new per channel instead of
+    /// blending over: shapes of one colour then overlap without the overlap getting brighter.
+    pub fn blend_max(&self, on: bool) {
+        let mode = if on { D2D1_PRIMITIVE_BLEND_MAX } else { D2D1_PRIMITIVE_BLEND_SOURCE_OVER };
+        unsafe { self.dc.SetPrimitiveBlend(mode) }
     }
 
     pub fn round_rect(&self, r: Rect, radius: f32, c: Color) {
@@ -469,6 +512,14 @@ impl Painter {
             let _ = l.GetMetrics(&mut m);
         }
         m.width
+    }
+
+    /// How far to move a layout so its ink, not its line box, is centred in the layout box:
+    /// for a short label (a digit in a badge) that has to sit optically centred.
+    pub fn ink_centring(l: &IDWriteTextLayout) -> (f32, f32) {
+        let Ok(o) = (unsafe { l.GetOverhangMetrics() }) else { return (0.0, 0.0) };
+        // overhangs are how far the ink sticks out past each edge of the box (negative: inside)
+        ((o.left - o.right) / 2.0, (o.top - o.bottom) / 2.0)
     }
 
     pub fn draw_layout(&self, l: &IDWriteTextLayout, x: f32, y: f32, c: Color) {

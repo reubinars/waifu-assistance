@@ -1,7 +1,7 @@
 //! Claude Code hooks: PermissionRequest for approvals, PreToolUse for AskUserQuestion.
 
 use super::{HookInput, MAX_TOOL_CHARS, cap, cap_to, lines, rel, sanitize, trim_command};
-use crate::approvals::{ApprovalRequest, Decision, Detail, FileChange};
+use crate::approvals::{AlwaysScope, ApprovalRequest, Decision, Detail, FileChange};
 use serde_json::{Value, json};
 
 /// Inputs `parse` drops on purpose: Claude's permission event for AskUserQuestion (ruling R12).
@@ -41,6 +41,22 @@ fn suggestions(input: &Value) -> Option<&Value> {
     input.get("permission_suggestions").filter(|s| s.as_array().is_some_and(|a| !a.is_empty()))
 }
 
+/// Accept-edits mode if any suggestion switches to it; otherwise session-only when every rule stays in the session.
+fn always_scope(suggestions: &Value) -> AlwaysScope {
+    let list = suggestions.as_array().map(Vec::as_slice).unwrap_or_default();
+    let field = |s: &Value, k: &str| s.get(k).and_then(Value::as_str).map(str::to_owned);
+    if list
+        .iter()
+        .any(|s| field(s, "type").as_deref() == Some("setMode") && field(s, "mode").as_deref() == Some("acceptEdits"))
+    {
+        AlwaysScope::AcceptEdits
+    } else if list.iter().all(|s| field(s, "destination").as_deref() == Some("session")) {
+        AlwaysScope::Session
+    } else {
+        AlwaysScope::Saved
+    }
+}
+
 fn question(input: &Value) -> Option<String> {
     let questions = input.pointer("/tool_input/questions")?.as_array()?;
     let first = cap(&sanitize(questions.first()?.get("question")?.as_str()?, false));
@@ -52,9 +68,10 @@ fn approval(input: &Value, tool: &str) -> Option<ApprovalRequest> {
     let ti = input.get("tool_input").unwrap_or(&Value::Null);
     let cwd = input.get("cwd").and_then(Value::as_str);
     let can_always = suggestions(input).is_some();
+    let scope = suggestions(input).map(always_scope).unwrap_or_default();
     let tool = cap_to(&sanitize(tool, false), MAX_TOOL_CHARS);
     let (summary, detail) = detail(&tool, ti, cwd).unwrap_or_else(|| (format!("Wants to use {tool}"), None));
-    Some(ApprovalRequest { agent: "claude".to_owned(), tool, summary, detail, can_always })
+    Some(ApprovalRequest { agent: "claude".to_owned(), tool, summary, detail, can_always, scope })
 }
 
 /// The summary and detail for a tool whose required input fields are all present. None falls back to the generic line.
@@ -88,7 +105,7 @@ fn detail(tool: &str, ti: &Value, cwd: Option<&str>) -> Option<(String, Option<D
 #[cfg(test)]
 mod tests {
     use super::super::{Agent, HookInput, is_ignored, output, parse, trim_command};
-    use crate::approvals::{Decision, Detail, FileChange};
+    use crate::approvals::{AlwaysScope, Decision, Detail, FileChange};
     use serde_json::{Value, json};
 
     fn fx(name: &str) -> Value {
@@ -246,6 +263,15 @@ mod tests {
         // unknown input is unparseable, not ignored
         assert!(!is_ignored(Agent::Claude, &fx("claude_other_event")));
         assert_eq!(parse(Agent::Claude, &fx("claude_other_event")), None);
+    }
+
+    #[test]
+    fn always_scope_names_what_is_granted() {
+        assert_eq!(approval_of(&fx("claude_edit")).scope, AlwaysScope::AcceptEdits);
+        assert_eq!(approval_of(&fx("claude_write")).scope, AlwaysScope::AcceptEdits);
+        assert_eq!(approval_of(&fx("claude_read")).scope, AlwaysScope::Session);
+        assert_eq!(approval_of(&fx("claude_bash")).scope, AlwaysScope::Session);
+        assert_eq!(approval_of(&fx("claude_webfetch")).scope, AlwaysScope::Saved);
     }
 
     #[test]

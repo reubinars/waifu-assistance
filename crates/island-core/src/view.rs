@@ -1,8 +1,9 @@
 //! What the island shows, where it sits, and what a click hit.
 
 use crate::agents::AgentTable;
-use crate::approvals::{ApprovalRequest, Detail, Pending, PendingKind, Request};
+use crate::approvals::{AlwaysScope, ApprovalRequest, Detail, Pending, PendingKind, Request};
 use crate::herdr::AgentStatus;
+use crate::session::Link;
 use crate::{Point, Rect, Size};
 use serde::{Deserialize, Serialize};
 use std::time::Instant;
@@ -285,10 +286,44 @@ pub fn fullscreen_jump_target(agents: &AgentTable) -> Option<String> {
 /// The status word shown on an agent card; `Unknown` reads as `idle`.
 pub fn status_word(s: AgentStatus) -> &'static str {
     match s {
-        AgentStatus::Blocked => "blocked",
-        AgentStatus::Done => "done",
-        AgentStatus::Working => "working",
-        AgentStatus::Idle | AgentStatus::Unknown => "idle",
+        AgentStatus::Blocked => "Blocked",
+        AgentStatus::Done => "Done",
+        AgentStatus::Working => "Working",
+        AgentStatus::Idle | AgentStatus::Unknown => "Idle",
+    }
+}
+
+/// The Agents tab's header line, left of the tabs: what needs you (drawn in the attention colour),
+/// then what is running. At most two parts, so it fits beside three tabs. None with no agents.
+pub fn agents_summary(agents: &AgentTable, requests: u8) -> Option<(String, String)> {
+    let needs = agents.count(AgentStatus::Blocked).max(requests as usize);
+    let working = agents.count(AgentStatus::Working);
+    let done = agents.count(AgentStatus::Done);
+    let idle = agents.count(AgentStatus::Idle) + agents.count(AgentStatus::Unknown);
+    if needs + working + done + idle == 0 {
+        return None;
+    }
+    let urgent = match needs {
+        0 => String::new(),
+        1 => "1 needs you".to_owned(),
+        n => format!("{n} need you"),
+    };
+    let rest: Vec<String> = [(working, "working"), (done, "done"), (idle, "idle")]
+        .into_iter()
+        .filter(|&(n, _)| n > 0)
+        .take(if needs > 0 { 1 } else { 2 })
+        .map(|(n, w)| format!("{n} {w}"))
+        .collect();
+    Some((urgent, rest.join(" \u{b7} ")))
+}
+
+/// The Agents tab with no cards: what is (or isn't) connected, and what to do about it.
+pub fn no_agents_text(link: Link) -> (&'static str, &'static str) {
+    match link {
+        Link::Starting => ("Connecting to herdr\u{2026}", "Starting the WSL bridge"),
+        Link::NoBridge => ("Can't reach WSL", "The bridge restarts on its own once WSL is up"),
+        Link::NoHerdr => ("herdr isn't running", "Start herdr in WSL to see your agents"),
+        Link::Up => ("No agents running", "Agents you start in herdr show up here"),
     }
 }
 
@@ -333,9 +368,14 @@ pub mod layout {
     pub const ROW_STEP: f32 = 50.0;
     pub const ROW_W: f32 = 344.0;
     pub const ROW_H: f32 = 44.0;
-    pub const ROW_RADIUS: f32 = 12.0;
+    /// Nested inside the island's 32 px corners: 8 px in from the sides wants 24, 12 px up from the
+    /// bottom wants 20; 20 keeps the bottom row's corners parallel with the island's and the side
+    /// gap close to even.
+    pub const ROW_RADIUS: f32 = 20.0;
     pub const LIST: Rect = Rect { x: 0.0, y: ROW_Y, w: super::EXPANDED.w, h: ROW_STEP * (MAX_ROWS - 1) as f32 + ROW_H };
-    pub const USAGE: Rect = Rect { x: 8.0, y: 194.0, w: 344.0, h: 18.0 };
+    /// Inset to the rows' text column on the left and mirrored on the right, so the strip's ends
+    /// stay clear of the island's rounded bottom corners.
+    pub const USAGE: Rect = Rect { x: 20.0, y: 194.0, w: 320.0, h: 18.0 };
     pub const ART: Rect = Rect { x: 16.0, y: 16.0, w: 70.0, h: 70.0 };
     pub const TITLE: Rect = Rect { x: 98.0, y: 34.0, w: 200.0, h: 18.0 };
     pub const ARTIST: Rect = Rect { x: 98.0, y: 54.0, w: 246.0, h: 16.0 };
@@ -378,9 +418,10 @@ pub mod layout {
     /// A card's buttons, left group then right group, laid out inside `band`.
     pub fn buttons(kind: &CardKind, band: Rect) -> Vec<(Action, Rect)> {
         let (left, right): (Vec<Action>, Vec<Action>) = match kind {
+            // "always" sits with Deny, away from Allow, so a quick tap on the right never grants a standing rule
             CardKind::Approval { can_always, .. } => (
-                vec![Action::Deny, Action::OpenTerminal],
-                if *can_always { vec![Action::Always, Action::Allow] } else { vec![Action::Allow] },
+                if *can_always { vec![Action::Deny, Action::Always] } else { vec![Action::Deny] },
+                vec![Action::OpenTerminal, Action::Allow],
             ),
             CardKind::Question => (vec![Action::Later], vec![Action::OpenTerminal]),
             CardKind::NeedsYou { .. } => (vec![Action::OpenTerminal], vec![]),
@@ -418,7 +459,7 @@ pub enum Action {
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum CardKind {
-    Approval { id: String, can_always: bool },
+    Approval { id: String, can_always: bool, scope: AlwaysScope },
     Question,
     NeedsYou { hook_missing: bool },
     Agent,
@@ -462,7 +503,9 @@ pub fn cards(pending: &[Pending], agents: &AgentTable) -> Vec<Card> {
             continue;
         }
         let kind = match &p.kind {
-            PendingKind::Approval(r) => CardKind::Approval { id: r.id.clone(), can_always: r.req.can_always },
+            PendingKind::Approval(r) => {
+                CardKind::Approval { id: r.id.clone(), can_always: r.req.can_always, scope: r.req.scope }
+            }
             PendingKind::Question(_) => CardKind::Question,
             PendingKind::NeedsYou { hook_missing } => CardKind::NeedsYou { hook_missing: *hook_missing },
         };
@@ -546,6 +589,11 @@ pub fn countdown_fraction(expires: Instant, now: Instant, timeout_ms: u64) -> f3
     }
     let left = expires.saturating_duration_since(now).as_secs_f32();
     (left / (timeout_ms as f32 / 1000.0)).clamp(0.0, 1.0)
+}
+
+/// Whole seconds left before the agent stops waiting, rounded up, for the countdown's label.
+pub fn countdown_secs(expires: Instant, now: Instant) -> u64 {
+    expires.saturating_duration_since(now).as_secs_f64().ceil() as u64
 }
 
 /// How long after the popup shows a request its buttons ignore presses, so a double-click meant
@@ -697,8 +745,9 @@ mod tests {
             summary: "s".into(),
             detail: None,
             can_always: true,
+            scope: Default::default(),
         };
-        let kind = CardKind::Approval { id: "a".into(), can_always: true };
+        let kind = CardKind::Approval { id: "a".into(), can_always: true, scope: AlwaysScope::Saved };
         for band in [popup_layout(&a).band, layout::card_band(layout::card_rect(0, 2))] {
             let mut bs = layout::buttons(&kind, band);
             assert_eq!(bs.len(), 4);
@@ -1168,7 +1217,7 @@ mod tests {
     }
 
     fn approval(can_always: bool) -> CardKind {
-        CardKind::Approval { id: "a".into(), can_always }
+        CardKind::Approval { id: "a".into(), can_always, scope: AlwaysScope::Saved }
     }
 
     #[test]
@@ -1200,11 +1249,15 @@ mod tests {
         let band = rect(36.0, 102.0, 308.0, 28.0);
         let b = layout::buttons(&approval(true), band);
         let names: Vec<_> = b.iter().map(|(a, _)| *a).collect();
-        assert_eq!(names, [Action::Deny, Action::OpenTerminal, Action::Always, Action::Allow]);
+        assert_eq!(names, [Action::Deny, Action::Always, Action::OpenTerminal, Action::Allow]);
         assert_eq!(b[3].1.x + b[3].1.w, 344.0);
-        assert_eq!((b[0].1.x, b[0].1.w, b[1].1.x), (36.0, 48.0, 90.0));
-        assert_eq!((b[2].1.x, b[2].1.w, b[3].1.x), (200.0, 84.0, 290.0));
-        assert!(layout::buttons(&approval(false), band).iter().all(|(a, _)| *a != Action::Always));
+        assert_eq!((b[0].1.x, b[0].1.w, b[1].1.x, b[1].1.w), (36.0, 48.0, 90.0, 84.0));
+        assert_eq!((b[2].1.x, b[3].1.x), (196.0, 290.0));
+        // Always is kept apart from Allow by more than a button gap
+        assert!(b[2].1.x - (b[1].1.x + b[1].1.w) > 12.0);
+        let plain = layout::buttons(&approval(false), band);
+        assert!(plain.iter().all(|(a, _)| *a != Action::Always));
+        assert_eq!(plain[1].1, b[2].1, "Open terminal and Allow stay put without Always");
         assert_eq!(layout::buttons(&CardKind::NeedsYou { hook_missing: false }, band).len(), 1);
         let q = layout::buttons(&CardKind::Question, band);
         assert_eq!(q.iter().map(|(a, _)| *a).collect::<Vec<_>>(), [Action::Later, Action::OpenTerminal]);
@@ -1254,7 +1307,7 @@ mod tests {
         assert_eq!(hit(CardKind::Agent, centre(n[0].1)), Some(ExpandedHit::Row(0)));
         // an approval without Always: where Always would sit is the card body
         let card = layout::card_rect(0, 2);
-        let always = layout::buttons(&approval(true), layout::card_band(card))[2].1;
+        let always = layout::buttons(&approval(true), layout::card_band(card))[1].1;
         let p = centre(always);
         assert_eq!(
             hit_expanded(Tab::Agents, false, &[approval(true)], 0, false, false, None, p),
@@ -1274,6 +1327,7 @@ mod tests {
             summary: "s".into(),
             detail,
             can_always: true,
+            scope: Default::default(),
         };
         let file = |n| (0..n).map(|i| FileChange { path: format!("f{i}"), added: 1, removed: 0 }).collect();
         assert_eq!(popup_layout(&req(None)).size, Size { w: 360.0, h: 122.0 });
@@ -1293,7 +1347,10 @@ mod tests {
 
     #[test]
     fn card_identity_follows_the_request() {
-        let a = |id: &str| Card { pane_id: "p1".into(), kind: CardKind::Approval { id: id.into(), can_always: false } };
+        let a = |id: &str| Card {
+            pane_id: "p1".into(),
+            kind: CardKind::Approval { id: id.into(), can_always: false, scope: AlwaysScope::Saved },
+        };
         assert_ne!(card_identity(&a("a1")), card_identity(&a("a2")));
         assert_eq!(card_identity(&a("a1")), card_identity(&a("a1")));
         let q = Card { pane_id: "p1".into(), kind: CardKind::Question };
@@ -1334,6 +1391,7 @@ mod tests {
             summary: "s".into(),
             detail: None,
             can_always: false,
+            scope: Default::default(),
         };
         let pending = [
             Pending {
@@ -1354,7 +1412,7 @@ mod tests {
         assert_eq!(
             got,
             [
-                ("w1:p2", CardKind::Approval { id: "r1".into(), can_always: false }, 2),
+                ("w1:p2", CardKind::Approval { id: "r1".into(), can_always: false, scope: AlwaysScope::Saved }, 2),
                 ("w1:p9", CardKind::NeedsYou { hook_missing: true }, 1),
                 ("w1:p1", CardKind::Agent, 1),
             ]
@@ -1363,11 +1421,45 @@ mod tests {
 
     #[test]
     fn status_words() {
-        assert_eq!(status_word(Blocked), "blocked");
-        assert_eq!(status_word(Done), "done");
-        assert_eq!(status_word(Working), "working");
-        assert_eq!(status_word(Idle), "idle");
-        assert_eq!(status_word(Unknown), "idle");
+        assert_eq!(status_word(Blocked), "Blocked");
+        assert_eq!(status_word(Done), "Done");
+        assert_eq!(status_word(Working), "Working");
+        assert_eq!(status_word(Idle), "Idle");
+        assert_eq!(status_word(Unknown), "Idle");
+    }
+
+    #[test]
+    fn agents_summary_leads_with_what_needs_you() {
+        let t = |s: &[(&str, AgentStatus)]| {
+            let mut a = AgentTable::default();
+            a.replace_all(s.iter().map(|(id, st)| test_info(id, *st)).collect(), Instant::now());
+            a
+        };
+        assert_eq!(agents_summary(&t(&[]), 0), None);
+        let s = |u: &str, r: &str| Some((u.to_owned(), r.to_owned()));
+        assert_eq!(agents_summary(&t(&[("a", Working), ("b", Idle)]), 0), s("", "1 working \u{b7} 1 idle"));
+        assert_eq!(
+            agents_summary(&t(&[("a", Blocked), ("b", Working), ("c", Done)]), 0),
+            s("1 needs you", "1 working")
+        );
+        assert_eq!(agents_summary(&t(&[("a", Working), ("b", Working)]), 2), s("2 need you", "2 working"));
+        assert_eq!(agents_summary(&t(&[("a", Done), ("b", Done)]), 0), s("", "2 done"));
+    }
+
+    #[test]
+    fn no_agents_text_names_the_missing_link() {
+        assert_eq!(no_agents_text(Link::Up).0, "No agents running");
+        assert_eq!(no_agents_text(Link::NoHerdr).0, "herdr isn't running");
+        assert_eq!(no_agents_text(Link::NoBridge).0, "Can't reach WSL");
+        assert!(no_agents_text(Link::Starting).0.starts_with("Connecting"));
+    }
+
+    #[test]
+    fn countdown_secs_round_up() {
+        let now = Instant::now();
+        assert_eq!(countdown_secs(now + Duration::from_millis(12_100), now), 13);
+        assert_eq!(countdown_secs(now + Duration::from_secs(5), now), 5);
+        assert_eq!(countdown_secs(now, now + Duration::from_secs(1)), 0);
     }
 
     #[test]
@@ -1530,6 +1622,7 @@ mod tests {
                 summary: "s".into(),
                 detail: None,
                 can_always: false,
+                scope: Default::default(),
             },
             expires: t0,
             timeout_ms: 45_000,
@@ -1596,6 +1689,7 @@ mod tests {
                 (0..9).map(|i| FileChange { path: format!("f{i}"), added: 1, removed: 1 }).collect(),
             )),
             can_always: true,
+            scope: Default::default(),
         };
         let size = popup_layout(&req).size;
         assert!(size.w <= EXPANDED.w && size.h <= EXPANDED_USAGE.h);

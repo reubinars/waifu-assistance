@@ -36,6 +36,22 @@ pub struct ApprovalRequest {
     pub summary: String,
     pub detail: Option<Detail>,
     pub can_always: bool,
+    /// What "always" would grant; absent from older bridges, which read as a saved rule.
+    #[serde(default)]
+    pub scope: AlwaysScope,
+}
+
+/// What the agent's offered "always allow" actually grants, so the button can say so.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AlwaysScope {
+    /// A rule saved to the agent's settings: it outlives this session.
+    #[default]
+    Saved,
+    /// A rule that lasts until the agent session ends.
+    Session,
+    /// Switches the session to accepting file edits without asking.
+    AcceptEdits,
 }
 
 /// An approval the island is showing, and when the agent stops waiting for it.
@@ -225,6 +241,7 @@ mod tests {
             summary: "s".into(),
             detail: None,
             can_always: true,
+            scope: Default::default(),
         }
     }
 

@@ -128,6 +128,7 @@ fn script(tx: UiSender) {
                     FileChange { path: "src/lib.rs".into(), added: 1, removed: 0 },
                 ])),
                 can_always: true,
+                scope: island_core::approvals::AlwaysScope::AcceptEdits,
             },
             timeout_ms: 45_000,
         }));
@@ -141,6 +142,7 @@ fn script(tx: UiSender) {
                 summary: "Run a command".into(),
                 detail: Some(Detail::Command("cargo test -p island-core".into())),
                 can_always: false,
+                scope: Default::default(),
             },
             timeout_ms: 45_000,
         }));

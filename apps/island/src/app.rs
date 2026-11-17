@@ -29,10 +29,10 @@ use island_core::usage::{CliUsage, strip_runs};
 use island_core::view::layout::{self, SEEK};
 use island_core::view::{
     Action, COLLAPSED, Card, CardKind, Collapsed, DisplayMode, Dot, ExpandedHit, POP, PopupExit, Shown, Spot, Tab,
-    block_rect, block_size, card_identity, card_press_guarded, cards, choose_collapsed, clock_label, corner_radii,
-    countdown_fraction, detail_line, expanded_size, fullscreen_jump_target, hit_expanded, hit_popup, is_drag,
-    island_rect, jump_target, max_scroll, pet_cell, popup_exit, popup_layout, popup_press_guarded, popup_request,
-    scroll_by, second_pet_cell, shown, spot_at,
+    agents_summary, block_rect, block_size, card_identity, card_press_guarded, cards, choose_collapsed, clock_label,
+    corner_radii, countdown_fraction, countdown_secs, detail_line, expanded_size, fullscreen_jump_target, hit_expanded,
+    hit_popup, is_drag, island_rect, jump_target, max_scroll, no_agents_text, pet_cell, popup_exit, popup_layout,
+    popup_press_guarded, popup_request, scroll_by, second_pet_cell, shown, spot_at,
 };
 use island_core::{Point, Rect, Size};
 use std::cell::Cell;
@@ -40,7 +40,10 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use windows::Win32::Foundation::{D2DERR_RECREATE_TARGET, HANDLE, POINT};
 use windows::Win32::Graphics::Direct2D::ID2D1Bitmap1;
 use windows::Win32::Graphics::Dxgi::{DXGI_ERROR_DEVICE_HUNG, DXGI_ERROR_DEVICE_REMOVED, DXGI_ERROR_DEVICE_RESET};
-use windows::Win32::UI::WindowsAndMessaging::{GetCursorPos, KillTimer, PostQuitMessage, SetTimer};
+use windows::Win32::UI::WindowsAndMessaging::{
+    GetCursorPos, KillTimer, PostQuitMessage, SPI_GETCLIENTAREAANIMATION, SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS,
+    SetTimer, SystemParametersInfoW,
+};
 use windows::core::{Error, Result};
 
 const COLLAPSED_RADIUS: f32 = 16.0;
@@ -167,6 +170,8 @@ pub struct App {
     /// Whether the ticker was running last frame: the first running frame after a pause must
     /// not advance by the time spent paused.
     ticker_was_running: bool,
+    /// Windows' "Show animations" is off: no looping motion (collapsed dot loops, ticker scroll).
+    calm: bool,
     /// The GitHub event popped open on the collapsed island, if any.
     gh_pop: PopSlot,
     /// The last pop shown, kept so it can fade out after it closes.
@@ -236,11 +241,24 @@ impl App {
             ticker: Ticker::default(),
             ticker_t: 0.0,
             ticker_was_running: false,
+            calm: false,
             gh_pop: PopSlot::default(),
             pop_drawn: None,
         };
         app.win.place(app.mode(), app.spot(), app.pets());
+        app.sync_calm(Instant::now());
         app
+    }
+
+    /// Follows Windows' "Show animations" setting (read at start-up and on every setting change).
+    fn sync_calm(&mut self, now: Instant) {
+        let calm = !animations_on();
+        if calm != self.calm {
+            log::info!("windows animations {}", if calm { "off" } else { "on" });
+            self.calm = calm;
+            self.dirty = true;
+        }
+        self.anim.morph.set_calm(calm, self.secs(now));
     }
 
     pub fn start_sources(&mut self, tx: UiSender) {
@@ -360,6 +378,7 @@ impl App {
             Event::Timer(TIMER_POP) => self.kill_timer(TIMER_POP),
             Event::Timer(_) => {}
             Event::Reposition => {
+                self.sync_calm(now);
                 self.reposition();
                 fullscreen::check(self.win.visual);
             }
@@ -577,7 +596,7 @@ impl App {
     }
 
     fn approval_kind(r: &Request) -> CardKind {
-        CardKind::Approval { id: r.id.clone(), can_always: r.req.can_always }
+        CardKind::Approval { id: r.id.clone(), can_always: r.req.can_always, scope: r.req.scope }
     }
 
     /// The card a hit index means: the popup's request while it shows, else the Agents tab's card.
@@ -876,7 +895,9 @@ impl App {
                 match (action, card.kind) {
                     (Action::Allow, CardKind::Approval { id, .. }) => self.decide(&id, Decision::Allow),
                     (Action::Deny, CardKind::Approval { id, .. }) => self.decide(&id, Decision::Deny),
-                    (Action::Always, CardKind::Approval { id, can_always: true }) => self.decide(&id, Decision::Always),
+                    (Action::Always, CardKind::Approval { id, can_always: true, .. }) => {
+                        self.decide(&id, Decision::Always)
+                    }
                     (Action::OpenTerminal, kind) => {
                         if let CardKind::Approval { id, .. } = kind {
                             self.decide(&id, Decision::None);
@@ -1094,6 +1115,7 @@ impl App {
     /// Whether the usage strip is auto-scrolling: shown, wider than its strip, and not hovered.
     fn ticker_running(&self) -> bool {
         self.anim.face == Face::Expanded(Tab::Agents)
+            && !self.calm
             && !self.popup
             && !self.usage.is_empty()
             && self.ticker.scrolls()
@@ -1297,6 +1319,7 @@ impl App {
                     layout: popup_layout(&r.req),
                     kind: Self::approval_kind(r),
                     fraction: countdown_fraction(r.expires, now, r.timeout_ms),
+                    secs: countdown_secs(r.expires, now),
                 }
             });
         let slots = self.list_rows();
@@ -1321,6 +1344,8 @@ impl App {
             usage: strip_runs(&self.usage, now_unix()),
             ticker_offset: self.ticker.offset(),
             usage_width: Cell::new(0.0),
+            no_agents: no_agents_text(self.session.link),
+            summary: agents_summary(&self.session.agents, self.badge()),
         };
         let pet = self.pet_sheet.as_ref().zip(self.pet_bmps.as_ref()).map(|((sheet, _), bmps)| Sprite {
             bmp: &bmps.solo,
@@ -1493,7 +1518,20 @@ fn draw_backdrop(p: &mut Painter, b: &Backdrop) -> Result<()> {
     Ok(())
 }
 
-/// The collapsed arc's colour: the album-art tint brightened for the black dot, else white.
+/// Windows' "Show animations" (Settings > Accessibility > Visual effects); on if it can't be read.
+fn animations_on() -> bool {
+    let mut on = windows::core::BOOL(1);
+    let read = unsafe {
+        SystemParametersInfoW(
+            SPI_GETCLIENTAREAANIMATION,
+            0,
+            Some(&mut on as *mut _ as *mut core::ffi::c_void),
+            SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS(0),
+        )
+    };
+    read.is_err() || on.as_bool()
+}
+
 /// The errors after which the device must be rebuilt (and rebuilding helps).
 fn device_lost(e: &Error) -> bool {
     [D2DERR_RECREATE_TARGET, DXGI_ERROR_DEVICE_REMOVED, DXGI_ERROR_DEVICE_RESET, DXGI_ERROR_DEVICE_HUNG]

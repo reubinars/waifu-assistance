@@ -72,7 +72,7 @@ pub fn pop_text(e: &GhEvent) -> String {
     let lead = match e.kind {
         GhEventKind::CiFailed => "✗ CI failed",
         GhEventKind::CiPassed => "✓ CI passed",
-        GhEventKind::ReviewRequested => "👀 Review requested",
+        GhEventKind::ReviewRequested => "\u{25ce} Review requested",
         GhEventKind::Approved => "✓ Approved",
         GhEventKind::ChangesRequested => "✎ Changes requested",
     };
@@ -151,7 +151,7 @@ mod tests {
         let e = |kind| GhEvent { kind, repo: "reubinars/waifu-assistance".into(), number: 12, url: String::new() };
         assert_eq!(pop_text(&e(GhEventKind::CiFailed)), "✗ CI failed · waifu-assistance #12");
         assert_eq!(pop_text(&e(GhEventKind::CiPassed)), "✓ CI passed · waifu-assistance #12");
-        assert_eq!(pop_text(&e(GhEventKind::ReviewRequested)), "👀 Review requested · waifu-assistance #12");
+        assert_eq!(pop_text(&e(GhEventKind::ReviewRequested)), "\u{25ce} Review requested · waifu-assistance #12");
         assert_eq!(pop_text(&e(GhEventKind::Approved)), "✓ Approved · waifu-assistance #12");
         assert_eq!(pop_text(&e(GhEventKind::ChangesRequested)), "✎ Changes requested · waifu-assistance #12");
     }

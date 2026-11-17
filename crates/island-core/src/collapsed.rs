@@ -23,6 +23,9 @@ const RISE_REST_ALPHA: f32 = 0.45;
 const RIPPLE_PERIOD: f64 = 1.5;
 const RIPPLE_GROW: f32 = 1.4;
 const RIPPLE_ALPHA: f32 = 0.75;
+/// With Windows animations off, the ring holds still at this point of its cycle: Blocked keeps
+/// its ring as a cue that doesn't rely on colour, without the pulse.
+const CALM_RIPPLE_PHASE: f32 = 0.3;
 /// Done's entry, in seconds from arriving: the pop's peak scale and timings, the tick's draw.
 const POP_START: f64 = 0.35;
 const POP_PEAK_AT: f64 = 0.45;
@@ -149,6 +152,9 @@ pub struct Morph {
     /// The sheen's angle at `sheen_at`.
     sheen_from: f64,
     sheen_at: f64,
+    /// Windows animations are off: no looping motion (rise, ripple pulse, turning sheen).
+    /// One-off changes (the blend, Done's pop and tick) still play: they say something changed.
+    calm: bool,
 }
 
 impl Morph {
@@ -166,6 +172,7 @@ impl Morph {
             playing: false,
             sheen_from: 0.0,
             sheen_at: t,
+            calm: false,
         };
         m.from_pose = m.raw(t);
         m
@@ -197,13 +204,23 @@ impl Morph {
         self.media = media;
     }
 
+    /// Turns looping motion off (`calm`) or back on. The sheen stops where it is.
+    pub fn set_calm(&mut self, calm: bool, t: f64) {
+        if calm != self.calm {
+            self.sheen_from = self.sheen(t);
+            self.sheen_at = t;
+            self.calm = calm;
+        }
+    }
+
     /// Jumps to `dot` / `media` as if it had been there all along: no blend, pop or tick draw.
     /// For the app's start-up, before it knows the real state. The sheen keeps its angle.
     pub fn settle(&mut self, dot: Dot, media: bool, playing: bool, t: f64) {
-        let sheen = self.sheen(t);
+        let (sheen, calm) = (self.sheen(t), self.calm);
         *self = Morph::new(dot, media, t);
         self.sheen_from = sheen;
         self.playing = playing;
+        self.calm = calm;
     }
 
     /// The blend's progress at `t`, 0..1, eased.
@@ -235,7 +252,7 @@ impl Morph {
     }
 
     fn sheen(&self, t: f64) -> f64 {
-        if !self.playing {
+        if !self.playing || self.calm {
             return self.sheen_from;
         }
         let turned = std::f64::consts::TAU * (t - self.sheen_at) / SHEEN_PERIOD as f64;
@@ -295,16 +312,19 @@ impl Morph {
         let pop = self.pop(t);
         let dots = std::array::from_fn(|i| {
             let [x, y, d] = b.dots[i];
-            let f = if b.rise > 0.0 { rise_at(self.since(t) - RISE_STAGGER * i as f64) } else { 0.0 };
+            // calm: the dots sit still at full opacity instead of rising in turn
+            let rise = if self.calm { 0.0 } else { b.rise };
+            let f = if rise > 0.0 { rise_at(self.since(t) - RISE_STAGGER * i as f64) } else { 0.0 };
             DotPose {
                 x,
-                y: y - RISE_LIFT * f * b.rise,
+                y: y - RISE_LIFT * f * rise,
                 d: d * pop,
-                alpha: 1.0 - b.rise * (1.0 - mix(RISE_REST_ALPHA, 1.0, f)),
+                alpha: 1.0 - rise * (1.0 - mix(RISE_REST_ALPHA, 1.0, f)),
             }
         });
         let ring = (b.ripple > 0.0).then(|| {
-            let phase = (self.since(t) / RIPPLE_PERIOD).rem_euclid(1.0) as f32;
+            let phase =
+                if self.calm { CALM_RIPPLE_PHASE } else { (self.since(t) / RIPPLE_PERIOD).rem_euclid(1.0) as f32 };
             let e = cubic_bezier(0.0, 0.0, 0.58, 1.0, phase);
             Ring { d: b.dots[0][2] * (1.0 + RIPPLE_GROW * e), alpha: RIPPLE_ALPHA * (1.0 - e) * b.ripple }
         });
@@ -322,9 +342,9 @@ impl Morph {
     /// Whether the pose still changes after `t`.
     pub fn busy(&self, t: f64) -> bool {
         t - self.start < MORPH as f64
-            || matches!(self.dot, Dot::Working | Dot::Blocked)
+            || (!self.calm && matches!(self.dot, Dot::Working | Dot::Blocked))
             || (self.dot == Dot::Done && self.since(t) < TICK_END)
-            || (self.media && self.playing)
+            || (!self.calm && self.media && self.playing)
     }
 }
 
@@ -603,5 +623,34 @@ mod tests {
         assert!(p.dots.iter().all(|d| d.d == 11.0));
         assert_eq!(p.record_d, RECORD_D);
         assert!(!m.busy(1.0));
+    }
+
+    #[test]
+    fn calm_holds_looping_motion_still() {
+        let mut m = Morph::new(Dot::Working, true, 0.0);
+        m.set(Dot::Working, true, true, 0.0);
+        m.set_calm(true, 0.0);
+        let (a, b) = (m.pose(20.0), m.pose(20.4));
+        assert_eq!(a, b, "no rise and no turning sheen");
+        assert!(a.dots.iter().all(|d| d.alpha == 1.0 && d.y == 0.0));
+        assert!(!m.busy(20.0));
+
+        m.set(Dot::Blocked, true, true, 30.0);
+        let ring = m.pose(40.0).ring.expect("Blocked keeps its ring while calm");
+        assert!(ring.alpha > 0.0);
+        assert_eq!(m.pose(40.0), m.pose(40.7));
+        assert!(!m.busy(40.0));
+
+        m.set_calm(false, 50.0);
+        assert!(m.busy(50.0));
+        assert_ne!(m.pose(50.0).ring, m.pose(50.5).ring);
+    }
+
+    #[test]
+    fn calm_survives_settle() {
+        let mut m = Morph::new(Dot::Idle, false, 0.0);
+        m.set_calm(true, 0.0);
+        m.settle(Dot::Working, false, false, 1.0);
+        assert!(!m.busy(5.0));
     }
 }

@@ -5,7 +5,7 @@
 use crate::draw::{Align, Color, Painter, TEXT_PRIMARY, TEXT_SECONDARY, TEXT_TERTIARY};
 use island_core::Rect;
 use island_core::anim::{Fade, breathe};
-use island_core::approvals::Detail;
+use island_core::approvals::{AlwaysScope, Detail};
 use island_core::github::{
     Ci, GhEvent, GhEventKind, GhRow,
     text::{chip, ci_glyph, head, pop_text},
@@ -20,11 +20,18 @@ use windows::Win32::Graphics::Direct2D::ID2D1Bitmap1;
 use windows::Win32::Graphics::DirectWrite::{DWRITE_TEXT_METRICS, IDWriteTextLayout};
 use windows::core::Result;
 
+// Each hue has one job, so a glance at colour alone says what kind of thing it is:
+// orange is only ever "this needs you", green "finished / passed", red "failed / nearly out",
+// yellow "getting full". Anything merely in progress stays white.
 const DONE: Color = Color::rgba(0x34, 0xc7, 0x59, 1.0);
 const BLOCKED: Color = Color::rgba(0xff, 0x95, 0x00, 1.0);
 /// A removed-lines count in the popup's detail box.
 const MINUS: Color = Color::rgba(0xff, 0x69, 0x61, 1.0);
 const HIGH: Color = Color::rgba(0xff, 0x3b, 0x30, 1.0);
+/// Usage past half: a warning, deliberately not the "needs you" orange.
+const WARN: Color = Color::rgba(0xff, 0xcc, 0x00, 1.0);
+/// The popup countdown turns orange only for its last seconds.
+const COUNTDOWN_URGENT_SECS: u64 = 10;
 const TAB_FADE: f32 = 0.2;
 const BUTTON_FADE: f32 = 0.12;
 
@@ -164,6 +171,8 @@ pub struct Popup {
     pub kind: CardKind,
     /// Countdown bar fill, 0..=1.
     pub fraction: f32,
+    /// Whole seconds left, shown after the bar.
+    pub secs: u64,
 }
 
 pub struct Media {
@@ -196,6 +205,10 @@ pub struct Scene<'a> {
     pub ticker_offset: f32,
     /// The strip's measured text width, written while drawing (0 when the strip isn't drawn).
     pub usage_width: Cell<f32>,
+    /// The Agents tab's header line: the "needs you" part, then the rest. None with no agents.
+    pub summary: Option<(String, String)>,
+    /// The Agents tab's two lines when there are no cards.
+    pub no_agents: (&'static str, &'static str),
 }
 
 fn off(r: Rect, ox: f32, oy: f32) -> Rect {
@@ -224,12 +237,35 @@ pub fn draw(p: &mut Painter, tab: Tab, ox: f32, oy: f32, k: f32, s: &Scene) -> R
     }
     match tab {
         Tab::Agents => {
+            draw_summary(p, ox, oy, k, s)?;
             draw_rows(p, ox, oy, k, s)?;
             if s.usage.is_empty() { Ok(()) } else { draw_usage(p, ox, oy, k, s) }
         }
         Tab::Media => draw_media(p, ox, oy, k, s),
         Tab::GitHub => draw_github(p, ox, oy, k, s),
     }
+}
+
+/// The Agents tab's header line, in the strip left of the tabs, starting under the rows' dots.
+fn draw_summary(p: &mut Painter, ox: f32, oy: f32, k: f32, s: &Scene) -> Result<()> {
+    const X: f32 = 16.0;
+    const GAP: f32 = 8.0;
+    let Some((urgent, rest)) = &s.summary else { return Ok(()) };
+    let Some((_, tab)) = layout::tabs(s.media_present, s.github_present).next() else { return Ok(()) };
+    let line = Rect { x: ox + X, y: oy + tab.y, w: tab.x - X - GAP, h: tab.h };
+    let mut x = line.x;
+    if !urgent.is_empty() {
+        let l = p.layout(urgent, line, 12.0, 600, Align::Left)?;
+        p.draw_layout(&l, x, line.y, BLOCKED.fade(k));
+        x += Painter::width(&l);
+    }
+    if !rest.is_empty() {
+        let text = if urgent.is_empty() { rest.clone() } else { format!(" \u{b7} {rest}") };
+        let r = Rect { x, w: (line.x + line.w - x).max(0.0), ..line };
+        let l = p.layout(&text, r, 12.0, 600, Align::Left)?;
+        p.draw_layout(&l, r.x, r.y, TEXT_SECONDARY.fade(k));
+    }
+    Ok(())
 }
 
 fn status_color(s: AgentStatus) -> Color {
@@ -249,6 +285,8 @@ fn button_label(kind: &CardKind, a: Action) -> &'static str {
         (_, Action::OpenTerminal) => "Open terminal",
         (_, Action::Allow) => "Allow",
         (_, Action::Deny) => "Deny",
+        (CardKind::Approval { scope: AlwaysScope::Session, .. }, Action::Always) => "Allow session",
+        (CardKind::Approval { scope: AlwaysScope::AcceptEdits, .. }, Action::Always) => "Accept edits",
         (_, Action::Always) => "Always allow",
         (_, Action::Later) => "Later",
     }
@@ -256,9 +294,9 @@ fn button_label(kind: &CardKind, a: Action) -> &'static str {
 
 fn header_label(kind: &CardKind) -> &'static str {
     match kind {
-        CardKind::Approval { .. } => "approval",
-        CardKind::Question => "asks",
-        CardKind::NeedsYou { .. } => "needs you",
+        CardKind::Approval { .. } => "Approval",
+        CardKind::Question => "Asks",
+        CardKind::NeedsYou { .. } => "Needs you",
         CardKind::Agent => "",
     }
 }
@@ -280,7 +318,7 @@ fn draw_button(p: &mut Painter, kind: &CardKind, a: Action, b: Rect, (hv, pr): (
     Ok(())
 }
 
-/// The popup: header (agent, folder, "1 of N"), summary, detail box, buttons and the countdown bar.
+/// The popup: header (agent, folder, "1 of N" when more are queued), summary, detail box, buttons and the countdown bar.
 fn draw_popup(p: &mut Painter, ox: f32, oy: f32, k: f32, s: &Scene, pop: &Popup) -> Result<()> {
     const X: f32 = 36.0;
     const RIGHT: f32 = 340.0;
@@ -289,10 +327,15 @@ fn draw_popup(p: &mut Painter, ox: f32, oy: f32, k: f32, s: &Scene, pop: &Popup)
     let head_y = oy + 14.0;
     p.circle(ox + 22.0, head_y + 9.0, 6.0, ORANGE.fade(k));
     let head = |x: f32, w: f32| Rect { x, y: head_y, w: w.max(0.0), h: 18.0 };
-    let count = format!("{} of {}", 1, pop.count);
-    let counter = p.layout(&count, head(ox + RIGHT - 60.0, 60.0), 11.0, 600, Align::Right)?;
-    let counter_left = ox + RIGHT - Painter::width(&counter);
-    p.draw_layout(&counter, ox + RIGHT - 60.0, head_y, TEXT_SECONDARY.fade(k));
+    // "1 of 1" says nothing: the counter only shows when more requests are queued behind this one
+    let counter_left = if pop.count > 1 {
+        let count = format!("1 of {}", pop.count);
+        let counter = p.layout_tabular(&count, head(ox + RIGHT - 60.0, 60.0), 11.0, 600, Align::Right)?;
+        p.draw_layout(&counter, ox + RIGHT - 60.0, head_y, TEXT_SECONDARY.fade(k));
+        ox + RIGHT - Painter::width(&counter)
+    } else {
+        ox + RIGHT
+    };
     let name_x = ox + X;
     let name = p.layout(&pop.name, head(name_x, 110.0), 12.0, 600, Align::Left)?;
     p.draw_layout(&name, name_x, head_y, TEXT_PRIMARY.fade(k));
@@ -304,7 +347,7 @@ fn draw_popup(p: &mut Painter, ox: f32, oy: f32, k: f32, s: &Scene, pop: &Popup)
     p.text(
         &pop.summary,
         Rect { x: ox + X, y: oy + 41.0, w: RIGHT - X, h: 18.0 },
-        13.0,
+        14.0,
         600,
         TEXT_PRIMARY.fade(k),
         Align::Left,
@@ -355,12 +398,20 @@ fn draw_popup(p: &mut Painter, ox: f32, oy: f32, k: f32, s: &Scene, pop: &Popup)
         draw_button(p, &pop.kind, a, b, (s.hover.hover(hot, s.t), s.hover.press(hot, s.t)), k)?;
     }
 
-    let bar = off(l.bar, ox, oy);
+    // the bar gives up its right end to the seconds left, so a glance tells whether there is time to read
+    const SECS_W: f32 = 30.0;
+    let full = off(l.bar, ox, oy);
+    let bar = Rect { w: full.w - SECS_W, ..full };
     p.round_rect(bar, 1.5, Color::white(0.10).fade(k));
     let fill = bar.w * pop.fraction.clamp(0.0, 1.0);
+    let urgent = pop.secs <= COUNTDOWN_URGENT_SECS;
     if fill > 0.0 {
-        p.round_rect(Rect { w: fill, ..bar }, 1.5_f32.min(fill / 2.0), BLOCKED.with_alpha(0.8).fade(k));
+        let c = if urgent { BLOCKED.with_alpha(0.8) } else { Color::white(0.45) };
+        p.round_rect(Rect { w: fill, ..bar }, 1.5_f32.min(fill / 2.0), c.fade(k));
     }
+    let secs = Rect { x: bar.x + bar.w, y: bar.y - 6.0, w: SECS_W, h: bar.h + 12.0 };
+    let label = p.layout_tabular(&format!("{} s", pop.secs), secs, 11.0, 500, Align::Right)?;
+    p.draw_layout(&label, secs.x, secs.y, if urgent { BLOCKED } else { TEXT_SECONDARY }.fade(k));
     Ok(())
 }
 
@@ -369,7 +420,8 @@ fn draw_popup(p: &mut Painter, ox: f32, oy: f32, k: f32, s: &Scene, pop: &Popup)
 /// detail, buttons), the one-slot kinds put name and text between their buttons.
 fn draw_rows(p: &mut Painter, ox: f32, oy: f32, k: f32, s: &Scene) -> Result<()> {
     const DOT_X: f32 = 14.0;
-    const NAME_X: f32 = 26.0;
+    /// Name column: 36 from the island's edge, the same as the popup's name.
+    const NAME_X: f32 = 28.0;
     const NAME_MAX: f32 = 110.0;
     const FOLDER_MAX: f32 = 90.0;
     const STATUS_BOX: f32 = 80.0;
@@ -382,12 +434,15 @@ fn draw_rows(p: &mut Painter, ox: f32, oy: f32, k: f32, s: &Scene) -> Result<()>
     const LINE2_H: f32 = 16.0;
     if s.cards.is_empty() {
         let row = off(layout::slot_rect(0), ox, oy);
+        let (x, w) = (row.x + NAME_X, row.w - NAME_X - RIGHT);
+        let (title, hint) = s.no_agents;
+        p.text(title, Rect { x, y: row.y + LINE1_Y, w, h: LINE1_H }, 14.0, 600, TEXT_SECONDARY.fade(k), Align::Left)?;
         return p.text(
-            "No agents",
-            Rect { x: row.x + NAME_X, w: row.w - NAME_X, ..row },
-            14.0,
-            600,
-            TEXT_SECONDARY.fade(k),
+            hint,
+            Rect { x, y: row.y + LINE2_Y + 2.0, w, h: LINE2_H },
+            11.0,
+            400,
+            TEXT_TERTIARY.fade(k),
             Align::Left,
         );
     }
@@ -469,8 +524,8 @@ fn draw_rows(p: &mut Painter, ox: f32, oy: f32, k: f32, s: &Scene) -> Result<()>
                 if let Some(text) = &row.summary {
                     let hint = matches!(row.kind, CardKind::NeedsYou { .. });
                     let rect = Rect { x: name_x, y: r.y + LINE2_Y, w: (mid_r - name_x).max(0.0), h: LINE2_H };
-                    let (size, c) = if hint { (10.0, TEXT_TERTIARY) } else { (11.0, TEXT_SECONDARY) };
-                    p.text(text, rect, size, 400, c.fade(k), Align::Left)?;
+                    let c = if hint { TEXT_TERTIARY } else { TEXT_SECONDARY };
+                    p.text(text, rect, 11.0, 400, c.fade(k), Align::Left)?;
                 }
             } else if request {
                 let x = r.x + NAME_X;
@@ -485,15 +540,11 @@ fn draw_rows(p: &mut Painter, ox: f32, oy: f32, k: f32, s: &Scene) -> Result<()>
                         Align::Left,
                     )?;
                 }
+                // what is being approved: as legible as the popup's detail box, not dimmed
                 if let Some(line) = &row.line {
-                    p.text(
-                        line,
-                        Rect { x, y: r.y + 40.0, w, h: LINE2_H },
-                        11.0,
-                        400,
-                        TEXT_TERTIARY.fade(k),
-                        Align::Left,
-                    )?;
+                    let rect = Rect { x, y: r.y + 40.0, w, h: LINE2_H };
+                    let l = p.layout_mono(line, rect, 11.0, 400, Align::Left)?;
+                    p.draw_layout(&l, rect.x, rect.y, TEXT_PRIMARY.fade(k));
                 }
             } else if let Some(title) = &row.subtitle {
                 let x = r.x + NAME_X;
@@ -528,9 +579,10 @@ fn draw_rows(p: &mut Painter, ox: f32, oy: f32, k: f32, s: &Scene) -> Result<()>
 
 fn ci_color(c: Ci) -> Color {
     match c {
-        Ci::Passing => tone_color(Tone::Percent(Level::Low)),
-        Ci::Failing => tone_color(Tone::Percent(Level::High)),
-        Ci::Running => tone_color(Tone::Percent(Level::Mid)),
+        Ci::Passing => DONE,
+        Ci::Failing => HIGH,
+        // in progress is not a call to action: the turning glyph says it, in white
+        Ci::Running => TEXT_SECONDARY,
         Ci::None => TEXT_TERTIARY,
     }
 }
@@ -538,7 +590,8 @@ fn ci_color(c: Ci) -> Color {
 /// The GitHub tab: a message row, or one card per PR in the agent rows' geometry, scrolled like them.
 fn draw_github(p: &mut Painter, ox: f32, oy: f32, k: f32, s: &Scene) -> Result<()> {
     const GLYPH_X: f32 = 14.0;
-    const TEXT_X: f32 = 30.0;
+    /// Text column: 36 from the island's edge, the same as the agent rows' names.
+    const TEXT_X: f32 = 28.0;
     const RIGHT: f32 = 10.0;
     const LINE1_Y: f32 = 6.0;
     const LINE1_H: f32 = 18.0;
@@ -558,7 +611,7 @@ fn draw_github(p: &mut Painter, ox: f32, oy: f32, k: f32, s: &Scene) -> Result<(
             match row {
                 GhRow::Message(text) => {
                     p.round_rect(r, layout::ROW_RADIUS, Color::white(0.06).fade(k));
-                    let rect = Rect { x: r.x + GLYPH_X, w: r.w - GLYPH_X - RIGHT, ..r };
+                    let rect = Rect { x: r.x + TEXT_X, w: r.w - TEXT_X - RIGHT, ..r };
                     p.text(text, rect, 12.0, 400, TEXT_SECONDARY.fade(k), Align::Left)?;
                 }
                 GhRow::Pr { pr, dim } => {
@@ -618,8 +671,9 @@ fn tone_color(t: Tone) -> Color {
     match t {
         Tone::Name => TEXT_PRIMARY,
         Tone::Dim => TEXT_TERTIARY,
-        Tone::Percent(Level::Low) => DONE,
-        Tone::Percent(Level::Mid) => BLOCKED,
+        // plenty left is not news, so it stays neutral; only filling up gets colour
+        Tone::Percent(Level::Low) => TEXT_SECONDARY,
+        Tone::Percent(Level::Mid) => WARN,
         Tone::Percent(Level::High) => HIGH,
         Tone::Bar(pct) => tone_color(Tone::Percent(level(pct as f32))),
     }
@@ -750,9 +804,9 @@ fn draw_media(p: &mut Painter, ox: f32, oy: f32, k: f32, s: &Scene) -> Result<()
         p.fill(&thumb, Color::white(k));
 
         let times = off(layout::TIMES, ox, oy);
-        let a = p.layout_tabular(&m.position, times, 10.0, 500, Align::Left)?;
+        let a = p.layout_tabular(&m.position, times, 11.0, 500, Align::Left)?;
         p.draw_layout(&a, times.x, times.y, TEXT_SECONDARY.fade(k));
-        let b = p.layout_tabular(&m.duration, times, 10.0, 500, Align::Right)?;
+        let b = p.layout_tabular(&m.duration, times, 11.0, 500, Align::Right)?;
         p.draw_layout(&b, times.x, times.y, TEXT_SECONDARY.fade(k));
     }
     draw_buttons(p, ox, oy, k, m.playing, s)
