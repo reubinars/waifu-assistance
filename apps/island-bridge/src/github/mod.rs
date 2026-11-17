@@ -74,7 +74,8 @@ mod tests {
     use super::fetch::tests::script;
     use super::*;
 
-    const NODE: &str = r#"{"number":1,"title":"t","url":"https://github.com/a/b/pull/1","repository":{"nameWithOwner":"a/b"}}"#;
+    const NODE: &str =
+        r#"{"number":1,"title":"t","url":"https://github.com/a/b/pull/1","repository":{"nameWithOwner":"a/b"}}"#;
 
     fn snap(name: &str, body: &str) -> Result<Vec<PullRequest>, String> {
         snapshot(script(name, body).as_os_str(), Duration::from_secs(5))
@@ -82,7 +83,9 @@ mod tests {
 
     #[test]
     fn partial_data_on_failure_is_used() {
-        let json = format!(r#"{{"data":{{"mine":{{"nodes":[{NODE},null]}},"review":{{"nodes":[]}}}},"errors":[{{"message":"Something went wrong"}}]}}"#);
+        let json = format!(
+            r#"{{"data":{{"mine":{{"nodes":[{NODE},null]}},"review":{{"nodes":[]}}}},"errors":[{{"message":"Something went wrong"}}]}}"#
+        );
         let prs = snap("gh-partial", &format!("printf '%s' '{json}'; exit 1")).unwrap();
         assert_eq!(prs.len(), 1);
         assert_eq!(prs[0].number, 1);
@@ -90,7 +93,9 @@ mod tests {
 
     #[test]
     fn failure_with_a_null_search_is_an_error() {
-        let json = format!(r#"{{"data":{{"mine":{{"nodes":[{NODE}]}},"review":null}},"errors":[{{"message":"Something went wrong"}}]}}"#);
+        let json = format!(
+            r#"{{"data":{{"mine":{{"nodes":[{NODE}]}},"review":null}},"errors":[{{"message":"Something went wrong"}}]}}"#
+        );
         assert_eq!(snap("gh-half", &format!("printf '%s' '{json}'; exit 1")), Err("GitHub unreachable".to_string()));
         let json = r#"{"data":{"mine":null,"review":null},"errors":[{"message":"Something went wrong"}]}"#;
         assert_eq!(snap("gh-none", &format!("printf '%s' '{json}'; exit 1")), Err("GitHub unreachable".to_string()));
@@ -98,8 +103,13 @@ mod tests {
 
     #[test]
     fn rate_limit_on_failure_wins_over_data() {
-        let json = format!(r#"{{"data":{{"mine":{{"nodes":[{NODE}]}},"review":{{"nodes":[]}}}},"errors":[{{"type":"RATE_LIMITED","message":"API rate limit exceeded"}}]}}"#);
-        assert_eq!(snap("gh-partial-rate", &format!("printf '%s' '{json}'; exit 1")), Err("GitHub rate limited".to_string()));
+        let json = format!(
+            r#"{{"data":{{"mine":{{"nodes":[{NODE}]}},"review":{{"nodes":[]}}}},"errors":[{{"type":"RATE_LIMITED","message":"API rate limit exceeded"}}]}}"#
+        );
+        assert_eq!(
+            snap("gh-partial-rate", &format!("printf '%s' '{json}'; exit 1")),
+            Err("GitHub rate limited".to_string())
+        );
     }
 
     #[test]

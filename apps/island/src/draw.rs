@@ -5,29 +5,31 @@ use crate::log;
 use island_core::Rect;
 use std::collections::HashMap;
 use std::mem::ManuallyDrop;
+use windows::Win32::Foundation::E_INVALIDARG;
 use windows::Win32::Graphics::Direct2D::Common::{
     D2D_RECT_F, D2D_SIZE_F, D2D_SIZE_U, D2D1_ALPHA_MODE_PREMULTIPLIED, D2D1_COLOR_F, D2D1_COMPOSITE_MODE_SOURCE_OVER,
-    D2D1_FIGURE_BEGIN_FILLED, D2D1_FIGURE_BEGIN_HOLLOW, D2D1_FIGURE_END_CLOSED, D2D1_FIGURE_END_OPEN, D2D1_PIXEL_FORMAT,
+    D2D1_FIGURE_BEGIN_FILLED, D2D1_FIGURE_BEGIN_HOLLOW, D2D1_FIGURE_END_CLOSED, D2D1_FIGURE_END_OPEN,
+    D2D1_PIXEL_FORMAT,
 };
 use windows::Win32::Graphics::Direct2D::{
-    CLSID_D2D1Shadow, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE, D2D1_ARC_SEGMENT, D2D1_ARC_SIZE_SMALL, D2D1_BITMAP_OPTIONS_NONE, D2D1_BITMAP_OPTIONS_TARGET, D2D1_INTERPOLATION_MODE_NEAREST_NEIGHBOR,
-    D2D1_BITMAP_PROPERTIES1, D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT, D2D1_ELLIPSE,
-    D2D1_INTERPOLATION_MODE_LINEAR, D2D1_LAYER_OPTIONS1_NONE, D2D1_LAYER_PARAMETERS1, D2D1_PROPERTY_TYPE_FLOAT,
-    D2D1_PROPERTY_TYPE_VECTOR4, D2D1_ROUNDED_RECT, D2D1_SHADOW_PROP_BLUR_STANDARD_DEVIATION, D2D1_SHADOW_PROP_COLOR,
-    D2D1_SWEEP_DIRECTION_CLOCKWISE, D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE, ID2D1Bitmap1, ID2D1BitmapBrush1,
-    ID2D1DeviceContext, ID2D1Effect, ID2D1Factory1, ID2D1Geometry, ID2D1Image, ID2D1PathGeometry1,
-    ID2D1SolidColorBrush, ID2D1StrokeStyle1, D2D1_STROKE_STYLE_PROPERTIES1, D2D1_CAP_STYLE_ROUND, D2D1_LINE_JOIN_ROUND,
+    CLSID_D2D1Shadow, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE, D2D1_ARC_SEGMENT, D2D1_ARC_SIZE_SMALL,
+    D2D1_BITMAP_OPTIONS_NONE, D2D1_BITMAP_OPTIONS_TARGET, D2D1_BITMAP_PROPERTIES1, D2D1_CAP_STYLE_ROUND,
+    D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT, D2D1_ELLIPSE, D2D1_INTERPOLATION_MODE_LINEAR,
+    D2D1_INTERPOLATION_MODE_NEAREST_NEIGHBOR, D2D1_LAYER_OPTIONS1_NONE, D2D1_LAYER_PARAMETERS1, D2D1_LINE_JOIN_ROUND,
+    D2D1_PROPERTY_TYPE_FLOAT, D2D1_PROPERTY_TYPE_VECTOR4, D2D1_ROUNDED_RECT, D2D1_SHADOW_PROP_BLUR_STANDARD_DEVIATION,
+    D2D1_SHADOW_PROP_COLOR, D2D1_STROKE_STYLE_PROPERTIES1, D2D1_SWEEP_DIRECTION_CLOCKWISE,
+    D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE, ID2D1Bitmap1, ID2D1BitmapBrush1, ID2D1DeviceContext, ID2D1Effect,
+    ID2D1Factory1, ID2D1Geometry, ID2D1Image, ID2D1PathGeometry1, ID2D1SolidColorBrush, ID2D1StrokeStyle1,
 };
 use windows::Win32::Graphics::DirectWrite::{
-    DWRITE_FACTORY_TYPE_SHARED, DWRITE_FONT_STRETCH_NORMAL, DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_WEIGHT,
-    DWRITE_PARAGRAPH_ALIGNMENT_CENTER, DWRITE_TEXT_ALIGNMENT, DWRITE_TEXT_ALIGNMENT_CENTER,
-    DWRITE_TEXT_ALIGNMENT_LEADING, DWRITE_TEXT_ALIGNMENT_TRAILING, DWRITE_TRIMMING,
-    DWRITE_TRIMMING_GRANULARITY_CHARACTER, DWRITE_WORD_WRAPPING_NO_WRAP, DWriteCreateFactory, IDWriteFactory,
-    DWRITE_FONT_FEATURE, DWRITE_FONT_FEATURE_TAG_TABULAR_FIGURES, DWRITE_TEXT_METRICS, DWRITE_TEXT_RANGE,
-    IDWriteFontCollection, IDWriteTextFormat, IDWriteTextLayout, IDWriteTextLayout1, IDWriteTypography,
+    DWRITE_FACTORY_TYPE_SHARED, DWRITE_FONT_FEATURE, DWRITE_FONT_FEATURE_TAG_TABULAR_FIGURES,
+    DWRITE_FONT_STRETCH_NORMAL, DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_WEIGHT, DWRITE_PARAGRAPH_ALIGNMENT_CENTER,
+    DWRITE_TEXT_ALIGNMENT, DWRITE_TEXT_ALIGNMENT_CENTER, DWRITE_TEXT_ALIGNMENT_LEADING, DWRITE_TEXT_ALIGNMENT_TRAILING,
+    DWRITE_TEXT_METRICS, DWRITE_TEXT_RANGE, DWRITE_TRIMMING, DWRITE_TRIMMING_GRANULARITY_CHARACTER,
+    DWRITE_WORD_WRAPPING_NO_WRAP, DWriteCreateFactory, IDWriteFactory, IDWriteFontCollection, IDWriteTextFormat,
+    IDWriteTextLayout, IDWriteTextLayout1, IDWriteTypography,
 };
 use windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_B8G8R8A8_UNORM;
-use windows::Win32::Foundation::E_INVALIDARG;
 use windows::core::{Error, HSTRING, Interface, PCWSTR, Result, w};
 use windows_numerics::{Matrix3x2, Vector2};
 
@@ -132,18 +134,24 @@ impl Painter {
         unsafe {
             let dwrite: IDWriteFactory = DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED)?;
             let brush = dc.CreateSolidColorBrush(&Color::BLACK.d2d(), None)?;
-            let round_caps = factory.CreateStrokeStyle(&D2D1_STROKE_STYLE_PROPERTIES1 {
-                startCap: D2D1_CAP_STYLE_ROUND,
-                endCap: D2D1_CAP_STYLE_ROUND,
-                lineJoin: D2D1_LINE_JOIN_ROUND,
-                ..Default::default()
-            }, None)?;
+            let round_caps = factory.CreateStrokeStyle(
+                &D2D1_STROKE_STYLE_PROPERTIES1 {
+                    startCap: D2D1_CAP_STYLE_ROUND,
+                    endCap: D2D1_CAP_STYLE_ROUND,
+                    lineJoin: D2D1_LINE_JOIN_ROUND,
+                    ..Default::default()
+                },
+                None,
+            )?;
             dc.SetTextAntialiasMode(D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE);
             let family = pick_family(&dwrite, &[w!("Inter"), w!("Segoe UI Variable Text"), w!("Segoe UI")], "Segoe UI");
             let mono = pick_family(&dwrite, &[w!("Cascadia Mono"), w!("Consolas")], "Consolas");
             log::info!("font family {family}, mono {mono}");
             let tabular = dwrite.CreateTypography()?;
-            tabular.AddFontFeature(DWRITE_FONT_FEATURE { nameTag: DWRITE_FONT_FEATURE_TAG_TABULAR_FIGURES, parameter: 1 })?;
+            tabular.AddFontFeature(DWRITE_FONT_FEATURE {
+                nameTag: DWRITE_FONT_FEATURE_TAG_TABULAR_FIGURES,
+                parameter: 1,
+            })?;
             Ok(Painter {
                 dc,
                 factory,
@@ -239,7 +247,13 @@ impl Painter {
             let rgba: Vec<u8> = [c.r, c.g, c.b, c.a].iter().flat_map(|f| f.to_le_bytes()).collect();
             fx.SetValue(D2D1_SHADOW_PROP_COLOR.0 as u32, D2D1_PROPERTY_TYPE_VECTOR4, &rgba)?;
             let out: ID2D1Image = fx.GetOutput()?;
-            self.dc.DrawImage(&out, Some(&v2(dx, dy)), None, D2D1_INTERPOLATION_MODE_LINEAR, D2D1_COMPOSITE_MODE_SOURCE_OVER);
+            self.dc.DrawImage(
+                &out,
+                Some(&v2(dx, dy)),
+                None,
+                D2D1_INTERPOLATION_MODE_LINEAR,
+                D2D1_COMPOSITE_MODE_SOURCE_OVER,
+            );
         }
         Ok(())
     }
@@ -378,11 +392,8 @@ impl Painter {
             f.SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP)?;
             f.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER)?;
             let sign = self.dwrite.CreateEllipsisTrimmingSign(&f)?;
-            let trim = DWRITE_TRIMMING {
-                granularity: DWRITE_TRIMMING_GRANULARITY_CHARACTER,
-                delimiter: 0,
-                delimiterCount: 0,
-            };
+            let trim =
+                DWRITE_TRIMMING { granularity: DWRITE_TRIMMING_GRANULARITY_CHARACTER, delimiter: 0, delimiterCount: 0 };
             f.SetTrimming(&trim, &sign)?;
             self.formats.insert(key, f.clone());
             Ok(f)
@@ -399,7 +410,15 @@ impl Painter {
         self.layout_in(true, s, r, size, weight, align)
     }
 
-    fn layout_in(&mut self, mono: bool, s: &str, r: Rect, size: f32, weight: u16, align: Align) -> Result<IDWriteTextLayout> {
+    fn layout_in(
+        &mut self,
+        mono: bool,
+        s: &str,
+        r: Rect,
+        size: f32,
+        weight: u16,
+        align: Align,
+    ) -> Result<IDWriteTextLayout> {
         let f = self.format(mono, size, weight)?;
         let text: Vec<u16> = s.encode_utf16().collect();
         unsafe {
@@ -415,14 +434,29 @@ impl Painter {
     }
 
     /// `layout` with tabular figures.
-    pub fn layout_tabular(&mut self, s: &str, r: Rect, size: f32, weight: u16, align: Align) -> Result<IDWriteTextLayout> {
+    pub fn layout_tabular(
+        &mut self,
+        s: &str,
+        r: Rect,
+        size: f32,
+        weight: u16,
+        align: Align,
+    ) -> Result<IDWriteTextLayout> {
         let l = self.layout(s, r, size, weight, align)?;
         unsafe { l.SetTypography(&self.tabular, ALL_TEXT)? };
         Ok(l)
     }
 
     /// `layout` with letter spacing (em).
-    pub fn layout_tracked(&mut self, s: &str, r: Rect, size: f32, weight: u16, align: Align, tracking: f32) -> Result<IDWriteTextLayout> {
+    pub fn layout_tracked(
+        &mut self,
+        s: &str,
+        r: Rect,
+        size: f32,
+        weight: u16,
+        align: Align,
+        tracking: f32,
+    ) -> Result<IDWriteTextLayout> {
         let l = self.layout(s, r, size, weight, align)?;
         unsafe { l.cast::<IDWriteTextLayout1>()?.SetCharacterSpacing(0.0, tracking * size, 0.0, ALL_TEXT)? };
         Ok(l)
@@ -455,20 +489,16 @@ impl Painter {
             return Err(Error::new(E_INVALIDARG, format!("{w}x{h} image in {} bytes", bgra.len())));
         }
         let props = D2D1_BITMAP_PROPERTIES1 {
-            pixelFormat: D2D1_PIXEL_FORMAT { format: DXGI_FORMAT_B8G8R8A8_UNORM, alphaMode: D2D1_ALPHA_MODE_PREMULTIPLIED },
+            pixelFormat: D2D1_PIXEL_FORMAT {
+                format: DXGI_FORMAT_B8G8R8A8_UNORM,
+                alphaMode: D2D1_ALPHA_MODE_PREMULTIPLIED,
+            },
             dpiX: 96.0,
             dpiY: 96.0,
             bitmapOptions: D2D1_BITMAP_OPTIONS_NONE,
             ..Default::default()
         };
-        unsafe {
-            self.dc.CreateBitmap(
-                D2D_SIZE_U { width: w, height: h },
-                Some(bgra.as_ptr().cast()),
-                w * 4,
-                &props,
-            )
-        }
+        unsafe { self.dc.CreateBitmap(D2D_SIZE_U { width: w, height: h }, Some(bgra.as_ptr().cast()), w * 4, &props) }
     }
 
     /// A transparent bitmap the size of the current target that can itself be drawn into.
@@ -478,7 +508,10 @@ impl Painter {
             let (mut dx, mut dy) = (0.0, 0.0);
             self.dc.GetDpi(&mut dx, &mut dy);
             let props = D2D1_BITMAP_PROPERTIES1 {
-                pixelFormat: D2D1_PIXEL_FORMAT { format: DXGI_FORMAT_B8G8R8A8_UNORM, alphaMode: D2D1_ALPHA_MODE_PREMULTIPLIED },
+                pixelFormat: D2D1_PIXEL_FORMAT {
+                    format: DXGI_FORMAT_B8G8R8A8_UNORM,
+                    alphaMode: D2D1_ALPHA_MODE_PREMULTIPLIED,
+                },
                 dpiX: dx,
                 dpiY: dy,
                 bitmapOptions: D2D1_BITMAP_OPTIONS_TARGET,
@@ -511,7 +544,12 @@ impl Painter {
     pub fn sprite(&self, bmp: &ID2D1Bitmap1, src: Rect, dest: Rect, opacity: f32) {
         unsafe {
             self.dc.DrawBitmap(
-                bmp, Some(&rect_f(dest)), opacity, D2D1_INTERPOLATION_MODE_NEAREST_NEIGHBOR, Some(&rect_f(src)), None,
+                bmp,
+                Some(&rect_f(dest)),
+                opacity,
+                D2D1_INTERPOLATION_MODE_NEAREST_NEIGHBOR,
+                Some(&rect_f(src)),
+                None,
             );
         }
     }

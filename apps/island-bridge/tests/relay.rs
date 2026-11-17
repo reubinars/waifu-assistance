@@ -11,8 +11,10 @@ use std::time::{Duration, Instant};
 const CONNECTED: &str = r#"{"bridge":"connected"}"#;
 const DISCONNECTED: &str = r#"{"bridge":"disconnected"}"#;
 const LIST: &str = r#"{"id":"island:1","method":"agent.list","params":{}}"#;
-const SUB: &str = r#"{"id":"island:2","method":"events.subscribe","params":{"subscriptions":[{"type":"pane.closed"}]}}"#;
-const SUB2: &str = r#"{"id":"island:3","method":"events.subscribe","params":{"subscriptions":[{"type":"pane.agent_detected"}]}}"#;
+const SUB: &str =
+    r#"{"id":"island:2","method":"events.subscribe","params":{"subscriptions":[{"type":"pane.closed"}]}}"#;
+const SUB2: &str =
+    r#"{"id":"island:3","method":"events.subscribe","params":{"subscriptions":[{"type":"pane.agent_detected"}]}}"#;
 
 fn sock_path(name: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!("ib-{}-{name}", std::process::id()));
@@ -76,9 +78,7 @@ impl Herdr {
     }
 
     fn next(&self) -> Conn {
-        self.conns
-            .recv_timeout(Duration::from_secs(3))
-            .expect("bridge opened no connection with a line")
+        self.conns.recv_timeout(Duration::from_secs(3)).expect("bridge opened no connection with a line")
     }
 
     /// Stops accepting and removes the socket, like `herdr server stop`.
@@ -134,9 +134,7 @@ impl Bridge {
     }
 
     fn next(&self, secs: u64) -> String {
-        self.lines
-            .recv_timeout(Duration::from_secs(secs))
-            .expect("no line from bridge in time")
+        self.lines.recv_timeout(Duration::from_secs(secs)).expect("no line from bridge in time")
     }
 
     fn send(&mut self, line: &str) {
@@ -262,7 +260,10 @@ fn usage_is_printed_without_herdr() {
     .unwrap();
     let b = Bridge::spawn(&sock, &home);
     let line = b.usage.recv_timeout(Duration::from_secs(2)).expect("no usage line");
-    assert_eq!(line, r#"{"usage":[{"cli":"claude","windows":[{"minutes":300,"used_percent":42.0,"resets_at":null}]}]}"#);
+    assert_eq!(
+        line,
+        r#"{"usage":[{"cli":"claude","windows":[{"minutes":300,"used_percent":42.0,"resets_at":null}]}]}"#
+    );
 }
 
 #[test]

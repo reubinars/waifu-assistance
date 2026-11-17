@@ -254,12 +254,14 @@ fn hook_status_interval() -> Duration {
 fn spawn_hook_status() {
     let mut last = current_hook_status();
     emit_hooks(&last);
-    std::thread::spawn(move || loop {
-        std::thread::sleep(hook_status_interval());
-        let now = current_hook_status();
-        if now != last {
-            emit_hooks(&now);
-            last = now;
+    std::thread::spawn(move || {
+        loop {
+            std::thread::sleep(hook_status_interval());
+            let now = current_hook_status();
+            if now != last {
+                emit_hooks(&now);
+                last = now;
+            }
         }
     });
 }

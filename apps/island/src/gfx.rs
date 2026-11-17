@@ -1,6 +1,7 @@
 //! D3D11 → DXGI → Direct2D device context, a composition swap chain, and the DirectComposition
 //! visual that shows it in the window. Everything here is rebuilt when the device is lost.
 
+use crate::log;
 use windows::Win32::Foundation::{CloseHandle, HANDLE, HMODULE, HWND};
 use windows::Win32::Graphics::Direct2D::Common::{D2D1_ALPHA_MODE_PREMULTIPLIED, D2D1_COLOR_F, D2D1_PIXEL_FORMAT};
 use windows::Win32::Graphics::Direct2D::{
@@ -15,13 +16,14 @@ use windows::Win32::Graphics::Direct3D11::{
 use windows::Win32::Graphics::DirectComposition::{
     DCompositionCreateDevice, IDCompositionDevice, IDCompositionTarget, IDCompositionVisual,
 };
-use windows::Win32::Graphics::Dxgi::Common::{DXGI_ALPHA_MODE_PREMULTIPLIED, DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_SAMPLE_DESC};
+use windows::Win32::Graphics::Dxgi::Common::{
+    DXGI_ALPHA_MODE_PREMULTIPLIED, DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_SAMPLE_DESC,
+};
 use windows::Win32::Graphics::Dxgi::{
     CreateDXGIFactory2, DXGI_CREATE_FACTORY_FLAGS, DXGI_PRESENT, DXGI_SCALING_STRETCH, DXGI_SWAP_CHAIN_DESC1,
     DXGI_SWAP_CHAIN_FLAG, DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT, DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL,
     DXGI_USAGE_RENDER_TARGET_OUTPUT, IDXGIDevice, IDXGIFactory2, IDXGISurface, IDXGISwapChain1, IDXGISwapChain2,
 };
-use crate::log;
 use windows::Win32::Graphics::Gdi::{DEVMODEW, ENUM_CURRENT_SETTINGS, EnumDisplaySettingsW};
 use windows::core::{Interface, PCWSTR, Result};
 
@@ -110,7 +112,8 @@ impl Gfx {
 
             let sync = sync_interval();
             log::info!("graphics ready: {}x{} px, present every {sync} vblank(s)", size.0, size.1);
-            let gfx = Gfx { factory, dc, swap, waitable, _dcomp: dcomp, _target: target, _visual: visual, _d3d: d3d, sync };
+            let gfx =
+                Gfx { factory, dc, swap, waitable, _dcomp: dcomp, _target: target, _visual: visual, _d3d: d3d, sync };
             gfx.bind_target(scale)?;
             Ok(gfx)
         }

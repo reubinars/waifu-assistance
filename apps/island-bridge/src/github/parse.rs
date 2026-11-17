@@ -7,9 +7,7 @@ use serde_json::Value;
 
 fn node(v: &Value, role: Role) -> Option<PullRequest> {
     let s = |x: Option<&Value>| x.and_then(Value::as_str).map(str::to_string);
-    let rollup = v
-        .pointer("/commits/nodes/0/commit/statusCheckRollup/state")
-        .and_then(Value::as_str);
+    let rollup = v.pointer("/commits/nodes/0/commit/statusCheckRollup/state").and_then(Value::as_str);
     Some(PullRequest {
         repo: s(v.pointer("/repository/nameWithOwner"))?,
         number: u32::try_from(v.get("number")?.as_u64()?).ok()?,
@@ -74,7 +72,8 @@ mod tests {
 
     #[test]
     fn parse_dedupes_into_mine() {
-        let node = r#"{"number":1,"title":"t","url":"https://github.com/a/b/pull/1","repository":{"nameWithOwner":"a/b"}}"#;
+        let node =
+            r#"{"number":1,"title":"t","url":"https://github.com/a/b/pull/1","repository":{"nameWithOwner":"a/b"}}"#;
         let json = format!(r#"{{"data":{{"mine":{{"nodes":[{node}]}},"review":{{"nodes":[{node}]}}}}}}"#);
         let prs = parse_response(&json).unwrap();
         assert_eq!(prs.len(), 1);

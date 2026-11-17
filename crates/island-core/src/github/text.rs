@@ -120,7 +120,8 @@ mod tests {
         assert_eq!(row_count(&s), rows(&s).len());
         s.apply(Ok(vec![]));
         assert_eq!(row_count(&s), rows(&s).len());
-        let list = vec![pr("o/a", 1, Role::Mine, Ci::None, Review::None), pr("o/a", 2, Role::Mine, Ci::None, Review::None)];
+        let list =
+            vec![pr("o/a", 1, Role::Mine, Ci::None, Review::None), pr("o/a", 2, Role::Mine, Ci::None, Review::None)];
         s.apply(Ok(list));
         assert_eq!(row_count(&s), 2);
         assert_eq!(row_count(&s), rows(&s).len());
@@ -147,12 +148,7 @@ mod tests {
 
     #[test]
     fn pop_copy() {
-        let e = |kind| GhEvent {
-            kind,
-            repo: "reubinars/waifu-assistance".into(),
-            number: 12,
-            url: String::new(),
-        };
+        let e = |kind| GhEvent { kind, repo: "reubinars/waifu-assistance".into(), number: 12, url: String::new() };
         assert_eq!(pop_text(&e(GhEventKind::CiFailed)), "✗ CI failed · waifu-assistance #12");
         assert_eq!(pop_text(&e(GhEventKind::CiPassed)), "✓ CI passed · waifu-assistance #12");
         assert_eq!(pop_text(&e(GhEventKind::ReviewRequested)), "👀 Review requested · waifu-assistance #12");

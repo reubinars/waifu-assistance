@@ -141,9 +141,8 @@ fn run() -> windows::core::Result<()> {
             }
             Some(h) => {
                 let handles = [h];
-                let woke = unsafe {
-                    MsgWaitForMultipleObjectsEx(Some(&handles), INFINITE, QS_ALLINPUT, MWMO_INPUTAVAILABLE)
-                };
+                let woke =
+                    unsafe { MsgWaitForMultipleObjectsEx(Some(&handles), INFINITE, QS_ALLINPUT, MWMO_INPUTAVAILABLE) };
                 // the waitable is a semaphore: once it fires, a frame must be presented
                 if woke == WAIT_OBJECT_0 {
                     app.frame(Instant::now());

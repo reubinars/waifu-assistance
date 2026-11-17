@@ -49,9 +49,7 @@ impl Sprite<'_> {
 
 impl PetImages {
     pub fn upload(&self, p: &Painter) -> Result<PetBitmaps> {
-        Ok(PetBitmaps {
-            solo: p.bitmap(&self.solo.bgra, self.solo.width, self.solo.height)?,
-        })
+        Ok(PetBitmaps { solo: p.bitmap(&self.solo.bgra, self.solo.width, self.solo.height)? })
     }
 }
 
@@ -106,7 +104,8 @@ fn decode(bytes: &[u8], atlas: &Atlas) -> Result<Image> {
         let frame = decoder.GetFrame(0)?;
         let (mut width, mut height) = (0, 0);
         frame.GetSize(&mut width, &mut height)?;
-        if width == 0 || height == 0
+        if width == 0
+            || height == 0
             || atlas.cell_w.checked_mul(atlas.columns) != Some(width)
             || atlas.cell_h.checked_mul(atlas.rows) != Some(height)
         {

@@ -104,10 +104,7 @@ impl Sheet {
         if raw.schema_version != 3 {
             return Err("unsupported pet schema version".into());
         }
-        Ok(Sheet {
-            solo: Atlas::from_raw(raw.atlases.solo)?,
-            emblem: Atlas::from_raw(raw.atlases.emblem)?,
-        })
+        Ok(Sheet { solo: Atlas::from_raw(raw.atlases.solo)?, emblem: Atlas::from_raw(raw.atlases.emblem)? })
     }
 }
 
@@ -115,10 +112,7 @@ impl Atlas {
     fn from_raw(mut raw: RawAtlas) -> Result<Self, String> {
         let mut clips = Vec::with_capacity(5);
         for name in ["idle", "working", "blocked", "done", "sleep"] {
-            let clip = raw
-                .states
-                .remove(name)
-                .ok_or_else(|| format!("missing pet state: {name}"))?;
+            let clip = raw.states.remove(name).ok_or_else(|| format!("missing pet state: {name}"))?;
             clips.push(clip.validated(name, &raw)?);
         }
         let sing = match raw.states.remove("sing") {
@@ -146,17 +140,13 @@ impl Atlas {
 
     pub fn cell(&self, s: PetState, elapsed_ms: u32) -> (u32, u32) {
         let clip = self.clip(s);
-        let row = clip
-            .frame(elapsed_ms)
-            .map_or(clip.resting_frame, |(i, _)| clip.frames[i]);
+        let row = clip.frame(elapsed_ms).map_or(clip.resting_frame, |(i, _)| clip.frames[i]);
         (clip.column, row)
     }
 
     /// Milliseconds until the current frame ends; None once a one-shot rests.
     pub fn next_change(&self, s: PetState, elapsed_ms: u32) -> Option<u32> {
-        self.clip(s)
-            .frame(elapsed_ms)
-            .map(|(_, remaining)| remaining)
+        self.clip(s).frame(elapsed_ms).map(|(_, remaining)| remaining)
     }
 
     pub fn src(&self, (col, row): (u32, u32)) -> Rect {
@@ -201,11 +191,7 @@ impl Clip {
     }
 
     fn frame(&self, elapsed_ms: u32) -> Option<(usize, u32)> {
-        let mut elapsed = if self.looping {
-            elapsed_ms % self.total_ms
-        } else {
-            elapsed_ms
-        };
+        let mut elapsed = if self.looping { elapsed_ms % self.total_ms } else { elapsed_ms };
         for (i, &duration) in self.durations_ms.iter().enumerate() {
             if elapsed < duration {
                 return Some((i, duration - elapsed));
@@ -304,27 +290,10 @@ mod tests {
     #[test]
     fn the_shipped_sheet_matches_its_atlases() {
         let s = sheet();
-        assert_eq!(
-            (s.solo.cell_w * s.solo.columns, s.solo.cell_h * s.solo.rows),
-            (320, 256)
-        );
-        assert_eq!(
-            (
-                s.emblem.cell_w * s.emblem.columns,
-                s.emblem.cell_h * s.emblem.rows
-            ),
-            (160, 64)
-        );
+        assert_eq!((s.solo.cell_w * s.solo.columns, s.solo.cell_h * s.solo.rows), (320, 256));
+        assert_eq!((s.emblem.cell_w * s.emblem.columns, s.emblem.cell_h * s.emblem.rows), (160, 64));
         assert_eq!((s.solo.anchor, s.emblem.anchor), ((32, 60), (16, 28)));
-        assert_eq!(
-            s.solo.src((3, 2)),
-            crate::Rect {
-                x: 192.0,
-                y: 128.0,
-                w: 64.0,
-                h: 64.0
-            }
-        );
+        assert_eq!(s.solo.src((3, 2)), crate::Rect { x: 192.0, y: 128.0, w: 64.0, h: 64.0 });
     }
 
     #[test]
@@ -340,10 +309,7 @@ mod tests {
         bad["atlases"]["solo"]["states"]["idle"]["durations_ms"] = serde_json::json!([550]);
         assert!(Sheet::parse(&bad.to_string()).is_err());
         let mut bad = original.clone();
-        bad["atlases"]["emblem"]["states"]
-            .as_object_mut()
-            .unwrap()
-            .remove("sleep");
+        bad["atlases"]["emblem"]["states"].as_object_mut().unwrap().remove("sleep");
         assert!(Sheet::parse(&bad.to_string()).is_err());
         let mut bad = original.clone();
         bad["atlases"]["emblem"]["states"]["sleep"]["column"] = 5.into();

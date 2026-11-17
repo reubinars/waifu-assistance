@@ -9,9 +9,9 @@ use std::cell::Cell;
 use windows::Win32::Foundation::{HWND, LPARAM, RECT, WPARAM};
 use windows::Win32::UI::Accessibility::{HWINEVENTHOOK, SetWinEventHook, UnhookWinEvent};
 use windows::Win32::UI::WindowsAndMessaging::{
-    CHILDID_SELF, EVENT_OBJECT_LOCATIONCHANGE, EVENT_SYSTEM_FOREGROUND, GetClassNameW, GetForegroundWindow, GetWindowRect,
-    GWL_STYLE, GetWindowLongPtrW, GetWindowThreadProcessId, IsIconic, IsWindowVisible, IsZoomed, OBJID_WINDOW, PostMessageW,
-    WINEVENT_OUTOFCONTEXT, WINEVENT_SKIPOWNPROCESS, WM_APP, WS_CAPTION,
+    CHILDID_SELF, EVENT_OBJECT_LOCATIONCHANGE, EVENT_SYSTEM_FOREGROUND, GWL_STYLE, GetClassNameW, GetForegroundWindow,
+    GetWindowLongPtrW, GetWindowRect, GetWindowThreadProcessId, IsIconic, IsWindowVisible, IsZoomed, OBJID_WINDOW,
+    PostMessageW, WINEVENT_OUTOFCONTEXT, WINEVENT_SKIPOWNPROCESS, WM_APP, WS_CAPTION,
 };
 
 /// Posted to the visual window when the answer changes; wParam is 1 for fullscreen.
@@ -104,7 +104,8 @@ fn foreground() -> Option<Foreground> {
         let class = String::from_utf16_lossy(&buf[..n]);
         let mut pid = 0u32;
         GetWindowThreadProcessId(fg, Some(&mut pid));
-        let rect = Rect { x: r.left as f32, y: r.top as f32, w: (r.right - r.left) as f32, h: (r.bottom - r.top) as f32 };
+        let rect =
+            Rect { x: r.left as f32, y: r.top as f32, w: (r.right - r.left) as f32, h: (r.bottom - r.top) as f32 };
         let captioned = GetWindowLongPtrW(fg, GWL_STYLE) as u32 & WS_CAPTION.0 == WS_CAPTION.0;
         let app_maximized = IsZoomed(fg).as_bool() && captioned;
         Some(Foreground { rect, class, own: pid == std::process::id(), app_maximized })

@@ -13,8 +13,8 @@ use windows::Win32::UI::Shell::{
     NOTIFYICONDATAW, Shell_NotifyIconW,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    AppendMenuW, CheckMenuRadioItem, CreateIconIndirect, CreatePopupMenu, DestroyIcon, DestroyMenu, GetSystemMetrics, HICON,
-    ICONINFO, MF_BYCOMMAND, MF_CHECKED, MF_SEPARATOR, MF_STRING, PostMessageW, SM_CXSMICON, SetForegroundWindow,
+    AppendMenuW, CheckMenuRadioItem, CreateIconIndirect, CreatePopupMenu, DestroyIcon, DestroyMenu, GetSystemMetrics,
+    HICON, ICONINFO, MF_BYCOMMAND, MF_CHECKED, MF_SEPARATOR, MF_STRING, PostMessageW, SM_CXSMICON, SetForegroundWindow,
     TPM_NONOTIFY, TPM_RETURNCMD, TPM_RIGHTBUTTON, TrackPopupMenuEx, WM_APP, WM_NULL,
 };
 use windows::core::{PCWSTR, Result, w};
@@ -63,7 +63,8 @@ fn dot_icon() -> Result<HICON> {
         let color = CreateDIBSection(None, &info, DIB_RGB_COLORS, &mut bits, None, 0)?;
         std::ptr::copy_nonoverlapping(px.as_ptr(), bits.cast::<u8>(), px.len());
         let mask = CreateBitmap(size, size, 1, 1, None);
-        let icon = CreateIconIndirect(&ICONINFO { fIcon: true.into(), hbmMask: mask, hbmColor: color, ..Default::default() });
+        let icon =
+            CreateIconIndirect(&ICONINFO { fIcon: true.into(), hbmMask: mask, hbmColor: color, ..Default::default() });
         let _ = DeleteObject(color.into());
         let _ = DeleteObject(mask.into());
         icon
@@ -130,7 +131,9 @@ impl Tray {
             let _ = CheckMenuRadioItem(menu, ID_PILL, ID_ATTACHED, mode, MF_BYCOMMAND.0);
             // the menu only dismisses on an outside click if its owner is foreground
             let _ = SetForegroundWindow(self.hwnd);
-            let picked = TrackPopupMenuEx(menu, (TPM_RETURNCMD | TPM_RIGHTBUTTON | TPM_NONOTIFY).0, x, y, self.hwnd, None).0 as u32;
+            let picked =
+                TrackPopupMenuEx(menu, (TPM_RETURNCMD | TPM_RIGHTBUTTON | TPM_NONOTIFY).0, x, y, self.hwnd, None).0
+                    as u32;
             let _ = PostMessageW(Some(self.hwnd), WM_NULL, WPARAM(0), LPARAM(0));
             let _ = DestroyMenu(menu);
             match picked {

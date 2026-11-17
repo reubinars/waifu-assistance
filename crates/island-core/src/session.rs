@@ -327,16 +327,10 @@ mod tests {
     #[test]
     fn agent_list_feeds_blocked_so_a_repeat_keeps_later() {
         let mut s = HerdrSession::default();
-        s.handle(
-            Incoming::AgentList { id: "island:1".into(), agents: vec![info("p", Blocked)] },
-            now(),
-        );
+        s.handle(Incoming::AgentList { id: "island:1".into(), agents: vec![info("p", Blocked)] }, now());
         s.approvals.question("p".into(), "Which?".into());
         s.approvals.later("p");
-        s.handle(
-            Incoming::StatusChanged { pane_id: "p".into(), status: Blocked, agent: None, title: None },
-            now(),
-        );
+        s.handle(Incoming::StatusChanged { pane_id: "p".into(), status: Blocked, agent: None, title: None }, now());
         // still hidden by Later: the repeat was not a fresh entry into Blocked
         assert!(s.approvals.pending(&s.agents, &s.hooks).is_empty());
         assert_eq!(s.approvals.badge(&s.agents), 1);

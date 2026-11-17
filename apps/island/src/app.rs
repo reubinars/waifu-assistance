@@ -14,10 +14,12 @@ use crate::ui_collapsed::{self, Scene};
 use crate::ui_expanded::{self, Hot, Hover};
 use crate::window::{self, Event, VK_ESCAPE, Windows};
 use island_core::anim::Fade;
-use island_core::config::Config;
-use island_core::collapsed::Morph;
 use island_core::approvals::{Decision, Pending, PendingKind, Request};
-use island_core::github::{GhEvent, GhRow, GhState, PopSlot, PopWorld, text::row_count as gh_row_count, text::rows as gh_rows};
+use island_core::collapsed::Morph;
+use island_core::config::Config;
+use island_core::github::{
+    GhEvent, GhRow, GhState, PopSlot, PopWorld, text::row_count as gh_row_count, text::rows as gh_rows,
+};
 use island_core::herdr::{Incoming, req_decide};
 use island_core::media::MediaClock;
 use island_core::pet::{PetClock, PetState, Sheet, pet_state, second_pet_state};
@@ -26,16 +28,18 @@ use island_core::ticker::Ticker;
 use island_core::usage::{CliUsage, strip_runs};
 use island_core::view::layout::{self, SEEK};
 use island_core::view::{
-    Action, COLLAPSED, POP, Card, PopupExit, CardKind, Collapsed, Dot, DisplayMode, ExpandedHit, Shown, Spot, Tab, block_rect, block_size, card_identity, cards, choose_collapsed, clock_label, detail_line,
-    corner_radii, countdown_fraction, expanded_size, hit_popup, popup_exit, popup_layout, popup_press_guarded, card_press_guarded, popup_request, fullscreen_jump_target, hit_expanded, is_drag, island_rect,
-    jump_target, max_scroll, pet_cell, scroll_by, second_pet_cell, shown, spot_at,
+    Action, COLLAPSED, Card, CardKind, Collapsed, DisplayMode, Dot, ExpandedHit, POP, PopupExit, Shown, Spot, Tab,
+    block_rect, block_size, card_identity, card_press_guarded, cards, choose_collapsed, clock_label, corner_radii,
+    countdown_fraction, detail_line, expanded_size, fullscreen_jump_target, hit_expanded, hit_popup, is_drag,
+    island_rect, jump_target, max_scroll, pet_cell, popup_exit, popup_layout, popup_press_guarded, popup_request,
+    scroll_by, second_pet_cell, shown, spot_at,
 };
 use island_core::{Point, Rect, Size};
 use std::cell::Cell;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use windows::Win32::Foundation::{D2DERR_RECREATE_TARGET, HANDLE, POINT};
-use windows::Win32::Graphics::Dxgi::{DXGI_ERROR_DEVICE_HUNG, DXGI_ERROR_DEVICE_REMOVED, DXGI_ERROR_DEVICE_RESET};
 use windows::Win32::Graphics::Direct2D::ID2D1Bitmap1;
+use windows::Win32::Graphics::Dxgi::{DXGI_ERROR_DEVICE_HUNG, DXGI_ERROR_DEVICE_REMOVED, DXGI_ERROR_DEVICE_RESET};
 use windows::Win32::UI::WindowsAndMessaging::{GetCursorPos, KillTimer, PostQuitMessage, SetTimer};
 use windows::core::{Error, Result};
 
@@ -409,7 +413,11 @@ impl App {
     /// Shows, holds, closes or drops the GitHub pop for the island's current state. An approval
     /// popup or a user-expanded island holds it; fullscreen or hidden drops the queue.
     fn sync_gh_pop(&mut self, now: Instant) {
-        let world = PopWorld { suppressed: self.fullscreen || self.user_hidden, held: self.expanded, hovered: self.pop_hovered() };
+        let world = PopWorld {
+            suppressed: self.fullscreen || self.user_hidden,
+            held: self.expanded,
+            hovered: self.pop_hovered(),
+        };
         if self.gh_pop.tick(self.session.github.as_mut(), world, now) {
             if let Some(e) = self.gh_pop.showing() {
                 self.pop_drawn = Some(e.clone());
@@ -613,14 +621,24 @@ impl App {
         if self.popup {
             let (r, _) = self.popup_info()?;
             let local = Point { x: p.x - o.x, y: p.y - o.y };
-            return hit_popup(&popup_layout(&r.req), &Self::approval_kind(&r), local).map(|a| ExpandedHit::Button(0, a));
+            return hit_popup(&popup_layout(&r.req), &Self::approval_kind(&r), local)
+                .map(|a| ExpandedHit::Button(0, a));
         }
         let present = self.clock.is_present(Instant::now());
         let kinds: Vec<CardKind> = self.cards().1.into_iter().map(|c| c.kind).collect();
         let seekable = present && self.clock.seekable();
         let usage = !self.usage.is_empty();
         let github = self.session.github.as_ref().map(gh_row_count);
-        hit_expanded(self.tab, present, &kinds, self.scroll, seekable, usage, github, Point { x: p.x - o.x, y: p.y - o.y })
+        hit_expanded(
+            self.tab,
+            present,
+            &kinds,
+            self.scroll,
+            seekable,
+            usage,
+            github,
+            Point { x: p.x - o.x, y: p.y - o.y },
+        )
     }
 
     fn cursor(&self) -> Option<Point> {
@@ -639,7 +657,8 @@ impl App {
             return;
         }
         self.scroll = scroll;
-        self.scroll_fade = Fade { from: self.scroll_fade.value_at(t), to: scroll as f32, start: t, duration: SCROLL_FADE };
+        self.scroll_fade =
+            Fade { from: self.scroll_fade.value_at(t), to: scroll as f32, start: t, duration: SCROLL_FADE };
         self.refresh_hover(t);
         self.dirty = true;
     }
@@ -891,7 +910,10 @@ impl App {
     }
 
     pub fn on_deactivate(&mut self, now: Instant) {
-        if self.expanded && !self.popup && self.expanded_at.is_some_and(|at| now.saturating_duration_since(at) > DEACTIVATE_ARM) {
+        if self.expanded
+            && !self.popup
+            && self.expanded_at.is_some_and(|at| now.saturating_duration_since(at) > DEACTIVATE_ARM)
+        {
             self.collapse();
         }
     }
@@ -1083,10 +1105,10 @@ impl App {
     fn continuous(&self) -> bool {
         self.has_approval()
             || match self.anim.face {
-            Face::Expanded(Tab::Media) => self.clock.is_playing(),
-            Face::Expanded(Tab::Agents) => self.ticker_running(),
-            _ => false,
-        }
+                Face::Expanded(Tab::Media) => self.clock.is_playing(),
+                Face::Expanded(Tab::Agents) => self.ticker_running(),
+                _ => false,
+            }
     }
 
     /// Draws and presents one frame; returns whether to keep animating.
@@ -1255,22 +1277,28 @@ impl App {
                 }
             })
             .collect();
-        let popup = self.popup.then(|| pending.iter().find_map(|p| match &p.kind {
-            PendingKind::Approval(r) => Some(r),
-            _ => None,
-        })).flatten().map(|r| {
-            let agent = agents.iter().find(|a| a.info.pane_id == r.pane_id);
-            ui_expanded::Popup {
-                name: agent.map_or_else(|| r.req.agent.clone(), |a| a.display_name().to_string()),
-                folder: agent.map(|a| a.folder().to_string()).unwrap_or_default(),
-                count: popup_request(&pending).map_or(1, |(_, n)| n),
-                summary: r.req.summary.clone(),
-                detail: r.req.detail.clone(),
-                layout: popup_layout(&r.req),
-                kind: Self::approval_kind(r),
-                fraction: countdown_fraction(r.expires, now, r.timeout_ms),
-            }
-        });
+        let popup = self
+            .popup
+            .then(|| {
+                pending.iter().find_map(|p| match &p.kind {
+                    PendingKind::Approval(r) => Some(r),
+                    _ => None,
+                })
+            })
+            .flatten()
+            .map(|r| {
+                let agent = agents.iter().find(|a| a.info.pane_id == r.pane_id);
+                ui_expanded::Popup {
+                    name: agent.map_or_else(|| r.req.agent.clone(), |a| a.display_name().to_string()),
+                    folder: agent.map(|a| a.folder().to_string()).unwrap_or_default(),
+                    count: popup_request(&pending).map_or(1, |(_, n)| n),
+                    summary: r.req.summary.clone(),
+                    detail: r.req.detail.clone(),
+                    layout: popup_layout(&r.req),
+                    kind: Self::approval_kind(r),
+                    fraction: countdown_fraction(r.expires, now, r.timeout_ms),
+                }
+            });
         let slots = self.list_rows();
         let collapsed = Scene {
             badge: self.collapsed.badge,
@@ -1300,18 +1328,26 @@ impl App {
             cell: sheet.solo.cell(self.pet.state(), self.pet.ms(t)),
             scale: self.win.scale,
         });
-        let pet2 = self.pet2_sheet.as_ref().zip(self.pet2_bmps.as_ref()).filter(|_| pet.is_some()).map(|((sheet, _), bmps)| Sprite {
-            bmp: &bmps.solo,
-            atlas: &sheet.solo,
-            cell: sheet.solo.cell(self.pet2.state(), self.pet2.ms(t)),
-            scale: self.win.scale,
-        });
+        let pet2 = self.pet2_sheet.as_ref().zip(self.pet2_bmps.as_ref()).filter(|_| pet.is_some()).map(
+            |((sheet, _), bmps)| Sprite {
+                bmp: &bmps.solo,
+                atlas: &sheet.solo,
+                cell: sheet.solo.cell(self.pet2.state(), self.pet2.ms(t)),
+                scale: self.win.scale,
+            },
+        );
         let pets = self.pets();
         let Some(dev) = self.device.as_mut() else { return Ok(()) };
         dev.gfx.begin();
         dev.painter.begin_frame();
         let drawn = draw_island(
-            dev, &self.anim, (self.config.display_mode, self.config.spot(), pets), t, &collapsed, &expanded, [pet.as_ref(), pet2.as_ref()],
+            dev,
+            &self.anim,
+            (self.config.display_mode, self.config.spot(), pets),
+            t,
+            &collapsed,
+            &expanded,
+            [pet.as_ref(), pet2.as_ref()],
         );
         let presented = dev.gfx.end();
         // the strip measured its text: a new width can change whether (and how far) it scrolls
@@ -1460,5 +1496,6 @@ fn draw_backdrop(p: &mut Painter, b: &Backdrop) -> Result<()> {
 /// The collapsed arc's colour: the album-art tint brightened for the black dot, else white.
 /// The errors after which the device must be rebuilt (and rebuilding helps).
 fn device_lost(e: &Error) -> bool {
-    [D2DERR_RECREATE_TARGET, DXGI_ERROR_DEVICE_REMOVED, DXGI_ERROR_DEVICE_RESET, DXGI_ERROR_DEVICE_HUNG].contains(&e.code())
+    [D2DERR_RECREATE_TARGET, DXGI_ERROR_DEVICE_REMOVED, DXGI_ERROR_DEVICE_RESET, DXGI_ERROR_DEVICE_HUNG]
+        .contains(&e.code())
 }

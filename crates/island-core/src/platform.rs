@@ -16,7 +16,9 @@ pub struct BridgeBackoff {
 }
 
 impl Default for BridgeBackoff {
-    fn default() -> Self { Self { next_seconds: 1 } }
+    fn default() -> Self {
+        Self { next_seconds: 1 }
+    }
 }
 
 impl BridgeBackoff {
@@ -27,7 +29,9 @@ impl BridgeBackoff {
     }
 
     pub fn ran_for(&mut self, uptime: Duration) {
-        if uptime >= Duration::from_secs(30) { *self = Self::default(); }
+        if uptime >= Duration::from_secs(30) {
+            *self = Self::default();
+        }
     }
 }
 
@@ -133,7 +137,10 @@ pub fn is_fullscreen(fg: Rect, monitor: Rect, class: &str, is_own: bool, app_max
     if is_own || app_maximized || matches!(class, "Progman" | "WorkerW" | "Shell_TrayWnd") {
         return false;
     }
-    fg.x <= monitor.x && fg.y <= monitor.y && fg.x + fg.w >= monitor.x + monitor.w && fg.y + fg.h >= monitor.y + monitor.h
+    fg.x <= monitor.x
+        && fg.y <= monitor.y
+        && fg.x + fg.w >= monitor.x + monitor.w
+        && fg.y + fg.h >= monitor.y + monitor.h
 }
 
 /// A screen edge, in `ABE_*` order.
@@ -212,7 +219,9 @@ mod tests {
 
     #[test]
     fn wsl_states() {
-        let raw = utf16le("  NAME      STATE           VERSION\r\n* Ubuntu    Stopped         2\r\n  Debian    Running         2\r\n");
+        let raw = utf16le(
+            "  NAME      STATE           VERSION\r\n* Ubuntu    Stopped         2\r\n  Debian    Running         2\r\n",
+        );
         let d = parse_wsl_list_verbose(&raw);
         assert!(!should_run_bridge(&d, ""));
         assert!(should_run_bridge(&d, "Debian"));
@@ -226,7 +235,10 @@ mod tests {
 
     #[test]
     fn bridge_cmd() {
-        assert_eq!(bridge_command(&Config::default()), vec!["--", "sh", "-c", "exec \"$HOME/.local/bin/island-bridge\""]);
+        assert_eq!(
+            bridge_command(&Config::default()),
+            vec!["--", "sh", "-c", "exec \"$HOME/.local/bin/island-bridge\""]
+        );
         assert_eq!(bridge_command(&Config { wsl_distro: "Ubuntu".into(), ..Config::default() })[..2], ["-d", "Ubuntu"]);
         let odd = Config { bridge_path: "/opt/a \"b\"/bridge".into(), ..Config::default() };
         assert_eq!(bridge_command(&odd)[3], "exec \"/opt/a \\\"b\\\"/bridge\"");
@@ -256,7 +268,10 @@ mod tests {
 
     #[test]
     fn run_value_quotes_the_exe_path() {
-        assert_eq!(run_value(r"C:\Users\A B\AppData\Local\island\island.exe"), r#""C:\Users\A B\AppData\Local\island\island.exe""#);
+        assert_eq!(
+            run_value(r"C:\Users\A B\AppData\Local\island\island.exe"),
+            r#""C:\Users\A B\AppData\Local\island\island.exe""#
+        );
     }
 
     #[test]

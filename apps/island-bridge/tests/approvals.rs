@@ -1,6 +1,6 @@
 //! Runs the real bridge and hook binaries: the bridge is the island's end of the socket.
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};

@@ -144,7 +144,10 @@ fn script(tx: UiSender) {
             },
             timeout_ms: 45_000,
         }));
-        tx.send(SourceEvent::Herdr(Incoming::Question { pane_id: "w1:p5".into(), text: "Which branch should I base this on?".into() }));
+        tx.send(SourceEvent::Herdr(Incoming::Question {
+            pane_id: "w1:p5".into(),
+            text: "Which branch should I base this on?".into(),
+        }));
         thread::sleep(STEP * 3);
         demo(&tx, DemoAction::Expand(Tab::Agents));
         thread::sleep(STEP * 2);

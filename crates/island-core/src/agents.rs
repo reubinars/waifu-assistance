@@ -130,8 +130,8 @@ pub(crate) fn test_info(pane: &str, status: crate::herdr::AgentStatus) -> crate:
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::herdr::AgentStatus::*;
     use crate::herdr::AgentInfo;
+    use crate::herdr::AgentStatus::*;
     use std::time::{Duration, Instant};
 
     fn info(pane: &str, s: crate::herdr::AgentStatus) -> AgentInfo {

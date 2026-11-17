@@ -274,7 +274,12 @@ impl Morph {
         Pose {
             dots: std::array::from_fn(|i| {
                 let (a, b) = (f.dots[i], raw.dots[i]);
-                DotPose { x: mix(a.x, b.x, k), y: mix(a.y, b.y, k), d: mix(a.d, b.d, k), alpha: mix(a.alpha, b.alpha, k) }
+                DotPose {
+                    x: mix(a.x, b.x, k),
+                    y: mix(a.y, b.y, k),
+                    d: mix(a.d, b.d, k),
+                    alpha: mix(a.alpha, b.alpha, k),
+                }
             }),
             color: std::array::from_fn(|j| mix(f.color[j], raw.color[j], k)),
             ring,
@@ -554,7 +559,10 @@ mod tests {
     fn assert_pose_close(a: &Pose, b: &Pose, what: &str) {
         let near = |x: f32, y: f32| (x - y).abs() < 1e-3;
         for (da, db) in a.dots.iter().zip(&b.dots) {
-            assert!(near(da.x, db.x) && near(da.y, db.y) && near(da.d, db.d) && near(da.alpha, db.alpha), "{what}: dots {a:?} vs {b:?}");
+            assert!(
+                near(da.x, db.x) && near(da.y, db.y) && near(da.d, db.d) && near(da.alpha, db.alpha),
+                "{what}: dots {a:?} vs {b:?}"
+            );
         }
         assert!(a.color.iter().zip(&b.color).all(|(x, y)| near(*x, *y)), "{what}: color");
         assert!(near(a.tick, b.tick), "{what}: tick {} vs {}", a.tick, b.tick);
@@ -567,8 +575,10 @@ mod tests {
 
     #[test]
     fn any_change_leaves_the_drawn_pose_unchanged() {
-        let states: Vec<(Dot, bool)> =
-            [Dot::Idle, Dot::Working, Dot::Blocked, Dot::Done].into_iter().flat_map(|d| [(d, false), (d, true)]).collect();
+        let states: Vec<(Dot, bool)> = [Dot::Idle, Dot::Working, Dot::Blocked, Dot::Done]
+            .into_iter()
+            .flat_map(|d| [(d, false), (d, true)])
+            .collect();
         for &a in &states {
             for &b in &states {
                 for &c in &states {

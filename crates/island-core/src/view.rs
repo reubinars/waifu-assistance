@@ -2,10 +2,10 @@
 
 use crate::agents::AgentTable;
 use crate::approvals::{ApprovalRequest, Detail, Pending, PendingKind, Request};
-use std::time::Instant;
 use crate::herdr::AgentStatus;
 use crate::{Point, Rect, Size};
 use serde::{Deserialize, Serialize};
+use std::time::Instant;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -16,10 +16,19 @@ pub enum DisplayMode {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Dot { Idle, Working, Done, Blocked }
+pub enum Dot {
+    Idle,
+    Working,
+    Done,
+    Blocked,
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Collapsed { pub dot: Dot, pub media: bool, pub badge: u8 }
+pub struct Collapsed {
+    pub dot: Dot,
+    pub media: bool,
+    pub badge: u8,
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Tab {
@@ -264,10 +273,7 @@ pub fn jump_target(agents: &AgentTable) -> Option<String> {
     if agents.count(AgentStatus::Blocked) + agents.count(AgentStatus::Done) != 1 {
         return None;
     }
-    agents
-        .first(AgentStatus::Blocked)
-        .or_else(|| agents.first(AgentStatus::Done))
-        .map(|a| a.info.pane_id.clone())
+    agents.first(AgentStatus::Blocked).or_else(|| agents.first(AgentStatus::Done)).map(|a| a.info.pane_id.clone())
 }
 
 /// A click on the blocked pill over fullscreen can't expand, so with several agents needing
@@ -295,8 +301,8 @@ pub fn clock_label(secs: f64) -> String {
 
 /// Expanded-island layout, relative to the expanded island's top-left (DIPs).
 pub mod layout {
-    use crate::Rect;
     use super::{Action, CardKind, Tab};
+    use crate::Rect;
 
     pub const PAD_Y: f32 = 14.0;
     pub const PAD_X: f32 = 16.0;
@@ -308,7 +314,8 @@ pub mod layout {
 
     /// The present tabs (Agents, Media, GitHub), right-aligned to `TAB_RIGHT`.
     pub fn tabs(media: bool, github: bool) -> impl Iterator<Item = (Tab, Rect)> {
-        let present = [(Tab::Agents, TAB_AGENTS_W, true), (Tab::Media, TAB_MEDIA_W, media), (Tab::GitHub, TAB_GITHUB_W, github)];
+        let present =
+            [(Tab::Agents, TAB_AGENTS_W, true), (Tab::Media, TAB_MEDIA_W, media), (Tab::GitHub, TAB_GITHUB_W, github)];
         let mut right = TAB_RIGHT;
         let mut out = Vec::with_capacity(3);
         for (tab, w, shown) in present.into_iter().rev() {
@@ -327,10 +334,7 @@ pub mod layout {
     pub const ROW_W: f32 = 344.0;
     pub const ROW_H: f32 = 44.0;
     pub const ROW_RADIUS: f32 = 12.0;
-    pub const LIST: Rect = Rect {
-        x: 0.0, y: ROW_Y, w: super::EXPANDED.w,
-        h: ROW_STEP * (MAX_ROWS - 1) as f32 + ROW_H,
-    };
+    pub const LIST: Rect = Rect { x: 0.0, y: ROW_Y, w: super::EXPANDED.w, h: ROW_STEP * (MAX_ROWS - 1) as f32 + ROW_H };
     pub const USAGE: Rect = Rect { x: 8.0, y: 194.0, w: 344.0, h: 18.0 };
     pub const ART: Rect = Rect { x: 16.0, y: 16.0, w: 70.0, h: 70.0 };
     pub const TITLE: Rect = Rect { x: 98.0, y: 34.0, w: 200.0, h: 18.0 };
@@ -404,7 +408,13 @@ pub mod layout {
 
 /// What a card button does.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Action { Allow, Deny, Always, OpenTerminal, Later }
+pub enum Action {
+    Allow,
+    Deny,
+    Always,
+    OpenTerminal,
+    Later,
+}
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum CardKind {
@@ -611,7 +621,16 @@ pub fn scroll_by(offset: usize, notches: i32, rows: usize) -> usize {
 
 /// What a click at `p` (relative to the expanded island's top-left) hit, if anything.
 #[allow(clippy::too_many_arguments)]
-pub fn hit_expanded(tab: Tab, media_present: bool, cards: &[CardKind], scroll: usize, seekable: bool, usage: bool, github: Option<usize>, p: Point) -> Option<ExpandedHit> {
+pub fn hit_expanded(
+    tab: Tab,
+    media_present: bool,
+    cards: &[CardKind],
+    scroll: usize,
+    seekable: bool,
+    usage: bool,
+    github: Option<usize>,
+    p: Point,
+) -> Option<ExpandedHit> {
     use layout::*;
     for (tab, r) in tabs(media_present, github.is_some()) {
         if inside(r, p) {
@@ -652,17 +671,10 @@ pub fn hit_expanded(tab: Tab, media_present: bool, cards: &[CardKind], scroll: u
         Tab::GitHub => {
             let n = github?;
             let scroll = scroll.min(max_scroll(n));
-            (scroll..n.min(scroll + MAX_ROWS))
-                .find(|&i| inside(slot_rect(i - scroll), p))
-                .map(ExpandedHit::GhRow)
+            (scroll..n.min(scroll + MAX_ROWS)).find(|&i| inside(slot_rect(i - scroll), p)).map(ExpandedHit::GhRow)
         }
         Tab::Media => {
-            let seek_hit = Rect {
-                x: SEEK.x,
-                y: SEEK.y + SEEK.h / 2.0 - SEEK_HIT_H / 2.0,
-                w: SEEK.w,
-                h: SEEK_HIT_H,
-            };
+            let seek_hit = Rect { x: SEEK.x, y: SEEK.y + SEEK.h / 2.0 - SEEK_HIT_H / 2.0, w: SEEK.w, h: SEEK_HIT_H };
             if seekable && inside(seek_hit, p) {
                 return Some(ExpandedHit::Seek(((p.x - SEEK.x) / SEEK.w).clamp(0.0, 1.0)));
             }
@@ -679,7 +691,13 @@ mod tests {
 
     #[test]
     fn approval_buttons_never_overlap() {
-        let a = ApprovalRequest { agent: "claude".into(), tool: "Bash".into(), summary: "s".into(), detail: None, can_always: true };
+        let a = ApprovalRequest {
+            agent: "claude".into(),
+            tool: "Bash".into(),
+            summary: "s".into(),
+            detail: None,
+            can_always: true,
+        };
         let kind = CardKind::Approval { id: "a".into(), can_always: true };
         for band in [popup_layout(&a).band, layout::card_band(layout::card_rect(0, 2))] {
             let mut bs = layout::buttons(&kind, band);
@@ -723,10 +741,10 @@ mod tests {
     #[test]
     fn tab_layouts_and_hits() {
         assert_eq!(layout::tabs(false, false).collect::<Vec<_>>(), vec![(Tab::Agents, rect(290.0, 10.0, 60.0, 24.0))]);
-        assert_eq!(layout::tabs(true, false).collect::<Vec<_>>(), vec![
-            (Tab::Agents, rect(232.0, 10.0, 60.0, 24.0)),
-            (Tab::Media, rect(296.0, 10.0, 54.0, 24.0)),
-        ]);
+        assert_eq!(
+            layout::tabs(true, false).collect::<Vec<_>>(),
+            vec![(Tab::Agents, rect(232.0, 10.0, 60.0, 24.0)), (Tab::Media, rect(296.0, 10.0, 54.0, 24.0)),]
+        );
         let hit = |media, x| hit_expanded(Tab::Agents, media, &[], 0, false, false, None, Point { x, y: 20.0 });
         assert_eq!(hit(false, 291.0), Some(ExpandedHit::Tab(Tab::Agents)));
         assert_eq!(hit(false, 345.0), Some(ExpandedHit::Tab(Tab::Agents)));
@@ -742,29 +760,40 @@ mod tests {
     #[test]
     fn three_tabs_fit_right_aligned() {
         let t = |m, g| layout::tabs(m, g).collect::<Vec<_>>();
-        assert_eq!(t(true, true), vec![
-            (Tab::Agents, rect(168.0, 10.0, 60.0, 24.0)),
-            (Tab::Media, rect(232.0, 10.0, 54.0, 24.0)),
-            (Tab::GitHub, rect(290.0, 10.0, 60.0, 24.0)),
-        ]);
-        assert_eq!(t(false, true), vec![
-            (Tab::Agents, rect(226.0, 10.0, 60.0, 24.0)),
-            (Tab::GitHub, rect(290.0, 10.0, 60.0, 24.0)),
-        ]);
+        assert_eq!(
+            t(true, true),
+            vec![
+                (Tab::Agents, rect(168.0, 10.0, 60.0, 24.0)),
+                (Tab::Media, rect(232.0, 10.0, 54.0, 24.0)),
+                (Tab::GitHub, rect(290.0, 10.0, 60.0, 24.0)),
+            ]
+        );
+        assert_eq!(
+            t(false, true),
+            vec![(Tab::Agents, rect(226.0, 10.0, 60.0, 24.0)), (Tab::GitHub, rect(290.0, 10.0, 60.0, 24.0)),]
+        );
         assert_eq!(t(true, false)[0].1, rect(232.0, 10.0, 60.0, 24.0));
         assert_eq!(t(false, false), vec![(Tab::Agents, rect(290.0, 10.0, 60.0, 24.0))]);
     }
 
     #[test]
     fn github_rows_hit() {
-        let hit = |github, scroll, y| hit_expanded(Tab::GitHub, false, &[], scroll, false, false, github, Point { x: 100.0, y });
+        let hit = |github, scroll, y| {
+            hit_expanded(Tab::GitHub, false, &[], scroll, false, false, github, Point { x: 100.0, y })
+        };
         let y = |slot| layout::slot_rect(slot).y + 5.0;
         assert_eq!(hit(Some(5), 1, y(0)), Some(ExpandedHit::GhRow(1)));
         assert_eq!(hit(Some(5), 1, y(2)), Some(ExpandedHit::GhRow(3)));
         assert_eq!(hit(Some(1), 0, y(1)), None);
         let tab = Point { x: 300.0, y: 20.0 };
-        assert_eq!(hit_expanded(Tab::Agents, false, &[], 0, false, false, Some(0), tab), Some(ExpandedHit::Tab(Tab::GitHub)));
-        assert_eq!(hit_expanded(Tab::Agents, false, &[], 0, false, false, None, tab), Some(ExpandedHit::Tab(Tab::Agents)));
+        assert_eq!(
+            hit_expanded(Tab::Agents, false, &[], 0, false, false, Some(0), tab),
+            Some(ExpandedHit::Tab(Tab::GitHub))
+        );
+        assert_eq!(
+            hit_expanded(Tab::Agents, false, &[], 0, false, false, None, tab),
+            Some(ExpandedHit::Tab(Tab::Agents))
+        );
         assert_eq!(POP, Size { w: 300.0, h: 36.0 });
     }
 
@@ -775,13 +804,8 @@ mod tests {
 
     const TOP: Spot = Spot::TOP_CENTRE;
 
-    const PET_SIZES: [Size; 5] = [
-        Size { w: 40.0, h: 40.0 },
-        Size { w: 160.0, h: 40.0 },
-        Size { w: 260.0, h: 40.0 },
-        EXPANDED,
-        EXPANDED_USAGE,
-    ];
+    const PET_SIZES: [Size; 5] =
+        [Size { w: 40.0, h: 40.0 }, Size { w: 160.0, h: 40.0 }, Size { w: 260.0, h: 40.0 }, EXPANDED, EXPANDED_USAGE];
     const PET_SPOTS: [Spot; 5] = [
         Spot { x: 0.0, y: 0.0 },
         Spot { x: 1.0, y: 0.0 },
@@ -1039,7 +1063,10 @@ mod tests {
             assert_eq!(r.x, 8.0);
             assert_eq!(r.x + r.w, EXPANDED.w - 8.0);
             let p = Point { x: r.x + r.w / 2.0, y: r.y + r.h / 2.0 };
-            assert_eq!(hit_expanded(Tab::Agents, false, &[const { CardKind::Agent }; 5], 1, false, false, None, p), Some(ExpandedHit::Row(i + 1)));
+            assert_eq!(
+                hit_expanded(Tab::Agents, false, &[const { CardKind::Agent }; 5], 1, false, false, None, p),
+                Some(ExpandedHit::Row(i + 1))
+            );
         }
         assert_eq!(layout::slot_rect(0).h, 44.0);
         assert_eq!(layout::slot_rect(1).y - layout::slot_rect(0).y, 50.0);
@@ -1068,7 +1095,9 @@ mod tests {
 
     #[test]
     fn scrolled_hits_use_absolute_rows_inside_the_list() {
-        let hit = |rows, scroll, x, y| hit_expanded(Tab::Agents, false, &vec![CardKind::Agent; rows], scroll, false, false, None, Point { x, y });
+        let hit = |rows, scroll, x, y| {
+            hit_expanded(Tab::Agents, false, &vec![CardKind::Agent; rows], scroll, false, false, None, Point { x, y })
+        };
         assert_eq!(hit(5, 1, 100.0, 50.0), Some(ExpandedHit::Row(1)));
         assert_eq!(hit(5, 1, 100.0, 175.0), Some(ExpandedHit::Row(3)));
         assert_eq!(hit(2, 0, 100.0, 150.0), None);
@@ -1083,16 +1112,37 @@ mod tests {
     #[test]
     fn expanded_hits() {
         let p = |x, y| Point { x, y };
-        assert_eq!(hit_expanded(Tab::Media, true, &[], 0, true, false, None, p(180.0, 160.0)), Some(ExpandedHit::PlayPause));
+        assert_eq!(
+            hit_expanded(Tab::Media, true, &[], 0, true, false, None, p(180.0, 160.0)),
+            Some(ExpandedHit::PlayPause)
+        );
         assert_eq!(hit_expanded(Tab::Media, true, &[], 0, true, false, None, p(130.0, 160.0)), Some(ExpandedHit::Prev));
         assert_eq!(hit_expanded(Tab::Media, true, &[], 0, true, false, None, p(230.0, 160.0)), Some(ExpandedHit::Next));
-        assert_eq!(hit_expanded(Tab::Media, true, &[], 0, true, false, None, p(180.0, 110.0)), Some(ExpandedHit::Seek(0.5)));
+        assert_eq!(
+            hit_expanded(Tab::Media, true, &[], 0, true, false, None, p(180.0, 110.0)),
+            Some(ExpandedHit::Seek(0.5))
+        );
         assert_eq!(hit_expanded(Tab::Media, true, &[], 0, false, false, None, p(180.0, 110.0)), None);
-        assert_eq!(hit_expanded(Tab::Agents, true, &[const { CardKind::Agent }; 2], 0, false, false, None, p(100.0, 120.0)), Some(ExpandedHit::Row(1)));
-        assert_eq!(hit_expanded(Tab::Agents, true, &[const { CardKind::Agent }; 1], 0, false, false, None, p(100.0, 120.0)), None);
-        assert_eq!(hit_expanded(Tab::Agents, true, &[], 0, false, false, None, p(300.0, 20.0)), Some(ExpandedHit::Tab(Tab::Media)));
-        assert_eq!(hit_expanded(Tab::Media, true, &[], 0, false, false, None, p(250.0, 20.0)), Some(ExpandedHit::Tab(Tab::Agents)));
-        assert_eq!(hit_expanded(Tab::Agents, false, &[], 0, false, false, None, p(300.0, 20.0)), Some(ExpandedHit::Tab(Tab::Agents)));
+        assert_eq!(
+            hit_expanded(Tab::Agents, true, &[const { CardKind::Agent }; 2], 0, false, false, None, p(100.0, 120.0)),
+            Some(ExpandedHit::Row(1))
+        );
+        assert_eq!(
+            hit_expanded(Tab::Agents, true, &[const { CardKind::Agent }; 1], 0, false, false, None, p(100.0, 120.0)),
+            None
+        );
+        assert_eq!(
+            hit_expanded(Tab::Agents, true, &[], 0, false, false, None, p(300.0, 20.0)),
+            Some(ExpandedHit::Tab(Tab::Media))
+        );
+        assert_eq!(
+            hit_expanded(Tab::Media, true, &[], 0, false, false, None, p(250.0, 20.0)),
+            Some(ExpandedHit::Tab(Tab::Agents))
+        );
+        assert_eq!(
+            hit_expanded(Tab::Agents, false, &[], 0, false, false, None, p(300.0, 20.0)),
+            Some(ExpandedHit::Tab(Tab::Agents))
+        );
         // buttons only exist on the media tab
         assert_eq!(hit_expanded(Tab::Agents, true, &[], 0, false, false, None, p(180.0, 160.0)), None);
     }
@@ -1109,7 +1159,10 @@ mod tests {
     #[test]
     fn usage_strip_hit() {
         let p = Point { x: 100.0, y: 200.0 };
-        assert_eq!(hit_expanded(Tab::Agents, false, &[const { CardKind::Agent }; 2], 0, false, true, None, p), Some(ExpandedHit::Usage));
+        assert_eq!(
+            hit_expanded(Tab::Agents, false, &[const { CardKind::Agent }; 2], 0, false, true, None, p),
+            Some(ExpandedHit::Usage)
+        );
         assert_eq!(hit_expanded(Tab::Agents, false, &[const { CardKind::Agent }; 2], 0, false, false, None, p), None);
         assert_eq!(hit_expanded(Tab::Media, true, &[const { CardKind::Agent }; 2], 0, false, true, None, p), None);
     }
@@ -1120,7 +1173,18 @@ mod tests {
 
     #[test]
     fn approval_cards_span_two_slots() {
-        let hit = |scroll, y| hit_expanded(Tab::Agents, false, &[approval(true), CardKind::Agent, CardKind::Agent], scroll, false, false, None, Point { x: 100.0, y });
+        let hit = |scroll, y| {
+            hit_expanded(
+                Tab::Agents,
+                false,
+                &[approval(true), CardKind::Agent, CardKind::Agent],
+                scroll,
+                false,
+                false,
+                None,
+                Point { x: 100.0, y },
+            )
+        };
         assert_eq!(hit(0, 50.0), Some(ExpandedHit::Row(0)));
         assert_eq!(hit(0, 100.0), Some(ExpandedHit::Row(0)));
         assert_eq!(hit(0, 150.0), Some(ExpandedHit::Row(1)));
@@ -1155,8 +1219,23 @@ mod tests {
         let band = layout::card_band(card);
         let allow = layout::buttons(&approval(true), band)[3].1;
         let p = Point { x: allow.x + allow.w / 2.0, y: allow.y + allow.h / 2.0 };
-        assert_eq!(hit_expanded(Tab::Agents, false, &[approval(true), CardKind::Agent], 0, false, false, None, p), Some(ExpandedHit::Button(0, Action::Allow)));
-        assert_eq!(hit_expanded(Tab::Agents, false, &[approval(true), CardKind::Agent], 0, false, false, None, Point { x: 100.0, y: 60.0 }), Some(ExpandedHit::Row(0)));
+        assert_eq!(
+            hit_expanded(Tab::Agents, false, &[approval(true), CardKind::Agent], 0, false, false, None, p),
+            Some(ExpandedHit::Button(0, Action::Allow))
+        );
+        assert_eq!(
+            hit_expanded(
+                Tab::Agents,
+                false,
+                &[approval(true), CardKind::Agent],
+                0,
+                false,
+                false,
+                None,
+                Point { x: 100.0, y: 60.0 }
+            ),
+            Some(ExpandedHit::Row(0))
+        );
     }
 
     #[test]
@@ -1168,26 +1247,44 @@ mod tests {
         assert_eq!(hit(CardKind::Question, centre(q[0].1)), Some(ExpandedHit::Button(0, Action::Later)));
         assert_eq!(hit(CardKind::Question, centre(q[1].1)), Some(ExpandedHit::Button(0, Action::OpenTerminal)));
         let n = layout::buttons(&CardKind::NeedsYou { hook_missing: false }, band);
-        assert_eq!(hit(CardKind::NeedsYou { hook_missing: true }, centre(n[0].1)), Some(ExpandedHit::Button(0, Action::OpenTerminal)));
+        assert_eq!(
+            hit(CardKind::NeedsYou { hook_missing: true }, centre(n[0].1)),
+            Some(ExpandedHit::Button(0, Action::OpenTerminal))
+        );
         assert_eq!(hit(CardKind::Agent, centre(n[0].1)), Some(ExpandedHit::Row(0)));
         // an approval without Always: where Always would sit is the card body
         let card = layout::card_rect(0, 2);
         let always = layout::buttons(&approval(true), layout::card_band(card))[2].1;
         let p = centre(always);
-        assert_eq!(hit_expanded(Tab::Agents, false, &[approval(true)], 0, false, false, None, p), Some(ExpandedHit::Button(0, Action::Always)));
-        assert_eq!(hit_expanded(Tab::Agents, false, &[approval(false)], 0, false, false, None, p), Some(ExpandedHit::Row(0)));
+        assert_eq!(
+            hit_expanded(Tab::Agents, false, &[approval(true)], 0, false, false, None, p),
+            Some(ExpandedHit::Button(0, Action::Always))
+        );
+        assert_eq!(
+            hit_expanded(Tab::Agents, false, &[approval(false)], 0, false, false, None, p),
+            Some(ExpandedHit::Row(0))
+        );
     }
 
     #[test]
     fn popup_heights() {
-        let req = |detail| ApprovalRequest { agent: "claude".into(), tool: "Edit".into(), summary: "s".into(), detail, can_always: true };
+        let req = |detail| ApprovalRequest {
+            agent: "claude".into(),
+            tool: "Edit".into(),
+            summary: "s".into(),
+            detail,
+            can_always: true,
+        };
         let file = |n| (0..n).map(|i| FileChange { path: format!("f{i}"), added: 1, removed: 0 }).collect();
         assert_eq!(popup_layout(&req(None)).size, Size { w: 360.0, h: 122.0 });
         assert_eq!(popup_layout(&req(Some(Detail::Files(file(1))))).size.h, 161.0);
         assert_eq!(popup_layout(&req(Some(Detail::Files(file(5))))).size.h, 209.0);
         assert_eq!(popup_layout(&req(Some(Detail::Command("a\nb\nc".into())))).size.h, 161.0 + 16.0);
         let l = popup_layout(&req(None));
-        assert_eq!((l.band.x, l.band.y, l.bar.w, l.bar.y), (36.0, 14.0 + 18.0 + 9.0 + 18.0 + 9.0, 304.0, 14.0 + 18.0 + 9.0 + 18.0 + 9.0 + 28.0 + 9.0));
+        assert_eq!(
+            (l.band.x, l.band.y, l.bar.w, l.bar.y),
+            (36.0, 14.0 + 18.0 + 9.0 + 18.0 + 9.0, 304.0, 14.0 + 18.0 + 9.0 + 18.0 + 9.0 + 28.0 + 9.0)
+        );
         let allow = layout::buttons(&approval(true), l.band)[3].1;
         let p = Point { x: allow.x + 1.0, y: allow.y + 1.0 };
         assert_eq!(hit_popup(&l, &approval(true), p), Some(Action::Allow));
@@ -1231,19 +1328,37 @@ mod tests {
         let mut t = AgentTable::default();
         t.upsert(test_info("w1:p1", Working), t0);
         t.upsert(test_info("w1:p2", Blocked), t0);
-        let req = ApprovalRequest { agent: "claude".into(), tool: "Bash".into(), summary: "s".into(), detail: None, can_always: false };
+        let req = ApprovalRequest {
+            agent: "claude".into(),
+            tool: "Bash".into(),
+            summary: "s".into(),
+            detail: None,
+            can_always: false,
+        };
         let pending = [
-            Pending { pane_id: "w1:p2".into(), kind: PendingKind::Approval(crate::approvals::Request { id: "r1".into(), pane_id: "w1:p2".into(), req, expires: t0, timeout_ms: 45_000 }) },
+            Pending {
+                pane_id: "w1:p2".into(),
+                kind: PendingKind::Approval(crate::approvals::Request {
+                    id: "r1".into(),
+                    pane_id: "w1:p2".into(),
+                    req,
+                    expires: t0,
+                    timeout_ms: 45_000,
+                }),
+            },
             Pending { pane_id: "w1:p2".into(), kind: PendingKind::Question("q".into()) },
             Pending { pane_id: "w1:p9".into(), kind: PendingKind::NeedsYou { hook_missing: true } },
         ];
         let c = cards(&pending, &t);
         let got: Vec<_> = c.iter().map(|c| (c.pane_id.as_str(), c.kind.clone(), c.slots())).collect();
-        assert_eq!(got, [
-            ("w1:p2", CardKind::Approval { id: "r1".into(), can_always: false }, 2),
-            ("w1:p9", CardKind::NeedsYou { hook_missing: true }, 1),
-            ("w1:p1", CardKind::Agent, 1),
-        ]);
+        assert_eq!(
+            got,
+            [
+                ("w1:p2", CardKind::Approval { id: "r1".into(), can_always: false }, 2),
+                ("w1:p9", CardKind::NeedsYou { hook_missing: true }, 1),
+                ("w1:p1", CardKind::Agent, 1),
+            ]
+        );
     }
 
     #[test]
@@ -1298,7 +1413,10 @@ mod tests {
             for dot in [Dot::Idle, Dot::Working, Dot::Done, Dot::Blocked] {
                 let c = Collapsed { dot, media, badge: 0 };
                 assert_eq!(shown(false, false, &c), Shown::All);
-                assert_eq!(shown(false, true, &c), if dot == Dot::Blocked { Shown::CollapsedOnly } else { Shown::Hidden });
+                assert_eq!(
+                    shown(false, true, &c),
+                    if dot == Dot::Blocked { Shown::CollapsedOnly } else { Shown::Hidden }
+                );
                 assert_eq!(shown(true, false, &c), Shown::Hidden);
                 assert_eq!(shown(true, true, &c), Shown::Hidden);
             }
@@ -1346,7 +1464,18 @@ mod tests {
             let o = window_origin(DisplayMode::Pill, left, left, 1.5, spot, pet);
             let r = block_rect(spot, size, pet);
             let size = block_size(size, pet);
-            assert_near(spot_at(DisplayMode::Pill, left, left, 1.5, size, pet, Point { x: o.x + r.x * 1.5, y: o.y + r.y * 1.5 }), spot);
+            assert_near(
+                spot_at(
+                    DisplayMode::Pill,
+                    left,
+                    left,
+                    1.5,
+                    size,
+                    pet,
+                    Point { x: o.x + r.x * 1.5, y: o.y + r.y * 1.5 },
+                ),
+                spot,
+            );
         }
     }
 
@@ -1359,10 +1488,19 @@ mod tests {
     fn dragged_past_an_edge_it_stays_at_that_edge() {
         let wa = rect(0.0, 0.0, 1920.0, 1040.0);
         let size = Size { w: 160.0, h: 40.0 };
-        assert_eq!(spot_at(DisplayMode::Pill, wa, wa, 1.0, size, 0, Point { x: -500.0, y: 5000.0 }), Spot { x: 0.0, y: 1.0 });
-        assert_eq!(spot_at(DisplayMode::Pill, wa, wa, 1.0, size, 0, Point { x: 5000.0, y: -500.0 }), Spot { x: 1.0, y: 0.0 });
+        assert_eq!(
+            spot_at(DisplayMode::Pill, wa, wa, 1.0, size, 0, Point { x: -500.0, y: 5000.0 }),
+            Spot { x: 0.0, y: 1.0 }
+        );
+        assert_eq!(
+            spot_at(DisplayMode::Pill, wa, wa, 1.0, size, 0, Point { x: 5000.0, y: -500.0 }),
+            Spot { x: 1.0, y: 0.0 }
+        );
         // attached ignores the vertical move
-        assert_eq!(spot_at(DisplayMode::Attached, wa, wa, 1.0, size, 0, Point { x: 880.0, y: 700.0 }), Spot { x: 0.5, y: 0.0 });
+        assert_eq!(
+            spot_at(DisplayMode::Attached, wa, wa, 1.0, size, 0, Point { x: 880.0, y: 700.0 }),
+            Spot { x: 0.5, y: 0.0 }
+        );
         // a monitor narrower than the island: centred
         let tiny = rect(0.0, 0.0, 100.0, 600.0);
         assert_eq!(spot_at(DisplayMode::Pill, tiny, tiny, 1.0, size, 0, Point { x: 0.0, y: 0.0 }).x, 0.5);
@@ -1386,18 +1524,20 @@ mod tests {
         let req = |id: &str| Request {
             id: id.into(),
             pane_id: format!("p-{id}"),
-            req: ApprovalRequest { agent: "claude".into(), tool: "Edit".into(), summary: "s".into(), detail: None, can_always: false },
+            req: ApprovalRequest {
+                agent: "claude".into(),
+                tool: "Edit".into(),
+                summary: "s".into(),
+                detail: None,
+                can_always: false,
+            },
             expires: t0,
             timeout_ms: 45_000,
         };
         let ap = |id: &str| Pending { pane_id: format!("p-{id}"), kind: PendingKind::Approval(req(id)) };
         assert!(popup_request(&[]).is_none());
         assert!(popup_request(&[Pending { pane_id: "p".into(), kind: PendingKind::Question("q".into()) }]).is_none());
-        let pending = [
-            Pending { pane_id: "p".into(), kind: PendingKind::Question("q".into()) },
-            ap("a"),
-            ap("b"),
-        ];
+        let pending = [Pending { pane_id: "p".into(), kind: PendingKind::Question("q".into()) }, ap("a"), ap("b")];
         let (first, n) = popup_request(&pending).unwrap();
         assert_eq!((first.id.as_str(), n), ("a", 2));
         assert_eq!(popup_request(&pending[1..2]).map(|(r, n)| (r.id.as_str(), n)), Some(("a", 1)));
@@ -1452,7 +1592,9 @@ mod tests {
             agent: "a".into(),
             tool: "t".into(),
             summary: "s".into(),
-            detail: Some(Detail::Files((0..9).map(|i| FileChange { path: format!("f{i}"), added: 1, removed: 1 }).collect())),
+            detail: Some(Detail::Files(
+                (0..9).map(|i| FileChange { path: format!("f{i}"), added: 1, removed: 1 }).collect(),
+            )),
             can_always: true,
         };
         let size = popup_layout(&req).size;

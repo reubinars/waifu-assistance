@@ -6,7 +6,10 @@ use crate::draw::{Align, Color, Painter, TEXT_PRIMARY, TEXT_SECONDARY, TEXT_TERT
 use island_core::Rect;
 use island_core::anim::{Fade, breathe};
 use island_core::approvals::Detail;
-use island_core::github::{Ci, GhEvent, GhEventKind, GhRow, text::{chip, ci_glyph, head, pop_text}};
+use island_core::github::{
+    Ci, GhEvent, GhEventKind, GhRow,
+    text::{chip, ci_glyph, head, pop_text},
+};
 use island_core::herdr::AgentStatus;
 use island_core::ticker;
 use island_core::usage::{Level, Run, Tone, level};
@@ -205,7 +208,11 @@ pub fn draw(p: &mut Painter, tab: Tab, ox: f32, oy: f32, k: f32, s: &Scene) -> R
         return draw_popup(p, ox, oy, k, s, pop);
     }
     for (t, r) in layout::tabs(s.media_present, s.github_present) {
-        let label = match t { Tab::Agents => "Agents", Tab::Media => "Media", Tab::GitHub => "GitHub" };
+        let label = match t {
+            Tab::Agents => "Agents",
+            Tab::Media => "Media",
+            Tab::GitHub => "GitHub",
+        };
         let r = off(r, ox, oy);
         let h = s.hover.hover(Hot::Tab(t), s.t);
         let restore = p.scale_about(1.0 + 0.1 * h, r.x + r.w / 2.0, r.y + r.h / 2.0);
@@ -294,7 +301,14 @@ fn draw_popup(p: &mut Painter, ox: f32, oy: f32, k: f32, s: &Scene, pop: &Popup)
     if !pop.folder.is_empty() && folder_w >= 12.0 {
         p.text(&pop.folder, head(folder_x, folder_w), 11.0, 400, TEXT_TERTIARY.fade(k), Align::Left)?;
     }
-    p.text(&pop.summary, Rect { x: ox + X, y: oy + 41.0, w: RIGHT - X, h: 18.0 }, 13.0, 600, TEXT_PRIMARY.fade(k), Align::Left)?;
+    p.text(
+        &pop.summary,
+        Rect { x: ox + X, y: oy + 41.0, w: RIGHT - X, h: 18.0 },
+        13.0,
+        600,
+        TEXT_PRIMARY.fade(k),
+        Align::Left,
+    )?;
 
     if let (Some(box_), Some(detail)) = (l.detail, &pop.detail) {
         let b = off(box_, ox, oy);
@@ -308,11 +322,18 @@ fn draw_popup(p: &mut Painter, ox: f32, oy: f32, k: f32, s: &Scene, pop: &Popup)
                     let minus = p.layout_mono(&format!("\u{2212}{}", f.removed), r, 11.0, 400, Align::Right)?;
                     let minus_w = Painter::width(&minus);
                     p.draw_layout(&minus, r.x, r.y, MINUS.fade(k));
-                    let plus = p.layout_mono(&format!("+{}", f.added), Rect { w: r.w - minus_w - GAP, ..r }, 11.0, 400, Align::Right)?;
+                    let plus = p.layout_mono(
+                        &format!("+{}", f.added),
+                        Rect { w: r.w - minus_w - GAP, ..r },
+                        11.0,
+                        400,
+                        Align::Right,
+                    )?;
                     let plus_w = Painter::width(&plus);
                     p.draw_layout(&plus, r.x, r.y, DONE.fade(k));
                     let path_w = r.w - minus_w - plus_w - 2.0 * GAP;
-                    p.layout_mono(&f.path, Rect { w: path_w.max(0.0), ..r }, 11.0, 400, Align::Left).map(|l| p.draw_layout(&l, r.x, r.y, TEXT_PRIMARY.fade(k)))?;
+                    p.layout_mono(&f.path, Rect { w: path_w.max(0.0), ..r }, 11.0, 400, Align::Left)
+                        .map(|l| p.draw_layout(&l, r.x, r.y, TEXT_PRIMARY.fade(k)))?;
                 }
                 if files.len() > 3 {
                     let more = p.layout_mono(&format!("+{} more", files.len() - 3), line(3), 11.0, 400, Align::Left)?;
@@ -361,7 +382,14 @@ fn draw_rows(p: &mut Painter, ox: f32, oy: f32, k: f32, s: &Scene) -> Result<()>
     const LINE2_H: f32 = 16.0;
     if s.cards.is_empty() {
         let row = off(layout::slot_rect(0), ox, oy);
-        return p.text("No agents", Rect { x: row.x + NAME_X, w: row.w - NAME_X, ..row }, 14.0, 600, TEXT_SECONDARY.fade(k), Align::Left);
+        return p.text(
+            "No agents",
+            Rect { x: row.x + NAME_X, w: row.w - NAME_X, ..row },
+            14.0,
+            600,
+            TEXT_SECONDARY.fade(k),
+            Align::Left,
+        );
     }
     let list = off(layout::LIST, ox, oy);
     let mask = p.rect_geometry(list)?;
@@ -394,8 +422,18 @@ fn draw_rows(p: &mut Painter, ox: f32, oy: f32, k: f32, s: &Scene) -> Result<()>
             // the area for text on a one-slot request card: between its two button groups
             let (mid_l, mid_r) = if one_slot {
                 let centre = r.x + r.w / 2.0;
-                let l = buttons.iter().filter(|(_, b)| b.x + b.w / 2.0 < centre).map(|(_, b)| b.x + b.w).fold(r.x + NAME_X, f32::max) + SPACE;
-                let rt = buttons.iter().filter(|(_, b)| b.x + b.w / 2.0 >= centre).map(|(_, b)| b.x).fold(r.x + r.w - RIGHT + SPACE, f32::min) - SPACE;
+                let l = buttons
+                    .iter()
+                    .filter(|(_, b)| b.x + b.w / 2.0 < centre)
+                    .map(|(_, b)| b.x + b.w)
+                    .fold(r.x + NAME_X, f32::max)
+                    + SPACE;
+                let rt = buttons
+                    .iter()
+                    .filter(|(_, b)| b.x + b.w / 2.0 >= centre)
+                    .map(|(_, b)| b.x)
+                    .fold(r.x + r.w - RIGHT + SPACE, f32::min)
+                    - SPACE;
                 (l, rt)
             } else {
                 (r.x + NAME_X, r.x + r.w - RIGHT)
@@ -438,10 +476,24 @@ fn draw_rows(p: &mut Painter, ox: f32, oy: f32, k: f32, s: &Scene) -> Result<()>
                 let x = r.x + NAME_X;
                 let w = r.x + r.w - RIGHT - x;
                 if let Some(text) = &row.summary {
-                    p.text(text, Rect { x, y: r.y + 24.0, w, h: LINE2_H }, 11.0, 400, TEXT_SECONDARY.fade(k), Align::Left)?;
+                    p.text(
+                        text,
+                        Rect { x, y: r.y + 24.0, w, h: LINE2_H },
+                        11.0,
+                        400,
+                        TEXT_SECONDARY.fade(k),
+                        Align::Left,
+                    )?;
                 }
                 if let Some(line) = &row.line {
-                    p.text(line, Rect { x, y: r.y + 40.0, w, h: LINE2_H }, 11.0, 400, TEXT_TERTIARY.fade(k), Align::Left)?;
+                    p.text(
+                        line,
+                        Rect { x, y: r.y + 40.0, w, h: LINE2_H },
+                        11.0,
+                        400,
+                        TEXT_TERTIARY.fade(k),
+                        Align::Left,
+                    )?;
                 }
             } else if let Some(title) = &row.subtitle {
                 let x = r.x + NAME_X;
@@ -450,7 +502,14 @@ fn draw_rows(p: &mut Painter, ox: f32, oy: f32, k: f32, s: &Scene) -> Result<()>
             }
 
             for (a, b) in buttons {
-                draw_button(p, &row.kind, a, b, (s.hover.hover(Hot::Button(i, a), s.t), s.hover.press(Hot::Button(i, a), s.t)), k)?;
+                draw_button(
+                    p,
+                    &row.kind,
+                    a,
+                    b,
+                    (s.hover.hover(Hot::Button(i, a), s.t), s.hover.press(Hot::Button(i, a), s.t)),
+                    k,
+                )?;
             }
         }
         Ok(())

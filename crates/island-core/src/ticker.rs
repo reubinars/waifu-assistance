@@ -80,34 +80,71 @@ fn wrap(x: f32, period: f32) -> f32 {
 mod tests {
     use super::*;
 
-    fn t(content: f32, strip: f32) -> Ticker { let mut t = Ticker::default(); t.set_widths(content, strip); t }
-    #[test] fn static_when_it_fits() { let mut k = t(300.0, 344.0); k.advance(10.0); k.wheel(-3); assert!(!k.scrolls()); assert_eq!(k.offset(), 0.0); }
-    #[test] fn advances_and_wraps() {
-        let mut k = t(500.0, 344.0);               // period 532
-        k.advance(2.0); assert_eq!(k.offset(), 60.0);
-        k.advance(17.0); assert!((k.offset() - (570.0 - 532.0)).abs() < 1e-3);
+    fn t(content: f32, strip: f32) -> Ticker {
+        let mut t = Ticker::default();
+        t.set_widths(content, strip);
+        t
     }
-    #[test] fn wheel_both_ways_wraps() {
+    #[test]
+    fn static_when_it_fits() {
+        let mut k = t(300.0, 344.0);
+        k.advance(10.0);
+        k.wheel(-3);
+        assert!(!k.scrolls());
+        assert_eq!(k.offset(), 0.0);
+    }
+    #[test]
+    fn advances_and_wraps() {
+        let mut k = t(500.0, 344.0); // period 532
+        k.advance(2.0);
+        assert_eq!(k.offset(), 60.0);
+        k.advance(17.0);
+        assert!((k.offset() - (570.0 - 532.0)).abs() < 1e-3);
+    }
+    #[test]
+    fn wheel_both_ways_wraps() {
         let mut k = t(500.0, 344.0);
-        k.wheel(-1); assert_eq!(k.offset(), 40.0);
-        k.wheel(2); assert!((k.offset() - (532.0 - 40.0)).abs() < 1e-3);
+        k.wheel(-1);
+        assert_eq!(k.offset(), 40.0);
+        k.wheel(2);
+        assert!((k.offset() - (532.0 - 40.0)).abs() < 1e-3);
     }
-    #[test] fn width_change_keeps_offset_in_range() {
-        let mut k = t(1000.0, 344.0); k.advance(30.0); // 900
-        k.set_widths(400.0, 344.0);                    // period 432
+    #[test]
+    fn width_change_keeps_offset_in_range() {
+        let mut k = t(1000.0, 344.0);
+        k.advance(30.0); // 900
+        k.set_widths(400.0, 344.0); // period 432
         assert!((k.offset() - (900.0 % 432.0)).abs() < 1e-3);
-        k.set_widths(200.0, 344.0); assert_eq!(k.offset(), 0.0);
+        k.set_widths(200.0, 344.0);
+        assert_eq!(k.offset(), 0.0);
     }
-    #[test] fn non_finite_dt_zeroes_and_recovers() {
+    #[test]
+    fn non_finite_dt_zeroes_and_recovers() {
         let mut k = t(500.0, 344.0);
-        k.advance(1.0); k.advance(f32::INFINITY); assert_eq!(k.offset(), 0.0);
-        k.advance(1.0); k.advance(f32::NAN); assert_eq!(k.offset(), 0.0);
-        k.advance(2.0); assert_eq!(k.offset(), 60.0);
+        k.advance(1.0);
+        k.advance(f32::INFINITY);
+        assert_eq!(k.offset(), 0.0);
+        k.advance(1.0);
+        k.advance(f32::NAN);
+        assert_eq!(k.offset(), 0.0);
+        k.advance(2.0);
+        assert_eq!(k.offset(), 60.0);
     }
-    #[test] fn fitting_clears_the_offset() {
-        let mut k = t(500.0, 344.0); k.advance(2.0);   // 60
-        k.set_widths(300.0, 344.0); assert_eq!(k.offset(), 0.0);
-        k.set_widths(500.0, 344.0); assert_eq!(k.offset(), 0.0);
+    #[test]
+    fn fitting_clears_the_offset() {
+        let mut k = t(500.0, 344.0);
+        k.advance(2.0); // 60
+        k.set_widths(300.0, 344.0);
+        assert_eq!(k.offset(), 0.0);
+        k.set_widths(500.0, 344.0);
+        assert_eq!(k.offset(), 0.0);
     }
-    #[test] fn reset_zeroes() { let mut k = t(500.0, 344.0); k.advance(1.0); k.reset(); assert_eq!(k.offset(), 0.0); assert!(k.scrolls()); }
+    #[test]
+    fn reset_zeroes() {
+        let mut k = t(500.0, 344.0);
+        k.advance(1.0);
+        k.reset();
+        assert_eq!(k.offset(), 0.0);
+        assert!(k.scrolls());
+    }
 }

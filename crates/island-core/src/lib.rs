@@ -20,8 +20,8 @@ pub struct Rect {
     pub h: f32,
 }
 
-pub mod anim;
 pub mod agents;
+pub mod anim;
 pub mod approvals;
 pub mod collapsed;
 pub mod color;
@@ -30,8 +30,8 @@ pub mod github;
 pub mod herdr;
 pub mod hooks;
 pub mod media;
-pub mod platform;
 pub mod pet;
+pub mod platform;
 pub mod session;
 pub mod smtc;
 pub mod ticker;

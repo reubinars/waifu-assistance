@@ -6,7 +6,7 @@
 //! `<file>.bak`, then writes the new bytes through `<file>.tmp`. Modes are kept (new files are 0600).
 
 use island_core::approvals::HookStatus;
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value, json};
 use std::collections::BTreeMap;
 use std::fs;
 use std::io::{self, Write};
@@ -86,7 +86,8 @@ fn status_with(home: &Path, adapters: bool) -> HookStatus {
         map.insert("claude".to_string(), ours);
     }
     if adapters && home.join(".codex").is_dir() {
-        let ours = read_json(&home.join(".codex/hooks.json")).is_some_and(|v| has_ours(&v, "PermissionRequest", None, "codex"));
+        let ours = read_json(&home.join(".codex/hooks.json"))
+            .is_some_and(|v| has_ours(&v, "PermissionRequest", None, "codex"));
         map.insert("codex".to_string(), ours);
     }
     if adapters && home.join(".config/opencode").is_dir() {
@@ -389,7 +390,10 @@ mod tests {
         assert_eq!(v["hooks"]["PreToolUse"][0]["matcher"], "AskUserQuestion");
         let codex_original: Value = serde_json::from_str(CODEX).unwrap();
         assert_eq!(parse(&codex)["hooks"]["SessionStart"], codex_original["hooks"]["SessionStart"]);
-        assert_eq!(parse(&codex)["hooks"]["PermissionRequest"][0]["hooks"][0]["command"], format!("\"{EXE}\" hook codex"));
+        assert_eq!(
+            parse(&codex)["hooks"]["PermissionRequest"][0]["hooks"][0]["command"],
+            format!("\"{EXE}\" hook codex")
+        );
         assert!(String::from_utf8_lossy(&p1).contains(&format!("const EXE = \"{EXE}\";")));
 
         // a different exe replaces our entry rather than adding a second one

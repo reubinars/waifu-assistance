@@ -4,7 +4,7 @@
 
 use island_core::approvals::Decision;
 use island_core::hooks::{self, Agent, HookInput};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
@@ -40,7 +40,8 @@ fn log_unparsed(agent: &str, input: &Value) {
     let field = |k: &str| {
         input.get(k).and_then(Value::as_str).map(|s| s.chars().filter(|c| !c.is_control()).take(60).collect::<String>())
     };
-    let (event, tool) = (field("hook_event_name").unwrap_or_else(|| "?".into()), field("tool_name").unwrap_or_else(|| "?".into()));
+    let (event, tool) =
+        (field("hook_event_name").unwrap_or_else(|| "?".into()), field("tool_name").unwrap_or_else(|| "?".into()));
     let Some(home) = std::env::var_os("HOME").filter(|h| !h.is_empty()) else { return };
     let dir = PathBuf::from(home).join(".local/state/island");
     let log = dir.join("hook.log");

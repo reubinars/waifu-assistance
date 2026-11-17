@@ -6,31 +6,36 @@
 use crate::fullscreen::WM_APP_FULLSCREEN;
 use crate::log;
 use crate::tray::WM_APP_TRAY;
-use std::sync::atomic::{AtomicU32, Ordering};
 use island_core::platform::{Edge, clear_of_taskbar};
-use windows::Win32::UI::Shell::{ABM_GETSTATE, ABM_GETTASKBARPOS, ABS_AUTOHIDE, APPBARDATA, NIN_SELECT, SHAppBarMessage};
-use windows::Win32::UI::WindowsAndMessaging::{
-    HWND_TOPMOST, RegisterWindowMessageW, SW_HIDE, SWP_NOMOVE, SWP_NOSIZE, WM_CONTEXTMENU,
-};
 use island_core::view::{DisplayMode, Spot, WINDOW, window_origin};
 use island_core::{Point, Rect};
 use std::cell::RefCell;
 use std::collections::VecDeque;
+use std::sync::atomic::{AtomicU32, Ordering};
 use windows::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 use windows::Win32::Graphics::Gdi::{
-    ClientToScreen, CombineRgn, CreateRectRgn, CreateRoundRectRgn, DeleteObject, GetMonitorInfoW, MONITOR_DEFAULTTOPRIMARY,
-    MONITORINFO, MonitorFromPoint, RGN_OR, SetWindowRgn,
+    ClientToScreen, CombineRgn, CreateRectRgn, CreateRoundRectRgn, DeleteObject, GetMonitorInfoW,
+    MONITOR_DEFAULTTOPRIMARY, MONITORINFO, MonitorFromPoint, RGN_OR, SetWindowRgn,
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::HiDpi::{GetDpiForMonitor, MDT_EFFECTIVE_DPI};
-use windows::Win32::UI::Input::KeyboardAndMouse::{ReleaseCapture, SetCapture, TME_LEAVE, TRACKMOUSEEVENT, TrackMouseEvent};
+use windows::Win32::UI::Input::KeyboardAndMouse::{
+    ReleaseCapture, SetCapture, TME_LEAVE, TRACKMOUSEEVENT, TrackMouseEvent,
+};
+use windows::Win32::UI::Shell::{
+    ABM_GETSTATE, ABM_GETTASKBARPOS, ABS_AUTOHIDE, APPBARDATA, NIN_SELECT, SHAppBarMessage,
+};
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, GWL_EXSTYLE, GetForegroundWindow, GetWindowLongPtrW, IsWindow, WM_CAPTURECHANGED, WM_CLOSE, HTTRANSPARENT, IDC_ARROW, LWA_ALPHA, LoadCursorW,
-    MA_NOACTIVATE, PostQuitMessage, RegisterClassExW, SW_SHOWNOACTIVATE, SWP_NOACTIVATE, SWP_NOZORDER, SWP_SHOWWINDOW,
-    SetForegroundWindow, SetLayeredWindowAttributes, SetWindowLongPtrW, SetWindowPos, ShowWindow, WM_ACTIVATE,
-    WM_DESTROY, WM_DISPLAYCHANGE, WM_DPICHANGED, WM_KEYDOWN, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEACTIVATE,
-    WM_MOUSEMOVE, WM_NCHITTEST, WM_SETTINGCHANGE, WM_TIMER, WNDCLASSEXW, WS_EX_LAYERED,
-    WS_EX_NOACTIVATE, WS_EX_NOREDIRECTIONBITMAP, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_POPUP,
+    CreateWindowExW, DefWindowProcW, GWL_EXSTYLE, GetForegroundWindow, GetWindowLongPtrW, HTTRANSPARENT, IDC_ARROW,
+    IsWindow, LWA_ALPHA, LoadCursorW, MA_NOACTIVATE, PostQuitMessage, RegisterClassExW, SW_SHOWNOACTIVATE,
+    SWP_NOACTIVATE, SWP_NOZORDER, SWP_SHOWWINDOW, SetForegroundWindow, SetLayeredWindowAttributes, SetWindowLongPtrW,
+    SetWindowPos, ShowWindow, WM_ACTIVATE, WM_CAPTURECHANGED, WM_CLOSE, WM_DESTROY, WM_DISPLAYCHANGE, WM_DPICHANGED,
+    WM_KEYDOWN, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEACTIVATE, WM_MOUSEMOVE, WM_NCHITTEST, WM_SETTINGCHANGE, WM_TIMER,
+    WNDCLASSEXW, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_NOREDIRECTIONBITMAP, WS_EX_TOOLWINDOW, WS_EX_TOPMOST,
+    WS_EX_TRANSPARENT, WS_POPUP,
+};
+use windows::Win32::UI::WindowsAndMessaging::{
+    HWND_TOPMOST, RegisterWindowMessageW, SW_HIDE, SWP_NOMOVE, SWP_NOSIZE, WM_CONTEXTMENU,
 };
 use windows::core::{PCWSTR, Result, w};
 
@@ -187,7 +192,11 @@ extern "system" fn input_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> L
         }
         WM_MOUSEACTIVATE => {
             let ex = unsafe { GetWindowLongPtrW(hwnd, GWL_EXSTYLE) } as u32;
-            if ex & WS_EX_NOACTIVATE.0 != 0 { LRESULT(MA_NOACTIVATE as isize) } else { unsafe { DefWindowProcW(hwnd, msg, wp, lp) } }
+            if ex & WS_EX_NOACTIVATE.0 != 0 {
+                LRESULT(MA_NOACTIVATE as isize)
+            } else {
+                unsafe { DefWindowProcW(hwnd, msg, wp, lp) }
+            }
         }
         _ => unsafe { DefWindowProcW(hwnd, msg, wp, lp) },
     }
@@ -268,7 +277,12 @@ pub fn create(mode: DisplayMode, spot: Spot) -> Result<Windows> {
             }
         }
         let visual = CreateWindowExW(
-            WS_EX_NOREDIRECTIONBITMAP | WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_LAYERED | WS_EX_TRANSPARENT,
+            WS_EX_NOREDIRECTIONBITMAP
+                | WS_EX_TOPMOST
+                | WS_EX_TOOLWINDOW
+                | WS_EX_NOACTIVATE
+                | WS_EX_LAYERED
+                | WS_EX_TRANSPARENT,
             w!("IslandVisual"),
             w!("Island"),
             WS_POPUP,
@@ -338,7 +352,15 @@ impl Windows {
         self.scale = scale;
         self.placed = None;
         unsafe {
-            if let Err(e) = SetWindowPos(self.visual, None, o.x as i32, o.y as i32, w as i32, h as i32, SWP_NOACTIVATE | SWP_NOZORDER) {
+            if let Err(e) = SetWindowPos(
+                self.visual,
+                None,
+                o.x as i32,
+                o.y as i32,
+                w as i32,
+                h as i32,
+                SWP_NOACTIVATE | SWP_NOZORDER,
+            ) {
                 log::warning!("place window: {e}");
             }
         }

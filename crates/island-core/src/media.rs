@@ -70,10 +70,7 @@ impl MediaClock {
         // SMTC re-sends an unchanged timeline on unrelated events; the position it carries
         // is as old as the last real timeline update, so keep that update's time.
         let stale = same
-            && self
-                .snap
-                .as_ref()
-                .is_some_and(|old| old.playback == snap.playback && old.position_s == snap.position_s);
+            && self.snap.as_ref().is_some_and(|old| old.playback == snap.playback && old.position_s == snap.position_s);
         self.snap = Some(snap);
         if !stale || self.updated_at.is_none() {
             self.updated_at = Some(now);

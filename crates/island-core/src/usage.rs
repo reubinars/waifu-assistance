@@ -64,11 +64,7 @@ pub fn level(pct: f32) -> Level {
 
 /// Under a day: whole hours (`5h`). A day or more: whole days (`7d`).
 pub fn window_label(minutes: u32) -> String {
-    if minutes < 1440 {
-        format!("{}h", minutes / 60)
-    } else {
-        format!("{}d", minutes / 1440)
-    }
+    if minutes < 1440 { format!("{}h", minutes / 60) } else { format!("{}d", minutes / 1440) }
 }
 
 pub fn cli_label(cli: &str) -> String {

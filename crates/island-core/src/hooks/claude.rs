@@ -1,8 +1,8 @@
 //! Claude Code hooks: PermissionRequest for approvals, PreToolUse for AskUserQuestion.
 
-use super::{cap, cap_to, lines, MAX_TOOL_CHARS, rel, sanitize, trim_command, HookInput};
+use super::{HookInput, MAX_TOOL_CHARS, cap, cap_to, lines, rel, sanitize, trim_command};
 use crate::approvals::{ApprovalRequest, Decision, Detail, FileChange};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 /// Inputs `parse` drops on purpose: Claude's permission event for AskUserQuestion (ruling R12).
 pub fn is_ignored(input: &Value) -> bool {
@@ -87,9 +87,9 @@ fn detail(tool: &str, ti: &Value, cwd: Option<&str>) -> Option<(String, Option<D
 
 #[cfg(test)]
 mod tests {
-    use super::super::{is_ignored, output, parse, trim_command, Agent, HookInput};
+    use super::super::{Agent, HookInput, is_ignored, output, parse, trim_command};
     use crate::approvals::{Decision, Detail, FileChange};
-    use serde_json::{json, Value};
+    use serde_json::{Value, json};
 
     fn fx(name: &str) -> Value {
         let text = match name {
@@ -130,10 +130,7 @@ mod tests {
         let r = approval_of(&fx("claude_write"));
         assert_eq!(r.tool, "Write");
         assert_eq!(r.summary, "Wants to edit 1 file");
-        assert_eq!(
-            r.detail,
-            Some(Detail::Files(vec![FileChange { path: "hello.txt".into(), added: 2, removed: 0 }]))
-        );
+        assert_eq!(r.detail, Some(Detail::Files(vec![FileChange { path: "hello.txt".into(), added: 2, removed: 0 }])));
     }
 
     #[test]
@@ -146,10 +143,7 @@ mod tests {
         });
         let r = approval_of(&i);
         assert_eq!(r.summary, "Wants to edit 1 file");
-        assert_eq!(
-            r.detail,
-            Some(Detail::Files(vec![FileChange { path: "nb.ipynb".into(), added: 2, removed: 0 }]))
-        );
+        assert_eq!(r.detail, Some(Detail::Files(vec![FileChange { path: "nb.ipynb".into(), added: 2, removed: 0 }])));
         assert!(!r.can_always);
         i["tool_input"]["edit_mode"] = json!("delete");
         assert_eq!(

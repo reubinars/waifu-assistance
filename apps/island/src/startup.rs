@@ -53,8 +53,15 @@ fn current() -> Option<String> {
             return None;
         }
         let mut buf = vec![0u16; (bytes as usize).div_ceil(2)];
-        if RegGetValueW(HKEY_CURRENT_USER, RUN, NAME, RRF_RT_REG_SZ, None, Some(buf.as_mut_ptr().cast()), Some(&mut bytes))
-            != ERROR_SUCCESS
+        if RegGetValueW(
+            HKEY_CURRENT_USER,
+            RUN,
+            NAME,
+            RRF_RT_REG_SZ,
+            None,
+            Some(buf.as_mut_ptr().cast()),
+            Some(&mut bytes),
+        ) != ERROR_SUCCESS
         {
             return None;
         }

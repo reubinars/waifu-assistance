@@ -32,25 +32,59 @@ pub struct AgentInfo {
 
 #[derive(Debug, PartialEq)]
 pub enum Incoming {
-    Bridge { connected: bool },
-    AgentList { id: String, agents: Vec<AgentInfo> },
-    AgentGet { id: String, agent: AgentInfo },
+    Bridge {
+        connected: bool,
+    },
+    AgentList {
+        id: String,
+        agents: Vec<AgentInfo>,
+    },
+    AgentGet {
+        id: String,
+        agent: AgentInfo,
+    },
     /// Any other success response.
-    Ok { id: String },
-    Error { id: String, message: String },
-    Detected { pane_id: String },
+    Ok {
+        id: String,
+    },
+    Error {
+        id: String,
+        message: String,
+    },
+    Detected {
+        pane_id: String,
+    },
     /// The agent exited but its pane stays open (a shell prompt).
-    Released { pane_id: String },
-    StatusChanged { pane_id: String, status: AgentStatus, agent: Option<String>, title: Option<String> },
-    Closed { pane_id: String },
+    Released {
+        pane_id: String,
+    },
+    StatusChanged {
+        pane_id: String,
+        status: AgentStatus,
+        agent: Option<String>,
+        title: Option<String>,
+    },
+    Closed {
+        pane_id: String,
+    },
     /// Plan-limit usage pushed by the bridge.
     Usage(Vec<CliUsage>),
     /// An agent is waiting for permission to run a tool.
-    Approval { id: String, pane_id: String, req: ApprovalRequest, timeout_ms: u64 },
+    Approval {
+        id: String,
+        pane_id: String,
+        req: ApprovalRequest,
+        timeout_ms: u64,
+    },
     /// The agent no longer needs the approval with this id (answered elsewhere, or timed out).
-    ApprovalClosed { id: String },
+    ApprovalClosed {
+        id: String,
+    },
     /// An agent is asking the user a question in this pane.
-    Question { pane_id: String, text: String },
+    Question {
+        pane_id: String,
+        text: String,
+    },
     /// The bridge's GitHub PR snapshot, or why it has none.
     GitHub(Result<Vec<crate::github::PullRequest>, String>),
     /// Which agent CLIs have the island's hooks installed.
@@ -64,9 +98,7 @@ fn text(v: &Value, key: &str) -> Option<String> {
 }
 
 fn status(v: &Value) -> AgentStatus {
-    v.get("agent_status")
-        .and_then(|s| AgentStatus::deserialize(s).ok())
-        .unwrap_or(AgentStatus::Unknown)
+    v.get("agent_status").and_then(|s| AgentStatus::deserialize(s).ok()).unwrap_or(AgentStatus::Unknown)
 }
 
 fn agent_info(v: &Value) -> Option<AgentInfo> {
